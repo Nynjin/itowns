@@ -1,15 +1,16 @@
 import { Text } from 'Types/Text';
-import { createLabelMaterial } from 'Utils/LabelUtils';
+import { createPointLabelMaterial } from 'Materials/PointLabelMaterial';
 
 import { Coordinates } from '@itowns/geographic';
 import Style from 'Core/Style';
 import * as THREE from 'three';
+import { BillboardMode, LabelMaterial } from 'Types/LabelTypes';
 
 // Define the material once for all Label3D instances
-const lookAtCameraMaterial = createLabelMaterial(new THREE.MeshBasicMaterial(), {});
+const labelMaterial = createPointLabelMaterial(new THREE.MeshBasicMaterial(), {});
 // Deactivate material depthTest so it is always rendered
 // upfront (to avoid terrain collision for instance
-lookAtCameraMaterial.depthTest = false;
+labelMaterial.depthTest = false;
 
 /* TODO: gérer le sync:
    * faire un sync à chaque appel de méthode de la classe?
@@ -27,6 +28,7 @@ lookAtCameraMaterial.depthTest = false;
 export class Label3D extends Text {
     readonly isLabel3D: boolean;
     static fontScale: number = 20;
+    material: LabelMaterial;
 
     constructor() {
         super();
@@ -42,7 +44,7 @@ export class Label3D extends Text {
         this.scale.z = -1;
         this.rotation.x = Math.PI;
 
-        this.material = lookAtCameraMaterial;
+        this.material = labelMaterial;
     }
 
     setContent(content: string) {
@@ -57,37 +59,27 @@ export class Label3D extends Text {
     setStyle(style: Style): void {
         const textStyle = style.text as {
             field: string;
-            fontSize: number;
+            size: number;
             color: number | string | THREE.Color;
             rotation: 'map' | 'viewport' | 'auto';
             placement: 'point' | 'line' | 'line-center';
         };
         this.setContent(textStyle.field);
 
-        // Rotation: TODO: see if it stays here or not
-        // text-rotation-alignment -> style.text.rotation
-        // symbol-placement -> style.text.placement
-        if (textStyle.rotation === 'map') {
-            if (textStyle.placement === 'point') {
-                // text should align east - west
-            } else if (textStyle.placement === 'line' || textStyle.placement === 'line-center') {
-                // aligns text x-axes with the line.
-            }
-        } else if (textStyle.rotation === 'viewport') {
-            // Produces glyphs whose x-axes are aligned
-            // with the x-axis of the viewport,
-            // regardless of the value of symbol-placement
+        const u = this.material.uniforms;
+        u.fontSize.value = textStyle.size * Label3D.fontScale;
+        if (textStyle.rotation === 'viewport') {
+            u.billboardMode.value = BillboardMode.Viewport;
+        } else if (textStyle.rotation === 'map') {
+            u.billboardMode.value = BillboardMode.Map;
+        // Similar to 'auto' in MapLibre
         } else if (textStyle.rotation === 'auto') {
-            // TODO: understand the spec :grin:
-            // this.material = lookAtCameraMaterial;
+            if (textStyle.placement === 'point') {
+                u.billboardMode.value = BillboardMode.Viewport;
+            } else {
+                u.billboardMode.value = BillboardMode.Map;
+            }
         }
-
-        // TODO: temp
-        const material = this.material as typeof lookAtCameraMaterial;
-
-        const px = textStyle.fontSize ?? 50;
-        const u = material.uniforms;
-        u.fontSize.value = px * Label3D.fontScale;
         this.color = textStyle.color;
     }
 

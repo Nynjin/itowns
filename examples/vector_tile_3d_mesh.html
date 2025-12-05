@@ -80,11 +80,12 @@
 
             // ---------- DISPLAY ORTHO-IMAGES : ----------
 
-            // const ortho = itowns.Fetcher.json('./layers/JSONLayers/Ortho.json').then(function _(config) {
-            //     config.source = new itowns.WMTSSource(config.source);
-            //     var layer = new itowns.ColorLayer('Ortho', config);
-            //     return view.addLayer(layer);
-            // });
+            itowns.Fetcher.json('./layers/JSONLayers/OPENSM.json').then(function _(osm) {
+                osm.source = new itowns.TMSSource(osm.source);
+                var layer = new itowns.ColorLayer(osm.id, osm);
+                view.addLayer(layer)
+                    .then(debugMenu.addLayerGUI.bind(debugMenu));
+            });
 
             // ---------- DISPLAY VECTOR TILED MAP DATA AS A ColorLayer : ----------
 
@@ -106,20 +107,16 @@
             const mapLayer = new itowns.FeatureGeometryLayer('MVT', {
                 source: mapSource,
                 // addLabelLayer: { performance: true },
-                zoom: { min: 15, max: 17 }, // TODO: si on ne met pas ça, le layer ne s'affiche pas. c.f. TODO dans FeatureProcessing et https://github.com/iTowns/itowns/issues/2153
+                zoom: { min: 17 }, // TODO: si on ne met pas ça, le layer ne s'affiche pas. c.f. TODO dans FeatureProcessing et https://github.com/iTowns/itowns/issues/2153
                 style: {
                     fill: {
                         base_altitude: (p) => 0.1,
-                    }
+                    },
+                    text: {
+                        size: 10,          
+                        rotation: 'map',       // viewport for point, map for line
+                    },
                 }
-                // style: {
-                    // text: {
-                    //     color: '#000000',
-                    //     haloColor: '#ffffff',
-                    //     haloWidth: 3,
-                    //     haloBlur: 2,
-                    // }
-                // },
             });
 
             // Add the ColorLayer to the scene and to the debug menu.

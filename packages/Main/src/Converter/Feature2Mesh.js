@@ -587,17 +587,31 @@ function pointsToInstancedMeshes(feature) {
 // TODO: handle cache and reCreation ?
 function featureToLabel(feature, options) {
     const labelGroup = new THREE.Group();
+
+    const usedKeys = options._labelDedup ?? new Set();
+
     for (const geometry of feature.geometries) {
+        style.setContext(context);
+        context.setFeature(feature);
+        context.setGeometry(geometry);
+
         for (const geometryIndex of geometry.indices) {
             // TODO: don't create a coord each time.
             // TODO: in labelLayer, crs is taken from the FeatureCollection
             const labelCoord = new Coordinates(feature.crs);
             labelCoord.setFromArray(feature.vertices, geometry.size * geometryIndex.offset);
-            // labelCoord.applyMatrix4(context.collection.matrixWorld);
+
+            // Dedup key on world position (quantized)
+            const key = `${Math.round(labelCoord.x / 1)}:${Math.round(labelCoord.y / 1)}:${Math.round((labelCoord.z || 0) / 1)}`; // 1m cells; tune if needed
+            if (usedKeys.has(key)) {
+                // already placed a label at this spot: skip this one
+                continue;
+            }
+            usedKeys.add(key);
+
             const label = new Label3D();
-            const style = feature.style;
             style.text.field = geometry.properties.texte; // TODO: tmp but we should use styleoptions.ReadVectorExpression OR better: should be already set when we get here?
-            label.setStyle(feature.style);
+            label.setStyle(style);
             label.setPosition(labelCoord);
             label.sync(); // TODO
             labelGroup.add(label);
@@ -728,8 +742,11 @@ export default {
             const features = collection.features;
             if (!features || features.length == 0) { return; }
 
+            // Multiple features can share the same label position
+            const labelDedup = new Set();
+
             const meshes = features.map((feature) => {
-                const mesh = featureToMesh(feature, options);
+                const mesh = featureToMesh(feature, { ...options, _labelDedup: labelDedup });
                 mesh.layer = this;
                 return mesh;
             });
