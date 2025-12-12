@@ -113,8 +113,19 @@
                         base_altitude: (p) => 0.1,
                     },
                     text: {
-                        size: 10,          
-                        rotation: 'map',       // viewport for point, map for line
+                        // color: '#202020',
+                        size: 25,
+                        rotation: 'viewport',
+                        wrap: 1,
+                        spacing: 0.2,
+                        justify: 'center',
+                        anchor: 'center',
+                        opacity: 0.5,
+                        haloWidth: 1,
+                        haloColor: '#ffffff',
+                        haloBlur: 1,
+                        lineHeight: 2,
+                        transform: 'lowercase'
                     },
                 }
             });

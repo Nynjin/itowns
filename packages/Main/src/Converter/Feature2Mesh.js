@@ -582,6 +582,27 @@ function pointsToInstancedMeshes(feature) {
     }
 }
 
+
+function geometryToPointLabel(geometry, geometryIndex, feature, usedKeys) {
+    const labelCoord = new Coordinates(feature.crs);
+    labelCoord.setFromArray(feature.vertices, geometry.size * geometryIndex.offset);
+
+    const key = `${Math.round(labelCoord.x)}:${Math.round(labelCoord.y / 1)}:${Math.round((labelCoord.z || 0))}`;
+    if (usedKeys.has(key)) {
+        // already placed a label at this spot: skip this one
+        return;
+    }
+    usedKeys.add(key);
+
+    const label = new Label3D();
+    style.text.field = geometry.properties.texte; // TODO: tmp but we should use styleoptions.ReadVectorExpression OR better: should be already set when we get here?
+    label.setStyle(style);
+    label.setPosition(labelCoord);
+    label.sync(); // TODO
+
+    return label;
+}
+
 // TODO: are options useful ?
 // TODO: handle zoom and other stuff from LabelLayer
 // TODO: handle cache and reCreation ?
@@ -596,24 +617,11 @@ function featureToLabel(feature, options) {
         context.setGeometry(geometry);
 
         for (const geometryIndex of geometry.indices) {
-            // TODO: don't create a coord each time.
-            // TODO: in labelLayer, crs is taken from the FeatureCollection
-            const labelCoord = new Coordinates(feature.crs);
-            labelCoord.setFromArray(feature.vertices, geometry.size * geometryIndex.offset);
-
-            // Dedup key on world position (quantized)
-            const key = `${Math.round(labelCoord.x / 1)}:${Math.round(labelCoord.y / 1)}:${Math.round((labelCoord.z || 0) / 1)}`; // 1m cells; tune if needed
-            if (usedKeys.has(key)) {
-                // already placed a label at this spot: skip this one
+            const label = geometryToPointLabel(geometry, geometryIndex, feature, usedKeys);
+            if (!label) {
                 continue;
             }
-            usedKeys.add(key);
 
-            const label = new Label3D();
-            style.text.field = geometry.properties.texte; // TODO: tmp but we should use styleoptions.ReadVectorExpression OR better: should be already set when we get here?
-            label.setStyle(style);
-            label.setPosition(labelCoord);
-            label.sync(); // TODO
             labelGroup.add(label);
         }
     }

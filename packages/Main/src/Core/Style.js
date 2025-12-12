@@ -384,6 +384,8 @@ function _addIcon(icon, domElement, opt) {
  * `16`.
  * @property {Number|Function} text.wrap - The maximum width, in pixels, before the text
  * is wrapped, because the string is too long. Default is `10`.
+ * @property {Number|Function} text.lineHeight - The line height for multi-line text, in `em`.
+ * Default is `1.2`.
  * @property {Number|Function} text.spacing - The spacing between the letters, in `em`.
  * Default is `0`.
  * @property {String|Function} text.transform - A value corresponding to the [CSS
@@ -514,6 +516,7 @@ class Style {
         defineStyleProperty(this, 'text', 'placement', params.text.placement, 'point');
         defineStyleProperty(this, 'text', 'rotation', params.text.rotation, 'auto');
         defineStyleProperty(this, 'text', 'wrap', params.text.wrap, 10);
+        defineStyleProperty(this, 'text', 'lineHeight', params.text.lineHeight, 1.2);
         defineStyleProperty(this, 'text', 'spacing', params.text.spacing, 0);
         defineStyleProperty(this, 'text', 'transform', params.text.transform, 'none');
         defineStyleProperty(this, 'text', 'justify', params.text.justify, 'center');
@@ -623,6 +626,7 @@ class Style {
         }
         domElement.style.padding = `${this.text.padding}px`;
         domElement.style.maxWidth = `${this.text.wrap}em`;
+        domElement.style.lineHeight = `${this.text.lineHeight}em`;
 
         domElement.style.color = this.text.color;
         if (this.text.size > 0) {

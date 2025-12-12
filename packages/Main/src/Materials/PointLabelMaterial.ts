@@ -15,15 +15,15 @@ const createPointLabelMaterial =
     baseMaterial,
     {
         uniforms: {
-            invScreenHeight: { value: 1.0 /
+            uInvScreenHeight: { value: 1.0 /
                 (typeof window !== 'undefined' ? window.innerHeight : 1080.0) },
-            fontSize: { value: 100.0 },
-            billboardMode: { value: BillboardMode.Viewport },
+            uFontSize: { value: 100.0 },
+            uBillboardMode: { value: BillboardMode.Viewport },
         },
         vertexDefs: `
-            uniform float invScreenHeight; // 1.0 / viewport height
-            uniform float fontSize;        // pixels per local unit
-            uniform int billboardMode;     // 0=Map, 1=Viewport
+            uniform float uInvScreenHeight; // 1.0 / viewport height
+            uniform float uFontSize;        // pixels per local unit
+            uniform int uBillboardMode;     // 0=Map, 1=Viewport
         `,
         vertexMainOutro: `
             // Label center in view space
@@ -35,15 +35,15 @@ const createPointLabelMaterial =
 
             // World-units-per-pixel at this depth
             float wpp = (p33 > 0.5)
-                ? ((2.0 * invScreenHeight) / f)                  // orthographic
-                : ((-centerVS.z) * 2.0 * invScreenHeight / f);   // perspective
+                ? ((2.0 * uInvScreenHeight) / f)                  // orthographic
+                : ((-centerVS.z) * 2.0 * uInvScreenHeight / f);   // perspective
 
             // Build axes
             vec3 rightVS;
             vec3 upVS;
 
             // Viewport: screen-aligned billboard
-            if (billboardMode == 1) {
+            if (uBillboardMode == 1) {
                 rightVS = vec3(1.0, 0.0, 0.0);
                 upVS    = vec3(0.0, 1.0, 0.0);
             } else {
@@ -58,7 +58,7 @@ const createPointLabelMaterial =
             }
 
             // Local glyph offset in pixels (XY only)
-            vec2 offsPx = position.xy * fontSize;
+            vec2 offsPx = position.xy * uFontSize;
 
             // Convert pixel offset to view-space units
             vec3 viewOffset = rightVS * (offsPx.x * wpp) + upVS * (offsPx.y * wpp);

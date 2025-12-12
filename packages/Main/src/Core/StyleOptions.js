@@ -107,6 +107,8 @@ import * as maplibre from '@maplibre/maplibre-gl-style-spec';
  * `16`.
  * @property {Number|Function} [text.wrap] - The maximum width, in pixels, before the text
  * is wrapped, because the string is too long. Default is `10`.
+ * @property {Number|Function} [text.lineHeight] - The line height for multi-line text, in `em`.
+ * Default is `1.2`.
  * @property {Number|Function} [text.spacing] - The spacing between the letters, in `em`.
  * Default is `0`.
  * @property {String|Function} [text.transform] - A value corresponding to the [CSS
@@ -319,6 +321,7 @@ function setFromVectorTileLayer(layer, sprites, symbolToCircle = false) {
         // content
         style.text.field = readVectorProperty(layer.layout['text-field']);
         style.text.wrap = readVectorProperty(layer.layout['text-max-width']);// Units ems
+        style.text.lineHeight = readVectorProperty(layer.layout['text-line-height']);// Units ems
         style.text.spacing = readVectorProperty(layer.layout['text-letter-spacing']);
         style.text.transform = readVectorProperty(layer.layout['text-transform']);
         style.text.justify = readVectorProperty(layer.layout['text-justify']);
