@@ -6,8 +6,8 @@ import { Coordinates, ellipsoidSizes } from '@itowns/geographic';
 import GlobeLayer from 'Core/Prefab/Globe/GlobeLayer';
 import CameraUtils from 'Utils/CameraUtils';
 import WebXR from 'Renderer/WebXR';
-import SkyManager from 'Core/Prefab/Globe/SkyManager';
-import SunLightLayer from 'Layer/SunLightLayer';
+import SkyController from 'Core/Prefab/Globe/SkyController';
+import { MAIN_LOOP_EVENTS } from 'Core/MainLoop';
 
 /**
  * Fires when the view is completely loaded. Controls and view's functions can be called then.
@@ -87,8 +87,7 @@ class GlobeView extends View {
      * @param {number} [options.maxFarAltitude=80000] - the altitude at which the horizon is fully visible (meters).
      * @param {number} [options.minFarDistance=10000] - the minimum horizon distance (meters).
      * @param {boolean} [options.realisticLighting=false] - Enable realistic lighting.
-     * If true, it can later be switched by setting this.skyManager.enabled to true/false.
-     * If false, it will be impossible to enable it later on.
+     * It can later be switched by setting this.realisticLighting to true/false.
      * @param {boolean} [options.shadows=false] - Enable shadow map rendering. Can be toggled
      * later via `this.shadows`.
      */
@@ -145,14 +144,10 @@ class GlobeView extends View {
         }
 
         this.date = new Date(); // now
-
-        // Sunlight and shadow layer
-        this.sunLightLayer = new SunLightLayer(this);
-        this.addLayer(this.sunLightLayer);
-
-        if (options.realisticLighting === true) {
-            this.skyManager = new SkyManager(this);
-        }
+        this.skyController = new SkyController(this, options);
+        this.addFrameRequester(MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
+            this.skyController.update();
+        });
 
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -285,14 +280,15 @@ class GlobeView extends View {
      * Does not affect shadows cast by user-defined lights.
      * @type {boolean}
      */
-    get shadows() {
-        return this.sunLightLayer.castShadow;
+    get shadows() { return this.skyController.castShadow; }
+    set shadows(value) { this.skyController.castShadow = value; }
+
+    get realisticLighting() {
+        return this.skyController?.realisticLighting;
     }
 
-    set shadows(value) {
-        if (this.sunLightLayer.castShadow == value) { return; }
-        this.sunLightLayer.castShadow = value;
-        this.notifyChange(this.camera3D);
+    set realisticLighting(value) {
+        this.skyController.realisticLighting = value;
     }
 }
 
