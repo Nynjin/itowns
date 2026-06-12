@@ -57,6 +57,7 @@ class FeatureGeometryLayer extends GeometryLayer {
             accurate = true,
             filter,
             mergeFeatures = true,
+            addLabelLayer = false,
             style = {},
             ...geometryOptions
         } = options;
@@ -77,6 +78,7 @@ class FeatureGeometryLayer extends GeometryLayer {
         this.buildExtent = !this.accurate;
         this.filter = filter;
         this.mergeFeatures = mergeFeatures;
+        this.addLabelLayer = addLabelLayer;
     }
 
     preUpdate(context, sources) {

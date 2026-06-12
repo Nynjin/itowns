@@ -6,6 +6,7 @@ import { Coordinates, Extent } from '@itowns/geographic';
 import Label from 'Core/Label';
 import Style, { readExpression, StyleContext } from 'Core/Style';
 import { ScreenGrid } from 'Renderer/Label2DRenderer';
+import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement } from '@itowns/labels';
 
 const context = new StyleContext();
 
@@ -16,6 +17,85 @@ const _extent = new Extent('EPSG:4326', 0, 0, 0, 0);
 const nodeDimensions = new THREE.Vector2();
 const westNorthNode = new THREE.Vector2();
 const labelPosition = new THREE.Vector2();
+const instancedPosition = new THREE.Vector3();
+
+function mapAnchorX(anchor) {
+    if (anchor[0] >= -0.25) {
+        return TextAnchorX.Left;
+    }
+    if (anchor[0] <= -0.75) {
+        return TextAnchorX.Right;
+    }
+    return TextAnchorX.Center;
+}
+
+function mapAnchorY(anchor) {
+    if (anchor[1] >= -0.25) {
+        return TextAnchorY.Top;
+    }
+    if (anchor[1] <= -0.75) {
+        return TextAnchorY.Bottom;
+    }
+    return TextAnchorY.Middle;
+}
+
+function toInstancedTextContent(content) {
+    if (typeof content === 'string') {
+        return content;
+    }
+    return content?.textContent || '';
+}
+
+function getTerrainLift(label, pxPerUnit) {
+    const textStyle = label.instancedTextStyle || {};
+    const fontSize = textStyle.size || 20;
+    const anchor = Array.isArray(label.anchor) ? label.anchor : [0, 0];
+    const labelHeight = fontSize / pxPerUnit;
+    const anchorFactor = Math.max(0, 1 + anchor[1]);
+    return Math.max(2, labelHeight * anchorFactor);
+}
+
+function resolveTextProperty(context, ...sources) {
+    for (const source of sources) {
+        if (source == undefined) {
+            continue;
+        }
+        const value = readExpression(source, context);
+        if (value != undefined) {
+            return value;
+        }
+    }
+    return undefined;
+}
+
+function snapshotInstancedTextStyle(context, geometryStyle, featureStyle, layerStyle, defaultFonts) {
+    const geometryText = geometryStyle?.text || {};
+    const featureText = featureStyle?.text || {};
+    const layerText = layerStyle?.text || {};
+    return {
+        font: resolveTextProperty(context, geometryText.font, featureText.font, layerText.font) || defaultFonts,
+        size: resolveTextProperty(context, geometryText.size, featureText.size, layerText.size) || 16,
+        color: resolveTextProperty(context, geometryText.color, featureText.color, layerText.color) || '#000000',
+        opacity: resolveTextProperty(context, geometryText.opacity, featureText.opacity, layerText.opacity) ?? 1,
+        haloColor: resolveTextProperty(context, geometryText.haloColor, featureText.haloColor, layerText.haloColor) || '#000000',
+        haloWidth: resolveTextProperty(context, geometryText.haloWidth, featureText.haloWidth, layerText.haloWidth) || 0,
+        haloOpacity: resolveTextProperty(context, geometryText.haloOpacity, featureText.haloOpacity, layerText.haloOpacity) ?? 1,
+        rotationAlignment: RotationAlignment.Viewport,
+
+        symbolPlacement: resolveTextProperty(context, geometryText.placement, featureText.placement, layerText.placement) === 'line'
+            ? SymbolPlacement.Line
+            : SymbolPlacement.Point,
+        offset: resolveTextProperty(context, geometryText.offset, featureText.offset, layerText.offset) || [0, 0],
+        padding: resolveTextProperty(context, geometryText.padding, featureText.padding, layerText.padding) || 20,
+    };
+}
+
+function resolveInstancedLabelContent(context, geometryStyle, featureStyle, layerStyle) {
+    const geometryText = geometryStyle?.text || {};
+    const featureText = featureStyle?.text || {};
+    const layerText = layerStyle?.text || {};
+    return resolveTextProperty(context, geometryText.field, featureText.field, layerText.field);
+}
 
 /**
  * DomNode is a node in the tree data structure of labels divs.
@@ -27,9 +107,7 @@ class DomNode {
 
     constructor() {
         this.dom = document.createElement('div');
-
         this.dom.style.display = 'none';
-
         this.visible = true;
     }
 
@@ -43,7 +121,6 @@ class DomNode {
     }
 
     hide() { this.visible = false; }
-
     show() { this.visible = true; }
 
     add(node) {
@@ -58,29 +135,71 @@ class DomNode {
  * @class      LabelsNode
  */
 class LabelsNode extends THREE.Group {
-    constructor(node) {
+    constructor(node, view, isInstanced, isAsync = false) {
         super();
-        // attached node parent
         this.nodeParent = node;
+        this.isInstanced = isInstanced;
+        this.instancedLabelManager = isAsync
+            ? view?.instancedLabelManagerAsync
+            : view?.instancedLabelManager;
+        this.instancedLabels = new Map();
+
         // When this is set, it calculates the position in that frame and resets this property to false.
         this.needsUpdate = true;
     }
 
     // instantiate dom elements
     initializeDom() {
+        if (this.isInstanced) return;
+
         // create root dom
         this.domElements = new DomNode();
         // create labels container dom
         this.domElements.labels = new DomNode();
 
         this.domElements.add(this.domElements.labels);
-
         this.domElements.labels.dom.style.opacity = '0';
     }
 
     // add node label
     // add label 3d and dom label
     addLabel(label) {
+        if (this.isInstanced) {
+            if (!this.instancedLabels.has(label) && this.instancedLabelManager) {
+                coord.copy(label.coordinates);
+                coord.z = (coord.z || 0) + getTerrainLift(label, this.instancedLabelManager.config.pxPerUnit);
+                coord.as(this.nodeParent.layer.crs, coord).toVector3(instancedPosition);
+
+                const textStyle = label.instancedTextStyle || {};
+                const fontSize = textStyle.size || 20;
+                const offset = Array.isArray(textStyle.offset) ? textStyle.offset : [0, 0];
+                const anchor = label.anchor || [0, 0];
+
+                const instancedLabel = new InstancedLabel({
+                    text: toInstancedTextContent(label.instancedTextContent || label.content),
+                    position: instancedPosition.clone(),
+                    font: Array.isArray(textStyle.font) ? textStyle.font.join(',') : 'sans-serif',
+                    fontSize,
+                    offset: [offset[0] / fontSize, offset[1] / fontSize],
+                    color: textStyle.color || '#ffffff',
+                    opacity: textStyle.opacity == undefined ? 1 : textStyle.opacity,
+                    haloColor: textStyle.haloColor || '#000000',
+                    haloWidth: textStyle.haloWidth || 0,
+                    haloOpacity: textStyle.haloOpacity == undefined ? 1 : textStyle.haloOpacity,
+                    anchorX: mapAnchorX(anchor),
+                    anchorY: mapAnchorY(anchor),
+                    padding: label.padding || 20,
+                    visible: label.visible,
+                    rotationAlignment: textStyle.rotationAlignment || RotationAlignment.Map,
+                    symbolPlacement: textStyle.symbolPlacement || SymbolPlacement.Point,
+                });
+
+                this.instancedLabels.set(label, instancedLabel);
+                this.instancedLabelManager.addLabel(instancedLabel);
+            }
+            return;
+        }
+
         // add 3d object
         this.add(label);
 
@@ -102,6 +221,15 @@ class LabelsNode extends THREE.Group {
     // remove node label
     // remove label 3d and dom label
     removeLabel(label) {
+        if (this.isInstanced) {
+            const instancedLabel = this.instancedLabels.get(label);
+            if (instancedLabel && this.instancedLabelManager) {
+                this.instancedLabelManager.removeLabel(instancedLabel);
+                this.instancedLabels.delete(label);
+            }
+            return;
+        }
+
         // remove 3d object
         this.remove(label);
 
@@ -120,6 +248,17 @@ class LabelsNode extends THREE.Group {
             // update elevation label
             label.update3dPosition(this.nodeParent.layer.crs);
 
+            if (this.isInstanced) {
+                const instancedLabel = this.instancedLabels.get(label);
+                if (instancedLabel && this.instancedLabelManager) {
+                    coord.copy(label.coordinates);
+                    coord.z = (coord.z || 0) + getTerrainLift(label, this.instancedLabelManager.config.pxPerUnit);
+                    coord.as(this.nodeParent.layer.crs, coord).toVector3(instancedPosition);
+                    instancedLabel.position = instancedPosition;
+                    instancedLabel.visible = label.visible;
+                }
+            }
+
             // update horizon culling
             label.updateHorizonCullingPoint();
         }
@@ -127,7 +266,7 @@ class LabelsNode extends THREE.Group {
 
     // return labels count
     count() {
-        return this.children.length;
+        return this.isInstanced ? this.instancedLabels.size : this.children.length;
     }
 
     get labels() {
@@ -140,44 +279,18 @@ class LabelsNode extends THREE.Group {
  * but it is better to use the option `addLabelLayer` on another `Layer` to let
  * it work with it (see the `vector_tile_raster_2d` example). Supported for Points features, not yet
  * for Lines and Polygons features.
- *
- * @property {boolean} isLabelLayer - Used to checkout whether this layer is a
- * LabelLayer.  Default is true. You should not change this, as it is used
- * internally for optimisation.
  */
 class LabelLayer extends GeometryLayer {
     #filterGrid = new ScreenGrid();
-    /**
-     * @extends Layer
-     *
-     * @param {string} id - The id of the layer, that should be unique. It is
-     * not mandatory, but an error will be emitted if this layer is added a
-     * {@link View} that already has a layer going by that id.
-     * @param {object} [config] - Optional configuration, all elements in it
-     * will be merged as is in the layer. For example, if the configuration
-     * contains three elements `name, protocol, extent`, these elements will be
-     * available using `layer.name` or something else depending on the property
-     * name.
-     * @param {boolean} [config.performance=true] - remove labels that have no chance of being visible.
-     * if the `config.performance` is set to true then the performance is improved
-     * proportional to the amount of unnecessary labels that are removed.
-     * Indeed, even in the best case, labels will never be displayed. By example, if there's many labels.
-     * We advise you to not use this option if your data is optimized.
-     * @param {HTMLElement|Function} config.domElement - An HTML domElement.
-     * If set, all `Label` displayed within the current instance `LabelLayer`
-     * will be this domElement.
-     *
-     * It can be set to a method. The single parameter of this method gives the
-     * properties of each feature on which a `Label` is created.
-     *
-     * If set, all the parameters set in the `LabelLayer` `Style.text` will be overridden,
-     * except for the `Style.text.anchor` parameter which can help place the label.
-     */
+
     constructor(id, config = {}) {
         const {
             domElement,
             performance = true,
+            instanced = false,
+            async: useAsync = false,
             forceClampToTerrain = false,
+            defaultFonts = ['Open Sans Regular', 'Arial Unicode MS Regular', 'sans-serif'],
             margin,
             style = {},
             ...geometryConfig
@@ -185,9 +298,13 @@ class LabelLayer extends GeometryLayer {
         super(id, config.object3d || new THREE.Group(), geometryConfig);
 
         this.isLabelLayer = true;
-
         this.style = style instanceof Style ? style : new Style(style);
 
+        this.isInstanced = instanced;
+        this.useAsync = useAsync;
+        // Label2DRenderer.render() filters layers with !l.useInstancedLabels to skip
+        // DOM processing for instanced layers. Keep it in sync with isInstanced.
+        this.useInstancedLabels = instanced;
         this.domElement = new DomNode();
         this.domElement.show();
         this.domElement.dom.id = `itowns-label-${this.id}`;
@@ -196,16 +313,12 @@ class LabelLayer extends GeometryLayer {
         this.performance = performance;
         this.forceClampToTerrain = forceClampToTerrain;
         this.margin = margin;
+        this.defaultFonts = Array.isArray(defaultFonts) && defaultFonts.length
+            ? defaultFonts
+            : [defaultFonts || 'sans-serif'];
 
         this.toHide = new THREE.Group();
-
         this.labelDomelement = domElement;
-
-        // The margin property defines a space around each label that cannot be occupied by another label.
-        // For example, if some labelLayer has a margin value of 5, there will be at least 10 pixels
-        // between each labels of the layer
-        // TODO : this property should be moved to Style after refactoring style properties structure
-        this.margin = config.margin;
     }
 
     get visible() {
@@ -225,23 +338,6 @@ class LabelLayer extends GeometryLayer {
         return this.object3d.children;
     }
 
-    /**
-     * Reads each {@link FeatureGeometry} that contains label configuration, and
-     * creates the corresponding {@link Label}. To create a `Label`, a geometry
-     * needs to have a `label` object with at least a few properties:
-     * - `content`, which refers to `Label#content`
-     * - `position`, which refers to `Label#position`
-     * - (optional) `config`, containing miscellaneous configuration for the
-     *   label
-     *
-     * The geometry (or its parent Feature) needs to have a Style set.
-     *
-     * @param {FeatureCollection} data - The FeatureCollection to read the
-     * labels from.
-     * @param {Extent|Tile} extentOrTile
-     *
-     * @returns {Label[]} An array containing all the created labels.
-     */
     convert(data, extentOrTile) {
         const labels = [];
 
@@ -279,7 +375,15 @@ class LabelLayer extends GeometryLayer {
                 const layerField = this.style.text && this.style.text.field;
                 const geometryField = g.properties.style && g.properties.style.text && g.properties.style.text.field;
                 let content;
-                if (this.labelDomelement) {
+
+                if (this.isInstanced) {
+                    content = resolveInstancedLabelContent(
+                        context,
+                        g.properties.style,
+                        f.style,
+                        this.style,
+                    );
+                } else if (this.labelDomelement) {
                     content = readExpression(this.labelDomelement, context);
                 } else if (!geometryField && !featureField && !layerField) {
                     // Check if there is an icon, with no text
@@ -305,10 +409,18 @@ class LabelLayer extends GeometryLayer {
                     if (!_extent.isPointInside(coord)) { return; }
 
                     const label = new Label(content, coord.clone(), this.style);
+                    label.instancedTextContent = content;
+                    label.instancedTextStyle = snapshotInstancedTextStyle(
+                        context,
+                        g.properties.style,
+                        f.style,
+                        this.style,
+                        this.defaultFonts,
+                    );
 
                     label.layerId = this.id;
                     label.order = f.order;
-                    label.padding = this.margin || label.padding;
+                    label.padding = 20;
 
                     labels.push(label);
                 });
@@ -318,7 +430,6 @@ class LabelLayer extends GeometryLayer {
         return labels;
     }
 
-    // placeholder
     preUpdate(context, sources) {
         if (sources.has(this.parent)) {
             this.object3d.clear();
@@ -348,10 +459,9 @@ class LabelLayer extends GeometryLayer {
         return object.children.every(c => c.layerUpdateState && c.layerUpdateState[this.id]?.hasFinished());
     }
 
-    // Remove all labels invisible with pre-culling with screen grid
-    // We use the screen grid with maximum size of node on screen
+    // Remove all labels invisible with pre-culling with screen grid.
+    // Only called for DOM mode — instanced labels are culled by the collision engine.
     #removeCulledLabels(node) {
-        // copy labels array
         const labels = node.children.slice();
 
         // reset filter
@@ -393,7 +503,7 @@ class LabelLayer extends GeometryLayer {
             return;
         }
 
-        const labelsNode = node.link[layer.id] || new LabelsNode(node);
+        const labelsNode = node.link[layer.id] || new LabelsNode(node, context.view, this.isInstanced, this.useAsync);
         node.link[layer.id] = labelsNode;
 
         if (this.frozen || !node.visible || !this.visible) {
@@ -443,15 +553,20 @@ class LabelLayer extends GeometryLayer {
             const renderer = context.view.mainLoop.gfxEngine.label2dRenderer;
 
             labelsNode.initializeDom();
-
-            this.#findClosestDomElement(node).add(labelsNode.domElements);
+            if (!labelsNode.isInstanced) {
+                this.#findClosestDomElement(node).add(labelsNode.domElements);
+            }
 
             result.forEach((labels) => {
                 // Clean if there isnt' parent
                 if (!node.parent) {
                     labels.forEach((l) => {
                         ObjectRemovalHelper.removeChildrenAndCleanupRecursively(this, l);
-                        renderer.removeLabelDOM(l);
+                        if (labelsNode.isInstanced) {
+                            labelsNode.removeLabel(l);
+                        } else {
+                            renderer.removeLabelDOM(l);
+                        }
                     });
                     return;
                 }
@@ -467,21 +582,42 @@ class LabelLayer extends GeometryLayer {
             });
 
             if (labelsNode.count()) {
-                labelsNode.domElements.labels.hide();
-                labelsNode.domElements.labels.dom.style.opacity = '1.0';
-
-                node.addEventListener('show', () => labelsNode.domElements.labels.show());
-
-                node.addEventListener('hidden', () => this.#disallowToRendering(labelsNode));
+                if (!labelsNode.isInstanced) {
+                    labelsNode.domElements.labels.hide();
+                    labelsNode.domElements.labels.dom.style.opacity = '1.0';
+                    node.addEventListener('show', () => labelsNode.domElements.labels.show());
+                    node.addEventListener('hidden', () => this.#disallowToRendering(labelsNode));
+                } else {
+                    node.addEventListener('show', () => {
+                        labelsNode.instancedLabels.forEach((instancedLabel, label) => {
+                            instancedLabel.visible = label.visible;
+                            instancedLabel.groupVisible = true;
+                        });
+                    });
+                    node.addEventListener('hidden', () => {
+                        labelsNode.instancedLabels.forEach((instancedLabel) => {
+                            instancedLabel.visible = false;
+                            instancedLabel.groupVisible = false;
+                        });
+                    });
+                }
 
                 // Necessary event listener, to remove any Label attached to
                 node.addEventListener('removed', () => this.removeNodeDomElement(node));
 
                 if (labelsNode.needsAltitude && node.material.getElevationTile()) {
-                    node.material.getElevationTile().addEventListener('rasterElevationLevelChanged', () => { labelsNode.needsUpdate = true; });
+                    node.material.getElevationTile().addEventListener('rasterElevationLevelChanged', () => {
+                        labelsNode.needsUpdate = true;
+                        if (labelsNode.isInstanced) {
+                            labelsNode.labels.forEach(l => labelsNode.updatePosition(l));
+                            labelsNode.needsUpdate = false;
+                        }
+                    });
                 }
 
-                if (this.performance) {
+                // Pre-cull only makes sense for DOM mode: instanced collision runs
+                // in a worker and handles the full label pool itself.
+                if (this.performance && !labelsNode.isInstanced) {
                     this.#removeCulledLabels(labelsNode);
                 }
             }
@@ -502,6 +638,15 @@ class LabelLayer extends GeometryLayer {
     }
 
     removeNodeDomElement(node) {
+        if (node.link[this.id]?.isInstanced) {
+            node.link[this.id].instancedLabels.forEach((instancedLabel) => {
+                if (node.link[this.id].instancedLabelManager) {
+                    node.link[this.id].instancedLabelManager.removeLabel(instancedLabel);
+                }
+            });
+            node.link[this.id].instancedLabels.clear();
+        }
+
         if (node.link[this.id]?.domElements) {
             const child = node.link[this.id].domElements.dom;
             child.parentElement.removeChild(child);

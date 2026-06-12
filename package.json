@@ -9,6 +9,7 @@
     "packages/Main",
     "packages/Debug",
     "packages/Widgets",
+    "packages/Label",
     "examples/demo"
   ],
   "scripts": {
@@ -113,5 +114,9 @@
     "webpack": "^5.105.2",
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.4"
+  },
+  "dependencies": {
+    "@mapbox/mapbox-gl-rtl-text": "^0.3.0",
+    "@mapbox/tiny-sdf": "^2.0.7"
   }
 }

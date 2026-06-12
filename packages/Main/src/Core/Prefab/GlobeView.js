@@ -96,6 +96,8 @@ class GlobeView extends View {
         // Setup View
         super('EPSG:4978', viewerDiv, options);
         this.isGlobeView = true;
+        this.instancedLabelManager.config.globeAlignment = true;
+        this.instancedLabelManagerAsync.config.globeAlignment = true;
 
         this.altitude = 10000000;
         this.DEFAULT_NEAR = Math.max(15.0, 0.000002352 * ellipsoidSizes.x);

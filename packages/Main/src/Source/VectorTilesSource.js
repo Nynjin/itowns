@@ -167,6 +167,7 @@ class VectorTilesSource extends TMSSource {
 
     loadData(extent, out) {
         const cache = this._featuresCaches[out.crs];
+        if (!cache) { return Promise.resolve(null); } // source already disposed
         const key = this.getDataKey(extent);
         // try to get parsed data from cache
         let features = cache.get(key);

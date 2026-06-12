@@ -66,9 +66,23 @@ class c3DEngine {
             if (view._camXR) {
                 this.renderer.render(view.scene, view._camXR);
             } else if (this.composer.passes.length) {
+                // Label meshes sit on layer 31 only. The camera default mask
+                // (layer 0) already excludes them from the composer's RenderPass,
+                // so they are naturally invisible to AGX tone mapping.
                 this.composer.render();
-            } else {
+                // Now render labels directly — no tone mapping applied.
+                const savedMask = view.camera3D.layers.mask;
+                view.camera3D.layers.set(31);
+                this.renderer.autoClear = false;
                 this.renderer.render(view.scene, view.camera3D);
+                this.renderer.autoClear = true;
+                view.camera3D.layers.mask = savedMask;
+            } else {
+                // No composer — enable layer 31 so labels are part of the
+                // normal scene render (no tone-mapping issue without AGX).
+                view.camera3D.layers.enable(31);
+                this.renderer.render(view.scene, view.camera3D);
+                view.camera3D.layers.disable(31);
             }
             if (view.tileLayer) {
                 this.label2dRenderer.render(view.tileLayer.object3d, view.camera3D);

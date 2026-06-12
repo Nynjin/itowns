@@ -11,6 +11,7 @@ import Scheduler from 'Core/Scheduler/Scheduler';
 import Picking from 'Core/Picking';
 import LabelLayer from 'Layer/LabelLayer';
 import ObjectRemovalHelper from 'Process/ObjectRemovalHelper';
+import { InstancedLabelManager, InstancedLabelManagerAsync } from '@itowns/labels';
 
 export const VIEW_EVENTS = {
     /**
@@ -75,6 +76,9 @@ function _preprocessLayer(view, layer, parentLayer) {
             style: layer.style,
             zoom: layer.zoom,
             performance: layer.addLabelLayer.performance,
+            instanced: layer.addLabelLayer.instanced,
+            async: layer.addLabelLayer.async ?? false,
+            defaultFonts: layer.addLabelLayer.defaultFonts ?? layer.addLabelLayer.defaultFont,
             crs: source.crs,
             visible: layer.visible,
             margin: 15,
@@ -268,6 +272,43 @@ class View extends THREE.EventDispatcher {
             }
         });
 
+        const _labelManagerConfig = {
+            pxPerUnit: 1024,
+            globeAlignment: false,
+            fadeDurationMs: 300,
+            baseFontSize: 24,
+            sdfScale: 2,
+            sdfCapacityMultiplier: 2,
+            dataTextureCapacityMultiplier: 2,
+            maxDataTextureWidth: 4096,
+            fontSizePriorityPower: 1,
+            downscale: 8,
+            coarseScale: 16,
+            acceptableOcclusion: 0.1,
+            maxOcclusion: 0.2,
+            stationaryThreshold: 0.05,
+            fastMoveFraction: 0.3,
+            collisionBuckets: 16,
+            ndcCullMargin: 0.2,
+            renderPenaltyMultiplier: 8,
+            layoutBudgetPerTick: 25,
+            updateRate: 1,
+            cullingRate: 1,
+            autoResizePxPerUnit: true,
+        };
+
+        const _renderer = this.mainLoop?.gfxEngine?.getRenderer();
+
+        this.instancedLabelManager = new InstancedLabelManager(_renderer, _labelManagerConfig);
+        this.instancedLabelManagerAsync = new InstancedLabelManagerAsync(_renderer, _labelManagerConfig);
+
+        this.instancedLabelManager.attachTo(this.scene);
+        this.instancedLabelManagerAsync.attachTo(this.scene);
+
+        this.addFrameRequester(MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
+            this.instancedLabelManager.tick(this.camera3D);
+            this.instancedLabelManagerAsync.tick(this.camera3D);
+        });
 
         // push all viewer to keep source.cache
         viewers.push(this);
@@ -330,6 +371,8 @@ class View extends THREE.EventDispatcher {
         for (const tileLayer of tileLayers) {
             this.removeLayer(tileLayer.id, clearCache);
         }
+        this.instancedLabelManager.dispose();
+        this.instancedLabelManagerAsync.dispose();
         viewers.splice(id, 1);
         // Remove remaining objects in the scene (e.g. helpers, debug, etc.)
         this.scene.traverse(ObjectRemovalHelper.cleanup);

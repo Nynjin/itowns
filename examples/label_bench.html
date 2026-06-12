@@ -1,0 +1,2034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iTowns — Label Benchmark</title>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "itowns": "../dist/itowns.js",
+            "three": "https://unpkg.com/three@0.182.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html, body {
+            width: 100%; height: 100%;
+            background: #f0f2f5;
+            overflow: hidden;
+            font-family: 'Consolas', 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 12px;
+            color: #1a2030;
+        }
+
+        #viewerDiv { position: fixed; inset: 0; }
+        #viewerDiv canvas { position: absolute; top: 0; left: 0; }
+
+        /* ── HUD overlay ─────────────────────────────────────────────────── */
+        #hud {
+            position: fixed; inset: 0;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .panel {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.88);
+            border: 1px solid rgba(0,0,0,0.10);
+            border-radius: 4px;
+            padding: 8px 10px;
+            backdrop-filter: blur(6px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .panel-title {
+            font-size: 9px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(0,0,0,0.35);
+            margin-bottom: 6px;
+        }
+
+        /* ── FPS panel (top-left) ─────────────────────────────────────────── */
+        #panel-fps {
+            top: 10px; left: 10px;
+            width: 220px;
+        }
+
+        #fps-value {
+            font-size: 36px;
+            font-weight: 700;
+            line-height: 1;
+            letter-spacing: -1px;
+        }
+        #fps-label { font-size: 10px; color: rgba(0,0,0,0.4); margin-top: 1px; }
+        #fps-stats { margin-top: 6px; font-size: 11px; color: #555; line-height: 1.6; }
+
+        #sparkline-canvas {
+            display: block;
+            width: 200px; height: 40px;
+            margin-top: 6px;
+            border-top: 1px solid rgba(0,0,0,0.07);
+            padding-top: 4px;
+        }
+
+        /* ── Label stats (top-right) ─────────────────────────────────────── */
+        #panel-labels {
+            top: 10px; right: 10px;
+            width: 200px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 2px 0;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            line-height: 1.7;
+        }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-key { color: rgba(0,0,0,0.45); }
+        .stat-val { font-weight: 600; color: #1a2030; }
+        .stat-val.green  { color: #1a7a4a; }
+        .stat-val.yellow { color: #8a5800; }
+        .stat-val.red    { color: #b02020; }
+
+        /* ── Minimap (left-center) ───────────────────────────────────────── */
+        #panel-minimap {
+            top: 50%; left: 10px;
+            transform: translateY(-50%);
+            padding: 6px;
+            width: 180px;
+        }
+        #minimap-canvas {
+            display: block;
+            width: 160px; height: 160px;
+            background: #dde2ea;
+            border: 1px solid rgba(0,0,0,0.09);
+        }
+        #minimap-legend {
+            margin-top: 5px;
+            font-size: 10px;
+            color: rgba(0,0,0,0.4);
+            line-height: 1.7;
+        }
+        .legend-dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+
+        /* ── Step info (bottom-center) ───────────────────────────────────── */
+        #panel-step {
+            bottom: 10px; left: 10px;
+            width: 460px;
+            text-align: center;
+        }
+        #step-name {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            color: #1a3060;
+            margin-bottom: 4px;
+        }
+        #step-desc { font-size: 10px; color: rgba(0,0,0,0.38); margin-bottom: 8px; }
+        #step-progress-bar-bg {
+            width: 100%; height: 4px;
+            background: rgba(0,0,0,0.08);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        #step-progress-bar {
+            height: 100%;
+            background: #3070d0;
+            width: 0%;
+            transition: none;
+            border-radius: 2px;
+        }
+        #step-counter {
+            margin-top: 5px;
+            font-size: 10px;
+            color: rgba(0,0,0,0.3);
+        }
+
+        /* ── Controls (top-center) ───────────────────────────────────────── */
+        #panel-controls {
+            top: 10px; left: 50%; transform: translateX(-50%);
+            pointer-events: auto;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 7px 12px;
+        }
+
+        .btn {
+            background: rgba(0,0,0,0.05);
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 3px;
+            color: #2a3040;
+            font-family: inherit;
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            padding: 5px 14px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .btn:hover   { background: rgba(0,0,0,0.10); }
+        .btn:active  { background: rgba(0,0,0,0.16); }
+        .btn.primary { background: rgba(40,100,220,0.15); border-color: rgba(40,100,220,0.35); color: #1040a0; }
+        .btn.primary:hover { background: rgba(40,100,220,0.25); }
+        .btn.danger  { background: rgba(180,30,30,0.12); border-color: rgba(180,30,30,0.3); color: #900; }
+        .btn:disabled { opacity: 0.3; cursor: default; }
+
+        #bench-status {
+            font-size: 10px;
+            color: rgba(0,0,0,0.38);
+            letter-spacing: 0.06em;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        /* ── Results table (right side) ──────────────────────────────────── */
+        #panel-results {
+            bottom: 10px; right: 10px;
+            width: 600px;
+            max-height: calc(100vh - 20px);
+            overflow-y: auto;
+            pointer-events: auto;
+            display: none;
+        }
+        #panel-results.visible { display: block; }
+
+        #results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10px;
+            table-layout: fixed;
+        }
+        #results-table th:first-child,
+        #results-table td:first-child { width: 130px; }
+        #results-table th:not(:first-child),
+        #results-table td:not(:first-child) { width: 54px; }
+
+        #results-table th {
+            color: rgba(0,0,0,0.35);
+            text-align: right;
+            padding: 3px 5px;
+            border-bottom: 1px solid rgba(0,0,0,0.08);
+            font-weight: 400;
+            letter-spacing: 0.04em;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        #results-table th:first-child { text-align: left; }
+        #results-table td {
+            padding: 4px 5px;
+            text-align: right;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            line-height: 1.5;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #results-table td:first-child {
+            text-align: left;
+            color: rgba(0,0,0,0.55);
+            font-size: 9.5px;
+        }
+        #results-table tr.active-step td { background: rgba(40,100,220,0.07); }
+        #results-table tr:last-child td { border-bottom: none; }
+
+        /* ── Overlay dimmer during countdown ─────────────────────────────── */
+        #countdown-overlay {
+            position: fixed; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.55);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 20;
+        }
+        #countdown-overlay.visible { opacity: 1; }
+        #countdown-text {
+            font-size: 80px;
+            font-weight: 700;
+            color: rgba(255,255,255,0.9);
+            letter-spacing: -3px;
+        }
+
+        #panel-results::-webkit-scrollbar { width: 4px; }
+        #panel-results::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 2px; }
+
+        /* ── HUD toggle state ─────────────────────────────────────────────── */
+        .toggle-btn          { opacity: 0.4; }
+        .toggle-btn.on       { opacity: 1; color: #1040a0; border-color: rgba(40,100,220,0.4); }
+        .fps-lock-btn        { opacity: 0.4; }
+        .fps-lock-btn.on     { opacity: 1; color: #7a4800; border-color: rgba(180,100,0,0.4); }
+        .panel--hidden       { display: none !important; }
+        #sparkline-canvas.panel--hidden { display: none !important; }
+
+        /* ── Mode selector ────────────────────────────────────────────────── */
+        .mode-btn     { opacity: 0.4; }
+        .mode-btn.on  { opacity: 1; color: #1a6030; border-color: rgba(40,160,80,0.45); }
+
+        .step-select {
+            background: rgba(0,0,0,0.05);
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 3px;
+            color: #2a3040;
+            font-family: inherit;
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            padding: 5px 8px;
+            min-width: 170px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="viewerDiv"></div>
+
+    <div id="hud">
+        <div class="panel" id="panel-fps">
+            <div class="panel-title">Frame rate</div>
+            <div id="fps-value" style="color:#1a7a4a">--</div>
+            <div id="fps-label">FPS</div>
+            <div id="fps-stats">
+                <span id="fps-avg">avg --</span> &nbsp;
+                <span id="fps-min">min --</span> &nbsp;
+                <span id="fps-max">max --</span>
+            </div>
+            <canvas id="sparkline-canvas" width="200" height="40"></canvas>
+            <div style="margin-top:8px; border-top:1px solid rgba(0,0,0,0.07); padding-top:6px;">
+                <div class="stat-row">
+                    <span class="stat-key">Frame time</span>
+                    <span class="stat-val" id="stat-frametime">-- ms</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-key">Draw calls</span>
+                    <span class="stat-val" id="stat-drawcalls">--</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-key">Triangles</span>
+                    <span class="stat-val" id="stat-triangles">--</span>
+                </div>
+            </div>
+            <div id="fps-external-stats" style="position:absolute; top:8px; right:8px; width:76px; height:48px; overflow:hidden; pointer-events:none;"></div>
+        </div>
+
+        <div class="panel" id="panel-controls" style="flex-direction:column; gap:6px; min-width:560px;">
+            <div style="display:flex; gap:6px; align-items:center;">
+                <button class="btn primary" id="btn-run"        title="Run benchmark in current mode">▶ Run</button>
+                <select id="step-select" class="step-select" title="Pick one step to run in isolation"></select>
+                <button class="btn" id="btn-run-step" title="Run selected step only">▶ Step</button>
+                <button class="btn" id="btn-full-bench"
+                    style="background:rgba(80,40,180,0.15);border-color:rgba(100,60,220,0.35);color:#4030a0;"
+                    title="Run all modes sequentially and compare">▶▶ Full Run</button>
+                <button class="btn" id="btn-stop"   disabled>■ Stop</button>
+                <button class="btn" id="btn-reset"  disabled>↺ Reset</button>
+                <button class="btn" id="btn-export" disabled
+                    title="Export results as JSON"
+                    style="margin-left:4px; opacity:0.5;">⬇ Export</button>
+                <div id="bench-status" style="margin-left:auto;">READY</div>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">MODE</span>
+                <button class="btn mode-btn on" id="btn-mode-instanced" title="GPU instanced labels (sync — collision on main thread)">Instanced</button>
+                <button class="btn mode-btn"    id="btn-mode-dom-perf"  title="DOM labels — with screen-grid culling (performance:true)">DOM+</button>
+                <button class="btn mode-btn"    id="btn-mode-none"      title="No labels — raw tile baseline">None</button>
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">HUD</span>
+                <button class="btn toggle-btn" id="btn-toggle-minimap" title="Toggle minimap — disabled during benchmark (M)">Map</button>
+                <button class="btn toggle-btn" id="btn-toggle-graph"   title="Toggle FPS graph (G)">Graph</button>
+                <button class="btn toggle-btn" id="btn-toggle-stats"   title="Toggle label stats panel (S)">Stats</button>
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">LOCK</span>
+                <button class="btn fps-lock-btn" id="btn-lock-60" title="Lock framerate to 60 FPS for stability">60 FPS</button>
+                <button class="btn fps-lock-btn" id="btn-lock-90" title="Lock framerate to 90 FPS">90 FPS</button>
+                <button class="btn fps-lock-btn" id="btn-lock-unlimited" title="Unlimited framerate">∞</button>
+            </div>
+        </div>
+
+        <div class="panel" id="panel-labels">
+            <div class="panel-title">Label stats</div>
+            <div class="stat-row"><span class="stat-key">Total</span>        <span class="stat-val" id="lbl-total">--</span></div>
+            <div class="stat-row"><span class="stat-key">Is candidate</span> <span class="stat-val" id="lbl-candidate">--</span></div>
+            <div class="stat-row"><span class="stat-key">Should render</span><span class="stat-val green" id="lbl-should">--</span></div>
+            <div class="stat-row"><span class="stat-key">Is rendered</span>  <span class="stat-val green" id="lbl-rendered">--</span></div>
+            <div class="stat-row"><span class="stat-key">Font groups</span>  <span class="stat-val" id="lbl-groups">--</span></div>
+            <div class="stat-row"><span class="stat-key">Tiles loaded</span> <span class="stat-val" id="lbl-tiles">--</span></div>
+            <div class="stat-row"><span class="stat-key">Tiles visible</span><span class="stat-val" id="lbl-tilesvis">--</span></div>
+            <div class="stat-row"><span class="stat-key">Cam altitude</span> <span class="stat-val" id="lbl-altitude">--</span></div>
+        </div>
+
+        <div class="panel" id="panel-minimap">
+            <div class="panel-title">Minimap</div>
+            <canvas id="minimap-canvas" width="160" height="160"></canvas>
+            <div id="minimap-legend">
+                <span class="legend-dot" style="background:#1a7a4a"></span>rendered &nbsp;
+                <span class="legend-dot" style="background:#4070c0"></span>hidden &nbsp;
+                <span class="legend-dot" style="background:#888"></span>cam
+            </div>
+        </div>
+
+        <div class="panel" id="panel-step">
+            <div id="step-name">Scene Loading…</div>
+            <div id="step-desc">Waiting for tiles and labels to load</div>
+            <div id="step-progress-bar-bg">
+                <div id="step-progress-bar"></div>
+            </div>
+            <div id="step-counter">—</div>
+        </div>
+
+        <div class="panel" id="panel-results">
+            <div class="panel-title">Benchmark results</div>
+
+            <div id="cold-start-panel" style="
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid rgba(0,0,0,0.08);
+            ">
+                <div class="panel-title" style="margin-bottom:4px;">Cold start (this page load)</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; font-size:10px;">
+                    <span style="color:rgba(0,0,0,0.45)">First frame</span>   <span id="cs-first-frame"  style="text-align:right">—</span>
+                    <span style="color:rgba(0,0,0,0.45)">First tile</span>    <span id="cs-first-tile"   style="text-align:right">—</span>
+                    <span style="color:rgba(0,0,0,0.45)">First label</span>   <span id="cs-first-label"  style="text-align:right; color:#1a7a4a">—</span>
+                    <span style="color:rgba(0,0,0,0.45)">Scene ready</span>   <span id="cs-scene-ready"  style="text-align:right">—</span>
+                </div>
+            </div>
+
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th title="Benchmark step">Step</th>
+                        <th title="Average FPS over the step">avg</th>
+                        <th title="Minimum FPS (single worst frame)">min</th>
+                        <th title="5th-percentile FPS — 95% of frames were faster.">p5</th>
+                        <th title="1st-percentile FPS — 99% of frames were faster.">p1</th>
+                        <th title="Worst single frame time in ms — captures even sub-frame spikes.">wf</th>
+                        <th title="Standard deviation of FPS — lower = smoother">σ</th>
+                        <th title="Average total label count">lbls</th>
+                        <th title="Average rendered (visible, not occluded) label count">rend</th>
+                        <th title="Average WebGL draw calls">calls</th>
+                        <th title="Average frame time in milliseconds">ms/f</th>
+                    </tr>
+                </thead>
+                <tbody id="results-tbody"></tbody>
+            </table>
+            <div id="run-summary" style="
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid rgba(0,0,0,0.08);
+                font-size: 10px;
+                color: rgba(0,0,0,0.5);
+                display: none;
+            "></div>
+        </div>
+
+        <div class="panel" id="panel-comparison" style="
+            display: none;
+            top: 100px; right: 10px;
+            width: 620px;
+            bottom: 10px;
+            overflow-y: auto;
+            pointer-events: auto;
+        ">
+            <div class="panel-title">Full Benchmark — Mode Comparison</div>
+
+            <div id="cmp-progress" style="
+                font-size: 10px; color: rgba(0,0,0,0.45);
+                margin-bottom: 8px; letter-spacing: 0.06em;
+            "></div>
+
+            <table id="cmp-summary-table" style="
+                width: 100%; border-collapse: collapse; font-size: 10px;
+                margin-bottom: 10px;
+            ">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;">Mode</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Overall average FPS">avg</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="5th-percentile FPS — sustained worst-case floor">p5</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="1st-percentile FPS — captures the very worst hitches">p1</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="FPS standard deviation">σ</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs No-Label baseline (positive = faster)">Δfps%</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Time to first rendered label">1st lbl</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Scene-ready milestone">scene</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average total label count">lbls</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average rendered label count">rend</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average tiles loaded">tiles</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average draw calls">calls</th>
+                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average ms per frame">ms/f</th>
+                    </tr>
+                </thead>
+                <tbody id="cmp-summary-tbody"></tbody>
+            </table>
+
+            <div class="panel-title" style="margin-bottom:4px; border-top:1px solid rgba(0,0,0,0.07); padding-top:8px;">Per-step avg FPS</div>
+            <table id="cmp-step-table" style="
+                width: 100%; border-collapse: collapse; font-size: 10px;
+                table-layout: fixed;
+            ">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; width:110px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;">Step</th>
+                        <th style="text-align:right; width:44px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="No labels — raw tile baseline">None</th>
+                        <th style="text-align:right; width:48px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="GPU instanced — sync (main thread collision)">Inst.</th>
+                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs baseline (positive = faster)">Δ%</th>
+                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="DOM labels with screen-grid culling">DOM+</th>
+                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs baseline (positive = faster)">Δ%</th>
+                        <th style="text-align:right; width:44px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average tiles loaded">tiles</th>
+                    </tr>
+                </thead>
+                <tbody id="cmp-step-tbody"></tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <div id="countdown-overlay">
+        <div id="countdown-text">3</div>
+    </div>
+
+    <script type="module">
+    import * as THREE from 'three';
+    import * as itowns from 'itowns';
+    import Stats from '../node_modules/three/examples/jsm/libs/stats.module.js';
+
+    const BASE_TITLE = 'iTowns - Label Benchmark';
+    function enforceTitleLock() {
+        if (document.title !== BASE_TITLE) document.title = BASE_TITLE;
+    }
+    enforceTitleLock();
+    const titleEl = document.querySelector('head > title');
+    if (titleEl) {
+        const titleObserver = new MutationObserver(() => enforceTitleLock());
+        titleObserver.observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
+    setInterval(enforceTitleLock, 200);
+    document.addEventListener('visibilitychange', enforceTitleLock);
+
+    const perfStats = new Stats();
+    perfStats.showPanel(0);
+    perfStats.dom.style.position = 'static';
+    perfStats.dom.style.opacity = '0.85';
+    perfStats.dom.style.pointerEvents = 'none';
+    perfStats.dom.style.transformOrigin = 'top right';
+    perfStats.dom.style.transform = 'scale(0.74)';
+    document.getElementById('fps-external-stats')?.appendChild(perfStats.dom);
+
+    // ── Constants ────────────────────────────────────────────────────────────
+
+    const PARIS = new itowns.Coordinates('EPSG:4326', 2.3488, 48.8534);
+    const INITIAL_PLACEMENT = { 
+        coord: PARIS, 
+        range: 25_000, 
+        tilt: 45, 
+        heading: 0,
+    };
+
+    let view = null;
+    let labelMode = 'instanced';
+
+    // ── Scene factory ────────────────────────────────────────────────────────
+
+    async function setupScene() {
+        const viewerDiv = document.getElementById('viewerDiv');
+
+        // [BUG FIX] Fetch the map imagery configuration completely before doing anything.
+        // We use native fetch() to avoid iTowns' internal object cache. Re-mutating
+        // cached object configurations with `new TMSSource` causes failures on subsequent runs.
+        const osmRes = await fetch('./layers/JSONLayers/OPENSM.json');
+        const osmData = await osmRes.json();
+
+        if (view) {
+            try { view.removeLayer('MVT'); } catch (_) {}
+            view.dispose();
+            view = null;
+        }
+        viewerDiv.replaceChildren();
+
+        Object.keys(coldStart).forEach(k => { coldStart[k] = null; });
+        sceneReady  = false;
+        sceneLoadMs = null;
+        sceneEpoch  = performance.now();
+
+        view = new itowns.GlobeView(viewerDiv, INITIAL_PLACEMENT, {
+            realisticLighting: false,
+            shadows: true,
+        });
+        view.tileLayer.noTextureColor = new THREE.Color(0x95c1e1);
+
+        installRenderLoop(view);
+
+        // [BUG FIX] By ensuring the configuration was fetched previously, we add layers 
+        // synchronously here. This prevents the LAYERS_INITIALIZED event from firing
+        // instantly before the scene really starts pulling down tiles (which was causing 
+        // the camera to race ahead in 'none' mode).
+        osmData.source = new itowns.TMSSource(osmData.source);
+        view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
+
+        if (labelMode !== 'none') {
+            const addLabelLayer = {
+                'instanced': { performance: true,  instanced: true,  async: false },
+                'dom-perf':  { performance: true,  instanced: false, async: false },
+            }[labelMode] ?? { performance: true, instanced: true, async: false };
+
+            const mapSource = new itowns.VectorTilesSource({
+                style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
+                filter: (layer) =>
+                    !layer['source-layer'].includes('bati_surf') &&
+                    !layer['source-layer'].includes('oro_')      &&
+                    !layer['source-layer'].includes('routier_ponc') &&
+                    !layer['source-layer'].includes('parcellaire') &&
+                    !layer['source-layer'].includes('fond'),
+            });
+
+            view.addLayer(new itowns.FeatureGeometryLayer('MVT', {
+                source: mapSource,
+                addLabelLayer,
+                style: {
+                    fill: { base_altitude: () => 0.1 },
+                },
+            }));
+        }
+
+        return new Promise((resolve) => {
+            view.addEventListener(itowns.VIEW_EVENTS.LAYERS_INITIALIZED, () => {
+                const elapsed        = performance.now() - sceneEpoch;
+                coldStart.sceneReady = elapsed;
+                sceneLoadMs          = elapsed;
+                sceneReady           = true;
+                resolve();
+            }, { once: true });
+        });
+    }
+
+    // Benchmark step definitions
+    const STEPS = [
+        {
+            id: 'idle_start',
+            name: '1. Idle (mid altitude)',
+            desc: 'Camera still at 25 km, tilt 45°. Establishes ceiling FPS with a moderate tile/label load.',
+            duration: 5_000,
+            drive: () => ({ coord: PARIS, range: 25_000, tilt: 45, heading: 0 }),
+        },
+        {
+            id: 'zoom_in',
+            name: '2. Zoom In',
+            desc: 'Smooth zoom 25 km → 400 m. Ramps tile streaming and label density from sparse to maximum.',
+            duration: 10_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: lerp(25_000, 400, easeInOut(t)),
+                tilt:  lerp(45, 60, easeInOut(t)),
+                heading: 0,
+            }),
+        },
+        {
+            id: 'idle_street',
+            name: '3. Idle (street level)',
+            desc: 'Camera still at 400 m, tilt 60°. Maximum label density — tests sustained throughput under full load.',
+            duration: 6_000,
+            drive: () => ({ coord: PARIS, range: 400, tilt: 60, heading: 0 }),
+        },
+        {
+            id: 'zoom_out',
+            name: '4. Zoom Out',
+            desc: 'Smooth zoom 400 m → 60 km. Tests label culling, fade-out, and tile unloading.',
+            duration: 10_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: lerp(400, 60_000, easeInOut(t)),
+                tilt:  lerp(60, 35, easeInOut(t)),
+                heading: 0,
+            }),
+        },
+        {
+            id: 'pan',
+            name: '5. Pan',
+            desc: 'Lateral arc ~9 km and back at 5 km altitude, tilt 50°. Streams new tile columns with a steady label load.',
+            duration: 10_000,
+            drive: (t) => {
+                const offset = Math.sin(t * Math.PI) * 0.13;
+                return {
+                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + offset, 48.8534),
+                    range: 5_000, tilt: 50, heading: 0,
+                };
+            },
+        },
+        {
+            id: 'tilt',
+            name: '6. Tilt Sweep',
+            desc: 'One full tilt cycle 5° → 78° → 5° at 8 km. Transitions from nadir (few labels) to near-horizon (dense labels + far tiles).',
+            duration: 10_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: 8_000,
+                tilt:  lerp(5, 78, 0.5 - 0.5 * Math.cos(t * Math.PI * 2)),
+                heading: 0,
+            }),
+        },
+        {
+            id: 'orbit',
+            name: '7. Orbit (360°)',
+            desc: 'Full 360° heading rotation at 5 km, tilt 30°. Each orientation loads different tile columns.',
+            duration: 12_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: 5_000,
+                tilt:  30,
+                heading: lerp(0, 360, easeLinear(t)),
+            }),
+        },
+        {
+            id: 'rapid_zoom',
+            name: '8. Rapid Zoom ×10',
+            desc: '10 oscillating zoom cycles 500 m ↔ 20 km. Stress-tests tile streaming and label add/remove pipeline.',
+            duration: 10_000,
+            drive: (t) => {
+                const wave = 0.5 - 0.5 * Math.cos(t * Math.PI * 2 * 10);
+                return {
+                    coord: PARIS,
+                    range: lerp(500, 20_000, wave),
+                    tilt:  lerp(55, 40, wave),
+                    heading: 0,
+                };
+            },
+        },
+        {
+            id: 'rotation_tilt',
+            name: '9. Orbit + Tilt churn',
+            desc: '3 full rotations while tilt oscillates 5°↔4 cycles at 5 km. Collision engine never settles on a stable label set.',
+            duration: 15_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: 5_000,
+                tilt:  lerp(5, 60, 0.5 - 0.5 * Math.cos(t * Math.PI * 2 * 4)),
+                heading: t * 360 * 3,
+            }),
+        },
+        {
+            id: 'rotation_tilt_fast',
+            name: '10. Fast orbit + tilt churn',
+            desc: '11 rotations while tilt oscillates 5°↔17 cycles at 8 km. Extreme churn — forces rapid label add/remove every ~1–2 s.',
+            duration: 15_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: 8_000,
+                tilt:  lerp(5, 60, 0.5 - 0.5 * Math.cos(t * Math.PI * 2 * 17)),
+                heading: t * 360 * 11,
+            }),
+        },
+        {
+            id: 'pan_fast_circle',
+            name: '11. Circular pan (low tilt)',
+            desc: '6 fast circles (~15 km radius) at 5 km altitude, near-nadir tilt (12°). Rapid tile streaming with a wide visible area.',
+            duration: 12_000,
+            drive: (t) => {
+                const angle = t * Math.PI * 2 * 6;
+                return {
+                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + Math.cos(angle) * 0.2, 48.8534 + Math.sin(angle) * 0.132),
+                    range: 5_000,
+                    tilt: 12,
+                    heading: 0,
+                };
+            },
+        },
+        {
+            id: 'rapid_zoom_high_range',
+            name: '12. Extreme zoom (500 km↔50 m)',
+            desc: '1.5 log-scale zoom cycles from 500 km to 50 m with plateau holds at each extreme to let tiles load.',
+            duration: 20_000,
+            drive: (t) => {
+                const cycles = 1.5; 
+                const localT = (t * cycles) % 1.0;
+                
+                let wave = 0;
+                if (localT < 0.35) wave = easeInOut(localT / 0.35);
+                else if (localT < 0.5) wave = 1;
+                else if (localT < 0.85) wave = 1 - easeInOut((localT - 0.5) / 0.35);
+                else wave = 0;
+
+                const logStart = Math.log(500_000);
+                const logEnd   = Math.log(50);
+                const logRange = lerp(logStart, logEnd, wave);
+
+                return {
+                    coord: PARIS,
+                    range: Math.exp(logRange),
+                    tilt:  lerp(40, 65, wave),
+                    heading: 0,
+                };
+            },
+        },
+    ];
+
+    const ALL_STEP_INDEXES = STEPS.map((_, i) => i);
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const easeInOut = (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    const easeLinear = (t) => t;
+
+    const coldStart = {
+        firstFrame: null,
+        firstTile:  null,
+        firstLabel: null,
+        sceneReady: null,
+    };
+
+    let sceneReady    = false;
+    let sceneLoadMs   = null;
+    let sceneEpoch    = performance.now(); 
+
+    function* iterDomLabels() {
+        if (!view) return;
+        for (const layer of view.getLayers()) {
+            if (!layer.isLabelLayer || layer.isInstanced) continue;
+            if (!layer.submittedLabelNodes) continue;
+            for (const node of layer.submittedLabelNodes) {
+                if (!node.labels) continue;
+                for (const label of node.labels) yield label;
+            }
+        }
+    }
+
+    let _cachedLabelStats  = { total: 0, isCandidate: 0,shouldRender: 0, isRendered: 0, groups: 0 };
+    let _lastLabelStatsMs  = 0;
+    const LABEL_STATS_IDLE_RATE = 200;  
+
+    function _computeLabelStats() {
+        if (!view) return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
+
+        if (labelMode === 'instanced') {
+            const mgr = view.instancedLabelManager;
+            if (!mgr) return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
+            let total = 0, isCandidate = 0, shouldRender = 0, isRendered = 0;
+            const groups = mgr._groups;
+            if (groups) {
+                for (const g of groups.values()) {
+                    for (const label of g.fontGroup.labels) {
+                        total++;
+                        if (label.isCandidate) isCandidate++;
+                        if (label.shouldRender) shouldRender++;
+                        if (label.isRendered)   isRendered++;
+                    }
+                }
+            }
+            return { total, isCandidate, shouldRender, isRendered, groups: groups ? groups.size : 0 };
+        }
+
+        if (labelMode === 'none') return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
+
+        let total = 0, isCandidate = 0, shouldRender = 0, isRendered = 0;
+        for (const lbl of iterDomLabels()) {
+            total++;
+            if (lbl.visible) {
+                shouldRender++;
+                isRendered++;
+            }
+        }
+        return { total, isCandidate, shouldRender, isRendered, groups: 0 };
+    }
+
+    function getLabelStats(forceCompute = false) {
+        if (!forceCompute && runner.running) return _cachedLabelStats;
+        const now = performance.now();
+        if (!forceCompute && now - _lastLabelStatsMs < LABEL_STATS_IDLE_RATE) return _cachedLabelStats;
+        _lastLabelStatsMs = now;
+        _cachedLabelStats = _computeLabelStats();
+        return _cachedLabelStats;
+    }
+
+    function getTileStats() {
+        if (!view?.tileLayer) return { loaded: 0, visible: 0 };
+        let loaded = 0, visible = 0;
+        view.tileLayer.level0Nodes?.forEach(node => {
+            node.traverse((obj) => {
+                if (obj.isTileMesh || obj.layer === view.tileLayer) {
+                    loaded++;
+                    if (obj.visible) visible++;
+                }
+            });
+        });
+        return { loaded, visible };
+    }
+
+    function getCameraAltitude() {
+        if (!view?.camera) return 0;
+        const cam = view.camera.camera3D;
+        const dist = cam.position.length() - 6_371_000;
+        return Math.max(0, dist);
+    }
+
+    // ── Sparkline ────────────────────────────────────────────────────────────
+
+    const sparkCanvas = document.getElementById('sparkline-canvas');
+    const sparkCtx = sparkCanvas.getContext('2d');
+    const FPS_HISTORY_LEN = 200;
+    const fpsHistory = new Float32Array(FPS_HISTORY_LEN);
+    let fpsHistoryHead = 0;
+
+    function pushFPS(fps) {
+        fpsHistory[fpsHistoryHead % FPS_HISTORY_LEN] = fps;
+        fpsHistoryHead++;
+    }
+
+    function drawSparkline() {
+        const W = sparkCanvas.width, H = sparkCanvas.height;
+        sparkCtx.clearRect(0, 0, W, H);
+
+        const len = Math.min(fpsHistoryHead, FPS_HISTORY_LEN);
+        if (len < 2) return;
+
+        const start = fpsHistoryHead > FPS_HISTORY_LEN ? fpsHistoryHead - FPS_HISTORY_LEN : 0;
+        let maxFPS = 0;
+        for (let i = start; i < fpsHistoryHead; i++) {
+            const v = fpsHistory[i % FPS_HISTORY_LEN];
+            if (v > maxFPS) maxFPS = v;
+        }
+        maxFPS = Math.max(maxFPS, 60);
+
+        sparkCtx.strokeStyle = 'rgba(0,0,0,0.08)';
+        sparkCtx.lineWidth = 1;
+        for (const ref of [30, 60]) {
+            const y = H - (ref / maxFPS) * H;
+            sparkCtx.beginPath();
+            sparkCtx.moveTo(0, y); sparkCtx.lineTo(W, y);
+            sparkCtx.stroke();
+        }
+
+        sparkCtx.beginPath();
+        for (let i = 0; i < len; i++) {
+            const v = fpsHistory[(start + i) % FPS_HISTORY_LEN];
+            const x = (i / (len - 1)) * W;
+            const y = H - (v / maxFPS) * H;
+            if (i === 0) sparkCtx.moveTo(x, y); else sparkCtx.lineTo(x, y);
+        }
+        const lastX = W;
+        sparkCtx.lineTo(lastX, H); sparkCtx.lineTo(0, H);
+        sparkCtx.closePath();
+
+        const grad = sparkCtx.createLinearGradient(0, 0, 0, H);
+        grad.addColorStop(0, 'rgba(26,122,74,0.28)');
+        grad.addColorStop(1, 'rgba(26,122,74,0.0)');
+        sparkCtx.fillStyle = grad;
+        sparkCtx.fill();
+
+        sparkCtx.beginPath();
+        for (let i = 0; i < len; i++) {
+            const v = fpsHistory[(start + i) % FPS_HISTORY_LEN];
+            const x = (i / (len - 1)) * W;
+            const y = H - (v / maxFPS) * H;
+            if (i === 0) sparkCtx.moveTo(x, y); else sparkCtx.lineTo(x, y);
+        }
+        sparkCtx.strokeStyle = '#1a7a4a';
+        sparkCtx.lineWidth = 1.5;
+        sparkCtx.stroke();
+    }
+
+    // ── Minimap ──────────────────────────────────────────────────────────────
+
+    const mmCanvas = document.getElementById('minimap-canvas');
+    const mmCtx = mmCanvas.getContext('2d');
+    const MM_W = mmCanvas.width, MM_H = mmCanvas.height;
+
+    function drawMinimap() {
+        mmCtx.clearRect(0, 0, MM_W, MM_H);
+        mmCtx.fillStyle = '#d8dde6';
+        mmCtx.fillRect(0, 0, MM_W, MM_H);
+
+        mmCtx.strokeStyle = 'rgba(0,0,0,0.07)';
+        mmCtx.lineWidth = 0.5;
+        for (let i = 1; i < 4; i++) {
+            mmCtx.beginPath();
+            mmCtx.moveTo(i * MM_W / 4, 0); mmCtx.lineTo(i * MM_W / 4, MM_H); mmCtx.stroke();
+            mmCtx.beginPath();
+            mmCtx.moveTo(0, i * MM_H / 4); mmCtx.lineTo(MM_W, i * MM_H / 4); mmCtx.stroke();
+        }
+
+        if (!view) return;
+
+        const cam = view.camera.camera3D;
+        const W = viewerDiv.clientWidth  || 1;
+        const H = viewerDiv.clientHeight || 1;
+        const tmp = new THREE.Vector3();
+
+        const scaleX = MM_W / W;
+        const scaleY = MM_H / H;
+
+        function* labelDots() {
+            if (labelMode === 'instanced') {
+                const mgr = view.instancedLabelManager;
+                if (!mgr || !mgr._groups) return;
+                for (const g of mgr._groups.values()) {
+                    for (const lbl of g.fontGroup.labels) {
+                        if (!lbl.position) continue;
+                        yield {
+                            pos: lbl.position,
+                            rendered: lbl.isRendered,
+                            pending: lbl.shouldRender && !lbl.isRendered,
+                        };
+                    }
+                }
+            } else {
+                const renderer2d = view.mainLoop.gfxEngine.label2dRenderer;
+                const visSet = renderer2d
+                    ? new Set(renderer2d.grid.visible)
+                    : new Set();
+                for (const lbl of iterDomLabels()) {
+                    if (!lbl.position) continue;
+                    const rendered = visSet.has(lbl);
+                    yield { pos: lbl.position, rendered, pending: false };
+                }
+            }
+        }
+
+        for (const { pos, rendered, pending } of labelDots()) {
+            tmp.copy(pos);
+            tmp.project(cam);
+            if (tmp.z < -1 || tmp.z > 1) continue;
+
+            const sx = ( tmp.x * 0.5 + 0.5) * W;
+            const sy = (-tmp.y * 0.5 + 0.5) * H;
+            if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
+
+            mmCtx.fillStyle = rendered
+                ? 'rgba(26,122,74,0.9)'
+                : pending
+                    ? 'rgba(26,122,74,0.35)'
+                    : 'rgba(60,120,200,0.3)';
+
+            mmCtx.fillRect(sx * scaleX - 1, sy * scaleY - 1, 2, 2);
+        }
+
+        mmCtx.strokeStyle = 'rgba(0,0,0,0.6)';
+        mmCtx.lineWidth = 1;
+        const cx = MM_W / 2, cy = MM_H / 2;
+        mmCtx.beginPath();
+        mmCtx.moveTo(cx - 6, cy); mmCtx.lineTo(cx + 6, cy);
+        mmCtx.moveTo(cx, cy - 6); mmCtx.lineTo(cx, cy + 6);
+        mmCtx.stroke();
+
+        mmCtx.strokeStyle = 'rgba(0,0,0,0.12)';
+        mmCtx.strokeRect(0.5, 0.5, MM_W - 1, MM_H - 1);
+    }
+
+    // ── Windowed FPS ──────────────────────────────────────────────────────────
+    const STATS_BUCKET_MS = 250;
+    function fpsBuckets(durationsMs, bucketMs) {
+        const out = [];
+        let acc = 0, count = 0;
+        for (const ms of durationsMs) {
+            acc += ms;
+            count++;
+            if (acc >= bucketMs) { out.push(1000 * count / acc); acc = 0; count = 0; }
+        }
+        if (acc >= bucketMs * 0.5) out.push(1000 * count / acc);
+        if (out.length === 0 && count > 0) out.push(1000 * count / acc); 
+        out.sort((a, b) => a - b);
+        return out;
+    }
+
+    class FrameStatsCollector {
+        constructor() { this._frames = []; }
+
+        record(frameMs, lblStats, drawCalls, tilesLoaded) {
+            this._frames.push({ frameMs, ...lblStats, drawCalls, tilesLoaded });
+        }
+
+        summarize() {
+            const n = this._frames.length;
+            if (n === 0) return null;
+
+            const totalMs  = this._frames.reduce((s, f) => s + f.frameMs, 0);
+            const msAvg    = totalMs / n;
+            const fpsAvg   = 1000 / msAvg;
+            const lblAvg   = Math.round(this._frames.reduce((s, f) => s + f.total, 0) / n);
+            const rendAvg  = Math.round(this._frames.reduce((s, f) => s + f.isRendered, 0) / n);
+            const callsAvg       = Math.round(this._frames.reduce((s, f) => s + f.drawCalls, 0) / n);
+            const tilesLoadedAvg = Math.round(this._frames.reduce((s, f) => s + (f.tilesLoaded ?? 0), 0) / n);
+
+            const buckets = fpsBuckets(this._frames.map(f => f.frameMs), STATS_BUCKET_MS);
+            const bn = buckets.length;
+            const pct = (p) => buckets[Math.max(0, Math.floor((p / 100) * (bn - 1)))];
+
+            const bMean    = buckets.reduce((s, v) => s + v, 0) / bn;
+            const fpsSigma = Math.sqrt(buckets.reduce((s, v) => s + (v - bMean) ** 2, 0) / bn);
+
+            const msWorst = Math.max(...this._frames.map(f => f.frameMs));
+
+            return {
+                n,
+                fpsAvg,
+                fpsMin:  buckets[0],
+                fpsP5:   pct(5),
+                fpsP1:   pct(1),
+                fpsSigma,
+                fpsMax:  buckets[bn - 1],
+                msAvg,
+                msWorst,
+                lblAvg,
+                rendAvg,
+                callsAvg,
+                tilesLoadedAvg,
+            };
+        }
+
+        reset() { this._frames = []; }
+    }
+
+    function setSceneInputEnabled(enabled) {
+        const vd = document.getElementById('viewerDiv');
+        if (vd) vd.style.pointerEvents = enabled ? '' : 'none';
+    }
+
+    class BenchmarkRunner {
+        constructor() {
+            this._stepIdx     = -1;
+            this._planIdx     = -1;
+            this._stepPlan    = [];
+            this._stepStart   = 0;
+            this._running     = false;
+            this._collector   = new FrameStatsCollector();
+            this._stepResults = [];    
+            this._onDone      = null;
+            this._stepLabelSnapshot = { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
+        }
+
+        get running()  { return this._running; }
+        get stepIdx()  { return this._stepIdx; }
+        get planIdx()  { return this._planIdx; }
+        get planLen()  { return this._stepPlan.length; }
+
+        start(onDone, stepPlan = ALL_STEP_INDEXES) {
+            this._onDone      = onDone;
+            this._stepResults = [];
+            this._stepIdx     = -1;
+            this._planIdx     = -1;
+            this._stepPlan    = Array.isArray(stepPlan) && stepPlan.length ? [...stepPlan] : [...ALL_STEP_INDEXES];
+            this._running     = true;
+            _lastPlacement    = null; 
+            setSceneInputEnabled(false);
+            this._nextStep();
+            if (view) view.notifyChange(view.camera.camera3D);
+        }
+
+        stop() {
+            this._running = false;
+            this._stepIdx = -1;
+            setSceneInputEnabled(true);
+        }
+
+        get stepStartTime() { return this._stepStart; }
+
+        record(frameMs, drawCalls) {
+            this._collector.record(frameMs, this._stepLabelSnapshot, drawCalls, getTileStats().loaded);
+        }
+
+        _nextStep() {
+            this._planIdx++;
+            if (this._planIdx >= this._stepPlan.length) {
+                this._running = false;
+                this._stepIdx = -1;
+                setSceneInputEnabled(true);  
+                updateStepPanel(null, 1, STEPS.length - 1);
+                if (this._onDone) this._onDone(this._stepResults);
+                return;
+            }
+            this._stepIdx = this._stepPlan[this._planIdx];
+            this._stepLabelSnapshot = _computeLabelStats();
+            _cachedLabelStats       = this._stepLabelSnapshot;
+            this._stepStart         = performance.now();
+            this._collector.reset();
+        }
+
+        finishStep() {
+            const summary = this._collector.summarize();
+            this._stepResults.push({ step: STEPS[this._stepIdx], summary });
+            updateResultsTable(this._stepResults);
+            this._nextStep();
+        }
+
+        getStepResults() { return this._stepResults; }
+    }
+
+    const elFPS         = document.getElementById('fps-value');
+    const elFPSAvg      = document.getElementById('fps-avg');
+    const elFPSMin      = document.getElementById('fps-min');
+    const elFPSMax      = document.getElementById('fps-max');
+    const elFrameTime   = document.getElementById('stat-frametime');
+    const elDrawCalls   = document.getElementById('stat-drawcalls');
+    const elTriangles   = document.getElementById('stat-triangles');
+    const elLblTotal    = document.getElementById('lbl-total');
+    const elLblCandidate= document.getElementById('lbl-candidate');
+    const elLblShould   = document.getElementById('lbl-should');
+    const elLblRendered = document.getElementById('lbl-rendered');
+    const elLblGroups   = document.getElementById('lbl-groups');
+    const elLblTiles    = document.getElementById('lbl-tiles');
+    const elLblTilesVis = document.getElementById('lbl-tilesvis');
+    const elLblAlt      = document.getElementById('lbl-altitude');
+    const elStepName    = document.getElementById('step-name');
+    const elStepDesc    = document.getElementById('step-desc');
+    const elStepBar     = document.getElementById('step-progress-bar');
+    const elStepCounter = document.getElementById('step-counter');
+    const elStatus      = document.getElementById('bench-status');
+    const elBtnRun      = document.getElementById('btn-run');
+    const elBtnStop     = document.getElementById('btn-stop');
+    const elBtnReset    = document.getElementById('btn-reset');
+    const elResults     = document.getElementById('panel-results');
+    const elControls    = document.getElementById('panel-controls');
+    const elStepPanel   = document.getElementById('panel-step');
+    const elLabelsPanel = document.getElementById('panel-labels');
+    const elTbody       = document.getElementById('results-tbody');
+
+    let rollingFrames = [];                
+
+    function fpsColor(fps) {
+        if (fps >= 55) return '#1a7a4a';
+        if (fps >= 30) return '#8a5800';
+        return '#b02020';
+    }
+
+    function fmt(n, dec = 1) {
+        return typeof n === 'number' && isFinite(n) ? n.toFixed(dec) : '--';
+    }
+
+    const FPS_WINDOW_MS = 1000;
+    function recordFrameTime(frameMs, now) {
+        rollingFrames.push({ ms: frameMs, t: now });
+        while (rollingFrames.length > 1 && now - rollingFrames[0].t > FPS_WINDOW_MS) {
+            rollingFrames.shift();
+        }
+    }
+
+    function updateFPSPanel() {
+        const n = rollingFrames.length;
+        if (n === 0) return;
+        let sum = 0;
+        for (const f of rollingFrames) sum += f.ms;
+        const avgFps = 1000 * n / sum;      
+
+        const buckets = fpsBuckets(rollingFrames.map(f => f.ms), STATS_BUCKET_MS);
+        const worstFps = buckets[0];
+        const bestFps  = buckets[buckets.length - 1];
+
+        elFPS.textContent = Math.round(avgFps);
+        elFPS.style.color  = fpsColor(avgFps);
+        elFPSAvg.textContent = `avg ${fmt(avgFps, 0)}`;
+        elFPSMin.textContent = `min ${fmt(worstFps, 0)}`;
+        elFPSMax.textContent = `max ${fmt(bestFps, 0)}`;
+        elFrameTime.textContent = `${fmt(sum / n)} ms`;
+    }
+
+    function updateLabelPanel(lblStats, renderer, tileStats) {
+        elLblTotal.textContent    = lblStats.total.toLocaleString();
+        elLblCandidate.textContent = lblStats.isCandidate.toLocaleString();
+        elLblShould.textContent   = lblStats.shouldRender.toLocaleString();
+        elLblRendered.textContent = lblStats.isRendered.toLocaleString();
+        elLblGroups.textContent   = lblStats.groups;
+        elLblTiles.textContent    = tileStats.loaded;
+        elLblTilesVis.textContent = tileStats.visible;
+
+        const alt = getCameraAltitude();
+        elLblAlt.textContent = alt > 1000
+            ? `${fmt(alt / 1000, 1)} km`
+            : `${Math.round(alt)} m`;
+
+        const drawCalls = view.mainLoop.gfxEngine.getRenderer().info.render.calls;
+        const tris      = view.mainLoop.gfxEngine.getRenderer().info.render.triangles;
+        elDrawCalls.textContent = drawCalls;
+        elTriangles.textContent = tris >= 1_000_000
+            ? `${fmt(tris / 1_000_000)}M`
+            : tris >= 1000
+                ? `${Math.round(tris / 1000)}k`
+                : tris;
+    }
+
+    function updateStepPanel(step, t, stepIdx, stepCount = STEPS.length) {
+        if (!step) {
+            elStepName.textContent = 'Scene Loading…';
+            elStepDesc.textContent = 'Waiting for tiles and labels';
+            elStepBar.style.width  = '0%';
+            elStepCounter.textContent = '—';
+            return;
+        }
+        elStepName.textContent    = step.name;
+        elStepDesc.textContent    = step.desc;
+        elStepBar.style.width     = `${(t * 100).toFixed(1)}%`;
+        elStepCounter.textContent = `Step ${stepIdx + 1} / ${stepCount}`;
+    }
+
+    const elCsFirstFrame  = document.getElementById('cs-first-frame');
+    const elCsFirstTile   = document.getElementById('cs-first-tile');
+    const elCsFirstLabel  = document.getElementById('cs-first-label');
+    const elCsSceneReady  = document.getElementById('cs-scene-ready');
+    const elRunSummary    = document.getElementById('run-summary');
+
+    function msLabel(ms) {
+        return ms != null ? `${(ms / 1000).toFixed(2)} s` : '—';
+    }
+
+    function updateColdStartPanel() {
+        elCsFirstFrame.textContent = msLabel(coldStart.firstFrame);
+        elCsFirstTile.textContent  = msLabel(coldStart.firstTile);
+        elCsFirstLabel.textContent = msLabel(coldStart.firstLabel);
+        elCsSceneReady.textContent = msLabel(coldStart.sceneReady);
+    }
+
+    function renderTimingLabel(ms) {
+        return ms != null ? `${(ms / 1000).toFixed(2)} s` : '—';
+    }
+
+    function updateResultsTable(results) {
+        elTbody.innerHTML = '';
+        for (const { step, summary } of results) {
+            if (!summary) continue;
+            const tr = document.createElement('tr');
+            const shortName = step.name.replace(/^[①-⑨]\s/, '');
+            tr.innerHTML = `
+                <td title="${step.desc}">${shortName}</td>
+                <td style="color:${fpsColor(summary.fpsAvg)}">${fmt(summary.fpsAvg, 0)}</td>
+                <td style="color:${fpsColor(summary.fpsMin)}">${fmt(summary.fpsMin, 0)}</td>
+                <td style="color:${fpsColor(summary.fpsP5)}">${fmt(summary.fpsP5, 0)}</td>
+                <td style="color:${fpsColor(summary.fpsP1)}">${fmt(summary.fpsP1, 0)}</td>
+                <td style="color:${summary.msWorst > 100 ? '#b02020' : summary.msWorst > 50 ? '#8a5800' : '#555'}">${fmt(summary.msWorst, 0)}ms</td>
+                <td>${fmt(summary.fpsSigma, 1)}</td>
+                <td>${summary.lblAvg.toLocaleString()}</td>
+                <td>${summary.rendAvg.toLocaleString()}</td>
+                <td>${summary.callsAvg}</td>
+                <td>${fmt(summary.msAvg)}</td>
+            `;
+            elTbody.appendChild(tr);
+        }
+
+        if (results.length > 0) {
+            updateColdStartPanel();
+            elResults.classList.add('visible');
+            elLabelsPanel.style.display = 'none';
+            if (elRunSummary.style.display !== 'block') {
+                elRunSummary.style.display = 'block';
+                elRunSummary.innerHTML = `Render timing: avg frame <b>—</b> | first label <b>${renderTimingLabel(coldStart.firstLabel)}</b> | scene ready <b>${renderTimingLabel(coldStart.sceneReady)}</b>`;
+            }
+            updateFloatingPanelLayout();
+        }
+    }
+
+    const runner = new BenchmarkRunner();
+    const elStepSelect   = document.getElementById('step-select');
+    const elBtnRunStep   = document.getElementById('btn-run-step');
+
+    function populateStepSelect() {
+        elStepSelect.innerHTML = '';
+        for (let i = 0; i < STEPS.length; i++) {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = STEPS[i].name;
+            elStepSelect.appendChild(opt);
+        }
+    }
+    populateStepSelect();
+
+    function setQuickControlsDisabled(disabled) {
+        elBtnRun.disabled = disabled;
+        elBtnRunStep.disabled = disabled;
+        elBtnFullBench.disabled = disabled;
+        elStepSelect.disabled = disabled;
+        Object.values(ALL_MODE_BTNS).forEach((b) => { if (b) b.disabled = disabled; });
+        Object.values(fpsLockBtns).forEach((b) => { if (b) b.disabled = disabled; });
+    }
+
+    async function countdown() {
+        const overlay = document.getElementById('countdown-overlay');
+        const txt     = document.getElementById('countdown-text');
+        overlay.classList.add('visible');
+        for (const n of [3, 2, 1]) {
+            txt.textContent = n;
+            await new Promise(r => setTimeout(r, 900));
+        }
+        overlay.classList.remove('visible');
+    }
+
+    elBtnRun.addEventListener('click', async () => {
+        if (runner.running) return;
+
+        setQuickControlsDisabled(true);
+        elBtnStop.disabled  = false;
+        elBtnReset.disabled = true;
+        elStatus.textContent = 'STARTING…';
+        rollingFrames = [];
+
+        await countdown();
+
+        elStepName.textContent = 'Recreating scene…';
+        elStepDesc.textContent = 'Disposing previous view and rebuilding from scratch';
+        elStatus.textContent   = 'LOADING';
+
+        await setupScene();
+
+        elStepName.textContent = 'Scene ready';
+        elStepDesc.textContent = `Initialized in ${(sceneLoadMs / 1000).toFixed(2)} s — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
+        updateColdStartPanel();
+        elResults.classList.add('visible');
+        elLabelsPanel.style.display = 'none';
+
+        _lastFrameMs = 16;
+        rollingFrames = [];
+
+        elStatus.textContent = 'RUNNING';
+        runner.start((allResults) => {
+            elStatus.textContent = 'DONE';
+            setQuickControlsDisabled(false);
+            elBtnStop.disabled   = true;
+            elBtnReset.disabled  = false;
+            appendSummaryRow(allResults);
+        });
+    });
+
+    elBtnRunStep.addEventListener('click', async () => {
+        if (runner.running) return;
+
+        const selectedIdx = Number(elStepSelect.value);
+        if (!Number.isInteger(selectedIdx) || selectedIdx < 0 || selectedIdx >= STEPS.length) return;
+
+        setQuickControlsDisabled(true);
+        elBtnStop.disabled   = false;
+        elBtnReset.disabled  = true;
+        elStatus.textContent = 'STARTING STEP…';
+        rollingFrames = [];
+
+        await countdown();
+
+        elStepName.textContent = `Recreating scene — ${STEPS[selectedIdx].name}`;
+        elStepDesc.textContent = 'Disposing previous view and rebuilding from scratch';
+        elStatus.textContent   = 'LOADING';
+
+        await setupScene();
+
+        elStepName.textContent = 'Scene ready';
+        elStepDesc.textContent = `Initialized in ${(sceneLoadMs / 1000).toFixed(2)} s — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
+        updateColdStartPanel();
+        elResults.classList.add('visible');
+        elLabelsPanel.style.display = 'none';
+
+        _lastFrameMs = 16;
+        rollingFrames = [];
+
+        elStatus.textContent = 'RUNNING STEP';
+        runner.start((allResults) => {
+            elStatus.textContent = 'DONE';
+            setQuickControlsDisabled(false);
+            elBtnStop.disabled   = true;
+            elBtnReset.disabled  = false;
+            appendSummaryRow(allResults);
+        }, [selectedIdx]);
+    });
+
+    elBtnStop.addEventListener('click', () => {
+        runner.stop();
+        elStatus.textContent = 'STOPPED';
+        setQuickControlsDisabled(false);
+        elBtnStop.disabled   = true;
+        elBtnReset.disabled  = false;
+    });
+
+    elBtnReset.addEventListener('click', () => {
+        runner.stop();
+        elTbody.innerHTML = '';
+        elResults.classList.remove('visible');
+        elLabelsPanel.style.display = '';
+        elCmpPanel.style.display = 'none';
+        elRunSummary.style.display = 'none';
+        elRunSummary.textContent = '';
+        rollingFrames = [];
+        fpsHistory.fill(0);
+        fpsHistoryHead = 0;
+        elStatus.textContent = 'READY';
+        setQuickControlsDisabled(false);
+        elBtnStop.disabled   = true;
+        elBtnReset.disabled  = true;
+        updateStepPanel(null, 0, 0);
+        updateFloatingPanelLayout();
+    });
+
+    function appendSummaryRow(allResults) {
+        if (allResults.length === 0) return;
+        const sums = allResults.map(r => r.summary).filter(Boolean);
+        if (sums.length === 0) return;
+        const overall = {
+            fpsAvg:   sums.reduce((s, x) => s + x.fpsAvg,   0) / sums.length,
+            fpsMin:   Math.min(...sums.map(x => x.fpsMin)),
+            fpsP5:    sums.reduce((s, x) => s + x.fpsP5,    0) / sums.length,
+            fpsP1:    sums.reduce((s, x) => s + x.fpsP1,    0) / sums.length,
+            msWorst:  Math.max(...sums.map(x => x.msWorst ?? 0)),
+            fpsSigma: sums.reduce((s, x) => s + x.fpsSigma, 0) / sums.length,
+            lblAvg:   Math.round(sums.reduce((s, x) => s + x.lblAvg,   0) / sums.length),
+            rendAvg:  Math.round(sums.reduce((s, x) => s + x.rendAvg,  0) / sums.length),
+            callsAvg: Math.round(sums.reduce((s, x) => s + x.callsAvg, 0) / sums.length),
+            msAvg:    sums.reduce((s, x) => s + x.msAvg,    0) / sums.length,
+        };
+
+        const tr = document.createElement('tr');
+        tr.style.borderTop  = '1px solid rgba(0,0,0,0.12)';
+        tr.style.fontWeight = '600';
+        tr.innerHTML = `
+            <td>Overall</td>
+            <td style="color:${fpsColor(overall.fpsAvg)}">${fmt(overall.fpsAvg, 0)}</td>
+            <td style="color:${fpsColor(overall.fpsMin)}">${fmt(overall.fpsMin, 0)}</td>
+            <td style="color:${fpsColor(overall.fpsP5)}">${fmt(overall.fpsP5,  0)}</td>
+            <td style="color:${fpsColor(overall.fpsP1)}">${fmt(overall.fpsP1,  0)}</td>
+            <td style="color:${(overall.msWorst??0) > 100 ? '#b02020' : (overall.msWorst??0) > 50 ? '#8a5800' : '#555'}">${fmt(overall.msWorst, 0)}ms</td>
+            <td>${fmt(overall.fpsSigma, 1)}</td>
+            <td>${overall.lblAvg.toLocaleString()}</td>
+            <td>${overall.rendAvg.toLocaleString()}</td>
+            <td>${overall.callsAvg}</td>
+            <td>${fmt(overall.msAvg)}</td>
+        `;
+        elTbody.appendChild(tr);
+
+        const payload = {
+            mode: labelMode,
+            coldStart,
+            steps: allResults.map(({ step, summary }) => ({ step: step.id, ...summary })),
+        };
+        enableExport(payload);
+
+        elRunSummary.style.display = 'block';
+        elRunSummary.innerHTML = `Render timing: avg frame <b>${fmt(overall.msAvg)} ms</b> | first label <b>${renderTimingLabel(coldStart.firstLabel)}</b> | scene ready <b>${renderTimingLabel(coldStart.sceneReady)}</b>`;
+    }
+
+    let FPS_LOCK = 0;           
+    let _lastFrameMs = 16;      
+    let _lastPlacement = null;  
+    let _frameDrawCalls = 0;    
+
+    function placementMoved(p) {
+        const q = _lastPlacement;
+        if (!q) return true;
+        return p.coord.x !== q.coord.x || p.coord.y !== q.coord.y
+            || p.range !== q.range || p.tilt !== q.tilt || p.heading !== q.heading;
+    }
+
+    const _rig       = new THREE.Object3D();
+    const _rigSea    = new THREE.Object3D();
+    const _rigTarget = new THREE.Object3D();
+    const _rigCam    = new THREE.Object3D();
+    _rigTarget.rotation.order = 'ZXY';
+    _rig.add(_rigSea); _rigSea.add(_rigTarget); _rigTarget.add(_rigCam);
+
+    const _camTargetPos = new THREE.Vector3();
+    const _placeCoord   = new itowns.Coordinates('EPSG:4326', 0, 0, 0);
+    const _placeGeo     = new itowns.Coordinates('EPSG:4978', 0, 0, 0);
+
+    function wrapTo180(a) { let r = (a + 180) % 360; if (r < 0) r += 360; return r - 180; }
+
+    function applyPlacement(v, p) {
+        const cam = v.camera3D;
+        _placeCoord.setFromValues(p.coord.x, p.coord.y, 0);
+        _placeCoord.as('EPSG:4978', _placeGeo).toVector3(_camTargetPos);
+
+        _rig.position.set(0, 0, 0);
+        _rig.lookAt(_camTargetPos);                          
+        _rigSea.position.set(0, 0, _camTargetPos.length());  
+        _rigTarget.position.set(0, 0, 0);
+        _rigTarget.rotation.x = THREE.MathUtils.degToRad(p.tilt);
+        _rigTarget.rotation.z = THREE.MathUtils.degToRad(-wrapTo180(p.heading + 180));
+        _rigCam.position.set(0, p.range, 0);
+        _rigCam.rotation.set(-Math.PI * 0.5, 0, Math.PI);
+        _rig.updateMatrixWorld(true);
+
+        _rigCam.matrixWorld.decompose(cam.position, cam.quaternion, cam.scale);
+        cam.updateMatrixWorld(true);
+    }
+
+    function beforeRender() {
+        perfStats.begin();
+        if (view) {
+            const r = view.mainLoop.gfxEngine.getRenderer();
+            r.info.autoReset = false;
+            r.info.reset();
+        }
+        _frameDrawCalls = 0;
+    }
+
+    function afterRender(dt) {
+        if (!view) return;
+        perfStats.end();
+
+        const frameMs = (dt > 0 && dt < 2000) ? dt : _lastFrameMs;
+        _lastFrameMs  = frameMs;
+        const fps     = 1000 / frameMs;
+        const now     = performance.now();
+
+        pushFPS(fps);                       
+        recordFrameTime(frameMs, now);      
+
+        const elapsed = now - sceneEpoch;
+        if (coldStart.firstFrame === null) coldStart.firstFrame = elapsed;
+
+        if (runner.running && runner.stepIdx >= 0) {
+            const step = STEPS[runner.stepIdx];
+            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
+            const r = view.mainLoop.gfxEngine.getRenderer();
+            _frameDrawCalls += r.info.render.calls;
+            runner.record(frameMs, _frameDrawCalls);
+            if (t >= 1) runner.finishStep();
+        }
+
+        scheduleHud();          
+        scheduleNextRender(frameMs);
+    }
+
+    const _idleCb = window.requestIdleCallback
+        ? (fn => window.requestIdleCallback(fn, { timeout: 300 }))
+        : (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 1));
+    let _hudScheduled = false;
+    let _lastHudDrawMs = 0;
+    const HUD_DRAW_RATE_MS = 150;
+
+    function scheduleHud() {
+        if (_hudScheduled) return;
+        _hudScheduled = true;
+        _idleCb(() => {
+            _hudScheduled = false;
+            const now = performance.now();
+            if (!view || now - _lastHudDrawMs < HUD_DRAW_RATE_MS) return;
+            _lastHudDrawMs = now;
+            drawHud(now);
+        });
+    }
+
+    function drawHud(now) {
+        const renderer = view.mainLoop.gfxEngine.getRenderer();
+
+        const elapsed   = now - sceneEpoch;
+        const pollTile  = coldStart.firstTile === null;
+        const pollLabel = coldStart.firstLabel === null && labelMode !== 'none';
+        if (pollTile || pollLabel) {
+            if (pollTile && getTileStats().visible > 0) coldStart.firstTile = elapsed;
+            if (pollLabel && getLabelStats().isRendered > 0) {
+                coldStart.firstLabel = elapsed;
+                elStepDesc.textContent = sceneReady
+                    ? `Scene initialized in ${(coldStart.sceneReady / 1000).toFixed(2)} s — first label at ${(elapsed / 1000).toFixed(2)} s`
+                    : `Waiting for scene… first label at ${(elapsed / 1000).toFixed(2)} s`;
+            }
+        }
+
+        updateFPSPanel();
+        if (hudToggles.graph) drawSparkline();
+
+        if (runner.running && runner.stepIdx >= 0) {
+            const step = STEPS[runner.stepIdx];
+            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
+            updateStepPanel(step, t, runner.planIdx, runner.planLen);
+        } else {
+            if (hudToggles.stats)   updateLabelPanel(getLabelStats(), renderer, getTileStats());
+            if (hudToggles.minimap) drawMinimap();
+        }
+    }
+
+    function scheduleNextRender(frameMs) {
+        if (!runner.running) return;
+        const drive = () => {
+            if (!view || !runner.running) return;
+            let moved = false;
+            if (runner.stepIdx >= 0) {
+                const step = STEPS[runner.stepIdx];
+                const t    = Math.min(1, (performance.now() - runner.stepStartTime) / step.duration);
+                const placement = step.drive(t);
+                if (placementMoved(placement)) {
+                    applyPlacement(view, placement);   
+                    _lastPlacement = placement;
+                    moved = true;
+                }
+            }
+            view.notifyChange(moved ? view.camera.camera3D : undefined, true);
+        };
+        if (FPS_LOCK > 0) {
+            setTimeout(drive, Math.max(0, (1000 / FPS_LOCK) - frameMs));
+        } else {
+            drive();
+        }
+    }
+
+    function installRenderLoop(v) {
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, beforeRender);
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.AFTER_RENDER,  afterRender);
+        v.notifyChange(v.camera.camera3D); 
+    }
+
+    const hudToggles = { minimap: true, graph: true, stats: true };
+
+    function applyToggle(key, el, btnId) {
+        const on = hudToggles[key];
+        el.classList.toggle('panel--hidden', !on);
+        document.getElementById(btnId).classList.toggle('on', on);
+    }
+
+    function toggle(key) {
+        hudToggles[key] = !hudToggles[key];
+        if (key === 'minimap') applyToggle('minimap', document.getElementById('panel-minimap'),        'btn-toggle-minimap');
+        if (key === 'graph')   applyToggle('graph',   document.getElementById('sparkline-canvas'),   'btn-toggle-graph');
+        if (key === 'stats')   applyToggle('stats',   document.getElementById('panel-labels'),         'btn-toggle-stats');
+    }
+
+    document.getElementById('btn-toggle-minimap').classList.add('on');
+    document.getElementById('btn-toggle-graph').classList.add('on');
+    document.getElementById('btn-toggle-stats').classList.add('on');
+
+    document.getElementById('btn-toggle-minimap').addEventListener('click', () => toggle('minimap'));
+    document.getElementById('btn-toggle-graph').addEventListener('click',   () => toggle('graph'));
+    document.getElementById('btn-toggle-stats').addEventListener('click',   () => toggle('stats'));
+
+    document.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.key === 'm' || e.key === 'M') toggle('minimap');
+        if (e.key === 'g' || e.key === 'G') toggle('graph');
+        if (e.key === 's' || e.key === 'S') toggle('stats');
+    });
+
+    const fpsLockBtns = {
+        '60':  document.getElementById('btn-lock-60'),
+        '90':  document.getElementById('btn-lock-90'),
+        'inf': document.getElementById('btn-lock-unlimited'),
+    };
+
+    function syncFpsLockButtons() {
+        for (const [key, btn] of Object.entries(fpsLockBtns)) {
+            if (key === 'inf') {
+                btn.classList.toggle('on', FPS_LOCK === 0);
+            } else {
+                btn.classList.toggle('on', FPS_LOCK === Number(key));
+            }
+        }
+    }
+    syncFpsLockButtons();
+
+    fpsLockBtns['60'].addEventListener('click', () => {
+        if (runner.running) return;
+        FPS_LOCK = 60;
+        syncFpsLockButtons();
+    });
+    fpsLockBtns['90'].addEventListener('click', () => {
+        if (runner.running) return;
+        FPS_LOCK = 90;
+        syncFpsLockButtons();
+    });
+    fpsLockBtns['inf'].addEventListener('click', () => {
+        if (runner.running) return;
+        FPS_LOCK = 0;
+        syncFpsLockButtons();
+    });
+
+    const elBtnInstanced = document.getElementById('btn-mode-instanced');
+    const elBtnDomPerf   = document.getElementById('btn-mode-dom-perf');
+    const elBtnNone      = document.getElementById('btn-mode-none');
+    const elBtnExport    = document.getElementById('btn-export');
+
+    const MODE_LABELS = {
+        'instanced': 'Instanced (sync)',
+        'dom-perf':  'DOM + screen-grid culling',
+        none:        'No labels (baseline)',
+    };
+    const ALL_MODE_BTNS = {
+        'instanced': elBtnInstanced,
+        'dom-perf':  elBtnDomPerf,
+        none:        elBtnNone,
+    };
+
+    function syncModeButtons() {
+        for (const [m, btn] of Object.entries(ALL_MODE_BTNS)) {
+            btn?.classList.toggle('on', m === labelMode);
+        }
+    }
+    syncModeButtons();
+
+    function setLabelMode(mode) {
+        if (runner.running || mode === labelMode) return;
+        labelMode = mode;
+        syncModeButtons();
+        elStatus.textContent = 'LOADING';
+        setupScene().then(() => {
+            elStepName.textContent = 'Ready';
+            elStepDesc.textContent = `${MODE_LABELS[mode]} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
+            elStatus.textContent   = 'READY';
+        });
+    }
+
+    elBtnInstanced.addEventListener('click', () => setLabelMode('instanced'));
+    elBtnDomPerf.addEventListener('click',   () => setLabelMode('dom-perf'));
+    elBtnNone.addEventListener('click',      () => setLabelMode('none'));
+
+    const elBtnFullBench    = document.getElementById('btn-full-bench');
+    const elCmpPanel        = document.getElementById('panel-comparison');
+    const elCmpProgress     = document.getElementById('cmp-progress');
+    const elCmpSummaryTbody = document.getElementById('cmp-summary-tbody');
+    const elCmpStepTbody    = document.getElementById('cmp-step-tbody');
+
+    function updateFloatingPanelLayout() {
+        const gap = 10;
+        const controlsRect = elControls.getBoundingClientRect();
+        const stepRect = elStepPanel.getBoundingClientRect();
+
+        const top = Math.max(10, Math.ceil(controlsRect.bottom + gap));
+        const bottom = Math.max(10, Math.ceil(window.innerHeight - stepRect.top + gap));
+        const maxH = Math.max(180, window.innerHeight - top - bottom);
+
+        const maxW = Math.max(360, Math.min(620, window.innerWidth - 20));
+        elResults.style.width = `${maxW}px`;
+        elCmpPanel.style.width = `${maxW}px`;
+
+        const resultsVisible = elResults.classList.contains('visible');
+        const cmpVisible = elCmpPanel.style.display !== 'none';
+
+        if (resultsVisible && cmpVisible) {
+            const splitGap = 8;
+            const cmpH = Math.max(180, Math.floor((maxH - splitGap) * 0.48));
+            const resH = Math.max(180, maxH - cmpH - splitGap);
+
+            elCmpPanel.style.top = `${top}px`;
+            elCmpPanel.style.bottom = 'auto';
+            elCmpPanel.style.height = `${cmpH}px`;
+            elCmpPanel.style.maxHeight = `${cmpH}px`;
+
+            const resTop = top + cmpH + splitGap;
+            elResults.style.top = `${resTop}px`;
+            elResults.style.bottom = 'auto';
+            elResults.style.height = `${resH}px`;
+            elResults.style.maxHeight = `${resH}px`;
+            return;
+        }
+
+        for (const panel of [elResults, elCmpPanel]) {
+            panel.style.height = 'auto';
+            panel.style.top = `${top}px`;
+            panel.style.bottom = `${bottom}px`;
+            panel.style.maxHeight = `${maxH}px`;
+        }
+    }
+
+    window.addEventListener('resize', updateFloatingPanelLayout);
+
+    const FULL_MODES = ['none', 'instanced', 'dom-perf'];
+    const MODE_SHORT = { none: 'None', instanced: 'Inst.sync', 'dom-perf': 'DOM+' };
+
+    function runBenchmarkPromise(stepPlan = ALL_STEP_INDEXES) {
+        return new Promise(resolve => runner.start(resolve, stepPlan));
+    }
+
+    function deltaVsBaselineStr(modeFps, baseFps) {
+        if (baseFps == null || modeFps == null) return '—';
+        const pct = (modeFps / baseFps - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        const color = pct >= 0 ? '#1a7a4a' : '#b02020';
+        return `<span style="color:${color}">${sign}${pct.toFixed(0)}%</span>`;
+    }
+
+    function buildComparisonTable(modeResults) {
+        const n = STEPS.length;
+        const modeColdStart = modeResults.__coldStartByMode ?? {};
+
+        function modeOverall(mode) {
+            const res = modeResults[mode];
+            if (!res) return null;
+            return res.reduce((acc, { summary }) => {
+                if (!summary) return acc;
+                acc.fpsAvg        += summary.fpsAvg        / n;
+                acc.fpsP5         += summary.fpsP5         / n;
+                acc.fpsP1         += summary.fpsP1         / n;
+                acc.fpsSigma      += summary.fpsSigma      / n;
+                acc.lblAvg        += summary.lblAvg        / n;
+                acc.rendAvg       += summary.rendAvg       / n;
+                acc.tilesLoadedAvg += (summary.tilesLoadedAvg ?? 0) / n;
+                acc.callsAvg      += summary.callsAvg      / n;
+                acc.msAvg         += summary.msAvg         / n;
+                return acc;
+            }, { fpsAvg: 0, fpsP5: 0, fpsP1: 0, fpsSigma: 0, lblAvg: 0, rendAvg: 0, tilesLoadedAvg: 0, callsAvg: 0, msAvg: 0 });
+        }
+
+        const baseOverall = modeOverall('none');
+        const baseFps     = baseOverall?.fpsAvg ?? null;
+
+        elCmpSummaryTbody.innerHTML = '';
+        for (const mode of FULL_MODES) {
+            const overall = modeOverall(mode);
+            if (!overall) continue;
+
+            const isBase = mode === 'none';
+            const S = 'text-align:right; padding:4px 5px; border-bottom:1px solid rgba(0,0,0,0.05);';
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="text-align:left; padding:4px 5px; border-bottom:1px solid rgba(0,0,0,0.05); color:${isBase ? 'rgba(0,0,0,0.4)' : '#1a2030'}">
+                    ${MODE_SHORT[mode]}${isBase ? ' <span style="opacity:0.4;font-size:9px">(baseline)</span>' : ''}
+                </td>
+                <td style="${S} color:${fpsColor(overall.fpsAvg)}">${fmt(overall.fpsAvg, 0)}</td>
+                <td style="${S} color:${fpsColor(overall.fpsP5)}">${fmt(overall.fpsP5, 0)}</td>
+                <td style="${S} color:${fpsColor(overall.fpsP1)}">${fmt(overall.fpsP1, 0)}</td>
+                <td style="${S}">${fmt(overall.fpsSigma, 1)}</td>
+                <td style="${S}">${isBase ? '—' : deltaVsBaselineStr(overall.fpsAvg, baseFps)}</td>
+                <td style="${S}">${renderTimingLabel(modeColdStart[mode]?.firstLabel)}</td>
+                <td style="${S}">${renderTimingLabel(modeColdStart[mode]?.sceneReady)}</td>
+                <td style="${S}">${Math.round(overall.lblAvg).toLocaleString()}</td>
+                <td style="${S}">${Math.round(overall.rendAvg).toLocaleString()}</td>
+                <td style="${S}">${Math.round(overall.tilesLoadedAvg ?? 0).toLocaleString()}</td>
+                <td style="${S}">${Math.round(overall.callsAvg)}</td>
+                <td style="${S}">${fmt(overall.msAvg)}</td>
+            `;
+            elCmpSummaryTbody.appendChild(tr);
+        }
+
+        const S = 'text-align:right;padding:3px 5px;border-bottom:1px solid rgba(0,0,0,0.05);';
+
+        const tdFps = (summary) => {
+            if (!summary) return `<td style="${S} color:rgba(255,255,255,0.2)">—</td>`;
+            return `<td style="${S} color:${fpsColor(summary.fpsAvg)}">${fmt(summary.fpsAvg, 0)}</td>`;
+        };
+        const tdCost = (summary, base) => {
+            if (!summary || !base) return `<td style="${S} color:rgba(255,255,255,0.2)">—</td>`;
+            return `<td style="${S}">${deltaVsBaselineStr(summary.fpsAvg, base.fpsAvg)}</td>`;
+        };
+
+        elCmpStepTbody.innerHTML = '';
+        for (let i = 0; i < STEPS.length; i++) {
+            const step        = STEPS[i];
+            const noneSum    = modeResults['none']?.[i]?.summary;
+            const instSum    = modeResults['instanced']?.[i]?.summary;
+            const domPerfSum = modeResults['dom-perf']?.[i]?.summary;
+            const shortName  = step.name.replace(/^[①-⑩]\s/, '');
+
+            const tilesAvg = [noneSum, instSum, domPerfSum]
+                .filter(Boolean)
+                .reduce((s, x, _, a) => s + (x.tilesLoadedAvg ?? 0) / a.length, 0);
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="text-align:left;padding:3px 5px;border-bottom:1px solid rgba(0,0,0,0.05);color:rgba(0,0,0,0.55);font-size:9.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${step.desc}">${shortName}</td>
+                ${tdFps(noneSum)}
+                ${tdFps(instSum)}
+                ${tdCost(instSum, noneSum)}
+                ${tdFps(domPerfSum)}
+                ${tdCost(domPerfSum, noneSum)}
+                <td style="${S}">${tilesAvg > 0 ? Math.round(tilesAvg).toLocaleString() : '—'}</td>
+            `;
+            elCmpStepTbody.appendChild(tr);
+        }
+    }
+
+    let _fullBenchAborted = false;
+
+    async function runFullBenchmark() {
+        if (runner.running || _fullBenchAborted) return;
+        _fullBenchAborted = false;
+
+        [elBtnRun, elBtnRunStep, elBtnFullBench, elStepSelect, ...Object.values(ALL_MODE_BTNS)].forEach(b => { if (b) b.disabled = true; });
+        elBtnStop.disabled  = false;
+        elBtnReset.disabled = true;
+        rollingFrames = [];
+
+        elResults.classList.add('visible');
+        elLabelsPanel.style.display = 'none';
+        elCmpPanel.style.display    = 'block';
+        elCmpSummaryTbody.innerHTML = '';
+        elCmpStepTbody.innerHTML    = '';
+        updateFloatingPanelLayout();
+
+        const modeResults = {};
+        modeResults.__coldStartByMode = {};
+
+        for (const mode of FULL_MODES) {
+            if (_fullBenchAborted) break;
+
+            labelMode = mode;
+            Object.values(ALL_MODE_BTNS).forEach(b => b?.classList.remove('on'));
+            ALL_MODE_BTNS[mode]?.classList.add('on');
+            elCmpProgress.textContent = `● Running: ${MODE_LABELS[mode]} (${FULL_MODES.indexOf(mode) + 1}/${FULL_MODES.length})`;
+            elStatus.textContent      = 'RUNNING';
+
+            await countdown();
+            if (_fullBenchAborted) break;
+
+            elStepName.textContent = `Recreating scene — ${MODE_LABELS[mode]}`;
+            elStepDesc.textContent = 'Disposing previous view and rebuilding from scratch';
+            await setupScene();
+            if (_fullBenchAborted) break;
+
+            _lastFrameMs = 16;
+
+            modeResults[mode] = await runBenchmarkPromise();
+            modeResults.__coldStartByMode[mode] = { ...coldStart };
+            buildComparisonTable(modeResults);
+
+            console.log(`[LabelBench] ${mode} complete:`, JSON.stringify({
+                coldStart,
+                mode,
+                steps: modeResults[mode].map(({ step, summary }) => ({ step: step.id, ...summary })),
+            }, null, 2));
+        }
+
+        const didComplete = !_fullBenchAborted && FULL_MODES.every(mode => Array.isArray(modeResults[mode]));
+        elCmpProgress.textContent = didComplete
+            ? '✓ All modes complete'
+            : '■ Stopped';
+        elStatus.textContent = didComplete ? 'DONE' : 'STOPPED';
+
+        if (didComplete) {
+            const fullPayload = {
+                type: 'full',
+                modes: Object.fromEntries(
+                    Object.entries(modeResults).map(([mode, res]) => [
+                        mode,
+                        res.map(({ step, summary }) => ({ step: step.id, ...summary })),
+                    ])
+                ),
+            };
+            console.log('[LabelBench] full benchmark complete:', JSON.stringify(fullPayload, null, 2));
+            enableExport(fullPayload);
+        }
+
+        [elBtnRun, elBtnRunStep, elBtnFullBench, elStepSelect, ...Object.values(ALL_MODE_BTNS)].forEach(b => { if (b) b.disabled = false; });
+        elBtnStop.disabled  = true;
+        elBtnReset.disabled = false;
+        _fullBenchAborted   = false;
+    }
+
+    elBtnFullBench.addEventListener('click', runFullBenchmark);
+    elBtnStop.addEventListener('click', () => { _fullBenchAborted = true; });
+
+    let _exportPayload = null;
+
+    function enableExport(payload) {
+        _exportPayload = payload;
+        elBtnExport.disabled = false;
+        elBtnExport.style.opacity = '';
+    }
+
+    elBtnExport.addEventListener('click', () => {
+        if (!_exportPayload) return;
+        const blob = new Blob([JSON.stringify(_exportPayload, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `label-bench-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    });
+
+    setupScene().then(() => {
+        elStepName.textContent = 'Ready';
+        elStepDesc.textContent = `Scene loaded — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
+        elStatus.textContent   = 'READY';
+        updateFloatingPanelLayout();
+    });
+
+    Object.assign(window, { get view() { return view; }, runner, itowns, THREE, coldStart });
+    </script>
+</body>
+</html>

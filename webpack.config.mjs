@@ -31,11 +31,17 @@ const include = [
     path.resolve(__dirname, 'packages/Main/src'),
     path.resolve(__dirname, 'packages/Debug/src'),
     path.resolve(__dirname, 'packages/Widgets/src'),
+    path.resolve(__dirname, 'packages/Label/src'),
     path.resolve(__dirname, 'examples/demo/src'),
 ];
 
-// excludes path to externalize
-const excludesToExternals = [path.resolve(__dirname, 'packages/Main/src/Loader')];
+// excludes path to externalize — three is bundled (not externalized) for code
+// under these paths. Worker chunks have no import map, so any three-importing
+// module pulled into a Worker must be bundled here or the worker fails to load.
+const excludesToExternals = [
+    path.resolve(__dirname, 'packages/Main/src/Loader'),
+    path.resolve(__dirname, 'packages/Label/src'),
+];
 
 const exclude = [
     path.resolve(__dirname, '.git'),
@@ -63,6 +69,7 @@ export default () => {
             alias: {
                 itowns: path.resolve(__dirname, 'packages/Main/src/Main.js'),
                 '@itowns/geographic': path.resolve(__dirname, 'packages/Geographic/src/index.ts'),
+                '@itowns/labels': path.resolve(__dirname, 'packages/Label/src/Main.ts'),
             },
         },
         entry: {
@@ -79,6 +86,9 @@ export default () => {
             },
             itowns_lasworker: {
                 import: './packages/Main/src/Worker/LASLoaderWorker.js',
+            },
+            itowns_labelworker: {
+                import: './packages/Label/src/Worker/LabelWorkerScript.ts',
             },
         },
         devtool: 'source-map',
