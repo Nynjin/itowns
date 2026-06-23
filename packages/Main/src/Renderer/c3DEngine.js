@@ -5,6 +5,7 @@
  */
 
 import * as THREE from 'three';
+import { LabelProfiler } from '@itowns/labels';
 import Capabilities from 'Core/System/Capabilities';
 import { unpack1K } from 'Renderer/LayeredMaterial';
 import Label2DRenderer from 'Renderer/Label2DRenderer';
@@ -58,6 +59,11 @@ class c3DEngine {
         this.fullSizeRenderTarget.depthTexture.type = THREE.UnsignedShortType;
 
         this.renderView = function _(view) {
+            // WebGL: CPU time to *submit* the draw (includes instanced label meshes
+            // on layer 31). Actual GPU execution is measured separately by the
+            // async timer query below ('gpu').
+            this._gpuTimerBegin();
+            const _pGl = LabelProfiler.begin();
             // force internally calling state.buffers.color.setClear
             // to get a correct background color
             this.renderer.setClearAlpha(this.renderer.getClearAlpha());
@@ -70,7 +76,7 @@ class c3DEngine {
                 // (layer 0) already excludes them from the composer's RenderPass,
                 // so they are naturally invisible to AGX tone mapping.
                 this.composer.render();
-                // Now render labels directly � no tone mapping applied.
+                // Now render labels directly � no tone mapping applied.
                 const savedMask = view.camera3D.layers.mask;
                 view.camera3D.layers.set(31);
                 this.renderer.autoClear = false;
@@ -78,14 +84,65 @@ class c3DEngine {
                 this.renderer.autoClear = true;
                 view.camera3D.layers.mask = savedMask;
             } else {
-                // No composer � enable layer 31 so labels are part of the
+                // No composer � enable layer 31 so labels are part of the
                 // normal scene render (no tone-mapping issue without AGX).
                 view.camera3D.layers.enable(31);
                 this.renderer.render(view.scene, view.camera3D);
                 view.camera3D.layers.disable(31);
             }
+            LabelProfiler.end('webgl', _pGl);
+            this._gpuTimerEnd();
             if (view.tileLayer) {
+                // DOM label placement (candidate/priority/occlusion/position) is
+                // timed inside Label2DRenderer.render — kept out of 'webgl'.
                 this.label2dRenderer.render(view.tileLayer.object3d, view.camera3D);
+            }
+        }.bind(this);
+
+        // ── Async GPU timer (EXT_disjoint_timer_query, WebGL2) ───────────────
+        // Measures real GPU execution time of the render submit. Results arrive a
+        // few frames late (async), so we accumulate them into LabelProfiler('gpu').
+        // Only runs while the profiler is enabled (i.e. during the benchmark).
+        this._gpuTimer = { ext: undefined, free: [], pending: [], active: null };
+
+        this._gpuTimerBegin = function _() {
+            if (!LabelProfiler.enabled) { return; }
+            const gl = this.renderer.getContext();
+            if (this._gpuTimer.ext === undefined) {
+                this._gpuTimer.ext = (typeof WebGL2RenderingContext !== 'undefined'
+                    && gl instanceof WebGL2RenderingContext)
+                    ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') || null)
+                    : null;
+            }
+            const ext = this._gpuTimer.ext;
+            if (!ext || this._gpuTimer.active) { return; }
+            const q = this._gpuTimer.free.pop() || gl.createQuery();
+            gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+            this._gpuTimer.active = q;
+        }.bind(this);
+
+        this._gpuTimerEnd = function _() {
+            const t = this._gpuTimer;
+            const ext = t.ext;
+            if (!ext) { return; }
+            const gl = this.renderer.getContext();
+            if (t.active) {
+                gl.endQuery(ext.TIME_ELAPSED_EXT);
+                t.pending.push(t.active);
+                t.active = null;
+            }
+            // Drain any finished queries (oldest first).
+            while (t.pending.length) {
+                const q = t.pending[0];
+                const available = gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE);
+                const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
+                if (!available) { break; }
+                t.pending.shift();
+                if (!disjoint) {
+                    const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
+                    LabelProfiler.addMs('gpu', ns / 1e6);
+                }
+                t.free.push(q);
             }
         }.bind(this);
 

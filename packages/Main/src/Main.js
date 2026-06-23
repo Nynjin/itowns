@@ -44,6 +44,8 @@ export { default as PointCloudNode } from 'Core/PointCloudNode';
 export { default as Feature, FeatureCollection, FeatureGeometry, FEATURE_TYPES } from 'Core/Feature';
 export { default as Style } from 'Core/Style';
 export { default as Label } from 'Core/Label';
+// Opt-in label-pipeline profiler (disabled by default; used by the label benchmark)
+export { LabelProfiler } from '@itowns/labels';
 
 // Layers provided by default in iTowns
 // A custom layer should at least implements Layer

@@ -173,10 +173,16 @@ class VectorTilesSource extends TMSSource {
         let features = cache.get(key);
         if (!features) {
             // otherwise fetch/parse the data
-            features = Promise.all(this.urls.map(url =>
-                this.fetcher(this.urlFromExtent(extent, url), this.networkOptions)
-                    .then(file => this.parser(file, { out, in: this, extent }))))
-                .then(collections => mergeCollections(collections))
+            features = Promise.all(this.urls.map((url) => {
+                return this.fetcher(this.urlFromExtent(extent, url), this.networkOptions)
+                    .then((file) => {
+                        // Guard: if the source was disposed while this fetch was
+                        // in-flight, skip the expensive PBF decode entirely.
+                        if (!this._featuresCaches[out.crs]) { return null; }
+                        return this.parser(file, { out, in: this, extent });
+                    });
+            }))
+                .then(collections => (collections[0] ? mergeCollections(collections) : null))
                 .catch(err => this.handlingError(err));
 
             cache.set(key, features);

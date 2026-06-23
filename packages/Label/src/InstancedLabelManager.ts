@@ -8,6 +8,7 @@ import type { LabelMesh } from './Rendering/LabelMeshGroup';
 import { LabelCollisionEngine } from './Collision/LabelCollisionEngine';
 import { LabelManagerConfig, DefaultLabelConfig } from './Types/LabelConfig';
 import { computePxPerUnit } from './Utils';
+import { LabelProfiler } from './Profiler';
 
 interface LabelGroup {
     fontGroup: LabelFontGroup;
@@ -80,19 +81,23 @@ export class InstancedLabelManager {
     removeLabel(label: Label) { this.removeLabels([label]); }
 
     addLabels(labels: Label[]) {
+        const _p = LabelProfiler.begin();
         const byKey = this._groupByFontKey(labels);
         for (const [key, bucket] of byKey) {
             this._getOrCreate(key, bucket[0]).fontGroup.addLabels(bucket);
         }
         for (const l of labels) this._labelsById.set(l.id, l);
+        LabelProfiler.end('register', _p);
     }
 
     removeLabels(labels: Label[]) {
+        const _p = LabelProfiler.begin();
         const byKey = this._groupByFontKey(labels);
         for (const [key, bucket] of byKey) {
             this._groups.get(key)?.fontGroup.removeLabels(bucket);
         }
         for (const l of labels) this._labelsById.delete(l.id);
+        LabelProfiler.end('delete', _p);
     }
 
     updatePxPerUnit(pxPerUnit: number) {
@@ -160,13 +165,27 @@ export class InstancedLabelManager {
             this._lastEvalVP.copy(this._curVP);
         }
 
+        // Nothing registered → this manager is idle (e.g. DOM / no-label mode
+        // still ticks it). Skip the per-frame passes entirely so they don't show
+        // up as phantom cost on modes that don't use instanced labels.
+        if (this._labelsById.size === 0) {
+            return;
+        }
+
+        let _p = LabelProfiler.begin();
         const fadesChanged = this._advanceFades(frameDelta);
+        LabelProfiler.end('fades', _p);
+
+        _p = LabelProfiler.begin();
         const farCullChanged = this._applyFarCull(camera);
+        LabelProfiler.end('farcull', _p);
 
         if (collisionRan || fadesChanged || farCullChanged || anySynced) {
+            _p = LabelProfiler.begin();
             for (const group of this._groups.values()) {
                 group.meshGroup.cull(group.fontGroup.labels);
             }
+            LabelProfiler.end('cull', _p);
         }
     }
 
@@ -263,7 +282,13 @@ export class InstancedLabelManager {
 
     private _syncGroup(group: LabelGroup) {
         const { fontGroup, meshGroup } = group;
+        // Atlas: rasterize any newly-seen glyphs (TinySDF) into the SDF atlas and
+        // flag a full-atlas GPU re-upload. Heavy for large/growing character sets
+        // (worldwide names, CJK fonts) — and previously untimed. This is the
+        // prime suspect for the periodic stall frames during zoom/pan.
+        const _pAtlas = LabelProfiler.begin();
         const { atlas, dirty, resized } = fontGroup.getAtlas();
+        LabelProfiler.end('atlas', _pAtlas);
         const dirtyMap = fontGroup.dirty;
         const budget = this.config.layoutBudgetPerTick;
 
@@ -276,6 +301,10 @@ export class InstancedLabelManager {
 
         let layoutCount = 0;
 
+        // Layout: layoutText() turns each dirty label's text into positioned
+        // glyph quads (the CPU-heavy text-layout step; analog of the browser
+        // reflow DOM labels pay in initDimensions()).
+        const _pShape = LabelProfiler.begin();
         for (const [label, level] of dirtyMap) {
             switch (level) {
                 case DirtyLevel.Add:
@@ -301,6 +330,10 @@ export class InstancedLabelManager {
                         this._hasPendingWork = true;
                         continue;
                     }
+                    // Re-shape of an already-built label (e.g. a zoom-dependent
+                    // text-field switching {name_en}→{name}) — a burst of these
+                    // explains shaping spikes at zoom thresholds.
+                    LabelProfiler.count('reshape', 1);
                     this._toLayoutBuffer.push(layoutText(label, atlas.glyphs, this.config.baseFontSize));
                     this._processedLabels.push(label);
                     layoutCount++;
@@ -313,10 +346,14 @@ export class InstancedLabelManager {
                     break;
             }
         }
+        LabelProfiler.end('layout', _pShape);
 
         this.collision.removeLabels(this._toRemoveBuffer);
         this.collision.addLabels(this._toAddBuffer);
 
+        // Position: write the shaped glyph/label data into the GPU data textures
+        // (the instanced analog of DOM updateCSSPosition — commit to render).
+        const _pUpload = LabelProfiler.begin();
         meshGroup.update(
             this._toAddBuffer,
             this._toRemoveBuffer,
@@ -327,6 +364,11 @@ export class InstancedLabelManager {
         );
 
         if (resized) {
+            // The glyph atlas grew: every label in the group is re-laid-out and
+            // re-emitted (O(group size)) — a classic single-frame spike. Count the
+            // event and how many labels it touched.
+            LabelProfiler.count('atlasResize', 1);
+            LabelProfiler.count('atlasReemit', fontGroup.labels.size);
             const alreadyRelaidOut = new Set([
                 ...this._toAddBuffer.map(l => l.id),
                 ...this._toLayoutBuffer.map(l => l.id),
@@ -338,6 +380,7 @@ export class InstancedLabelManager {
                 meshGroup.reemitGlyphs(label);
             }
         }
+        LabelProfiler.end('position', _pUpload);
 
         fontGroup.flushDirtyFor(this._processedLabels);
 

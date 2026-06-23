@@ -4,6 +4,7 @@ import handlingError from 'Process/handlerNodeError';
 import { Coordinates } from '@itowns/geographic';
 import { geoidLayerIsVisible } from 'Layer/GeoidLayer';
 import { applyStyle } from 'Converter/Feature2Mesh';
+import { LabelProfiler } from '@itowns/labels';
 
 const coord = new Coordinates('EPSG:4326', 0, 0, 0);
 
@@ -98,6 +99,18 @@ export default {
                     } else {
                         layer.object3d.add(featureMesh);
                         node.link[layer.id].push(featureMesh);
+                        // Streaming signal: a tile's geometry just entered the scene
+                        // → its buffers get GPU-uploaded on the next render. Counts
+                        // the per-frame upload burst that drives nonCPU during zoom.
+                        if (LabelProfiler.enabled) {
+                            LabelProfiler.count('geomTileAdded', 1);
+                            let verts = 0;
+                            featureMesh.traverse((o) => {
+                                const p = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+                                if (p) { verts += p.count; }
+                            });
+                            LabelProfiler.count('geomVertsAdded', verts);
+                        }
                     }
                     featureMesh.layer = layer;
                 } else {

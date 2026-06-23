@@ -99,7 +99,7 @@
 
         /* ── Minimap (left-center) ───────────────────────────────────────── */
         #panel-minimap {
-            top: 50%; left: 10px;
+            top: 60%; left: 10px;
             transform: translateY(-50%);
             padding: 6px;
             width: 180px;
@@ -194,55 +194,93 @@
             text-align: center;
         }
 
-        /* ── Results table (right side) ──────────────────────────────────── */
-        #panel-results {
-            bottom: 10px; right: 10px;
-            width: 600px;
-            max-height: calc(100vh - 20px);
-            overflow-y: auto;
-            pointer-events: auto;
+        /* ── Consolidated report panel (right side) ──────────────────────── */
+        #panel-report {
+            top: 130px; right: 10px;
+            width: 900px;
+            height: 600px;
             display: none;
+            flex-direction: column;
+            padding: 0;
+            overflow: hidden;
+            pointer-events: auto;
         }
-        #panel-results.visible { display: block; }
+        #panel-report.visible { display: flex; }
 
-        #results-table {
+        #report-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.10);
+            background: rgba(255,255,255,0.55);
+            flex-shrink: 0;
+        }
+        #report-header .panel-title { margin: 0; flex: 1; }
+        #report-body {
+            overflow: auto;
+            padding: 10px;
+        }
+        #panel-report.collapsed #report-body { display: none; }
+
+        .rep-section-title {
+            font-size: 9px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(0,0,0,0.4);
+            margin: 12px 0 5px;
+        }
+        .rep-section-title:first-child { margin-top: 0; }
+        .rep-mode-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #1a3060;
+            margin: 14px 0 4px;
+        }
+
+        .rep-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 10px;
-            table-layout: fixed;
-        }
-        #results-table th:first-child,
-        #results-table td:first-child { width: 130px; }
-        #results-table th:not(:first-child),
-        #results-table td:not(:first-child) { width: 54px; }
-
-        #results-table th {
-            color: rgba(0,0,0,0.35);
-            text-align: right;
-            padding: 3px 5px;
-            border-bottom: 1px solid rgba(0,0,0,0.08);
-            font-weight: 400;
-            letter-spacing: 0.04em;
             white-space: nowrap;
-            overflow: hidden;
         }
-        #results-table th:first-child { text-align: left; }
-        #results-table td {
-            padding: 4px 5px;
+        .rep-table th {
+            color: rgba(0,0,0,0.4);
+            text-align: right;
+            padding: 3px 6px;
+            border-bottom: 1px solid rgba(0,0,0,0.12);
+            font-weight: 400;
+            letter-spacing: 0.03em;
+        }
+        .rep-table th:first-child,
+        .rep-table td:first-child { text-align: left; }
+        .rep-table td {
+            padding: 3px 6px;
             text-align: right;
             border-bottom: 1px solid rgba(0,0,0,0.05);
-            line-height: 1.5;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            line-height: 1.45;
+            color: #1a2030;
         }
-        #results-table td:first-child {
-            text-align: left;
-            color: rgba(0,0,0,0.55);
-            font-size: 9.5px;
+        .rep-table td:first-child { color: rgba(0,0,0,0.6); font-size: 9.5px; }
+        .rep-table tr.rep-overall td { font-weight: 600; border-top: 1px solid rgba(0,0,0,0.14); }
+        .rep-table tr:hover td { background: rgba(40,100,220,0.05); }
+        .rep-table .grp { border-left: 1px solid rgba(0,0,0,0.08); }
+        .rep-table th.grp-h {
+            color: rgba(0,0,0,0.3);
+            font-size: 8.5px;
+            letter-spacing: 0.08em;
+            border-bottom: none;
+            padding-bottom: 0;
         }
-        #results-table tr.active-step td { background: rgba(40,100,220,0.07); }
-        #results-table tr:last-child td { border-bottom: none; }
+        .rep-cold {
+            display: grid;
+            grid-template-columns: repeat(4, auto 1fr);
+            gap: 3px 10px;
+            font-size: 10px;
+            align-items: baseline;
+        }
+        .rep-cold .k { color: rgba(0,0,0,0.45); }
+        .rep-cold .v { text-align: right; font-weight: 600; }
 
         /* ── Overlay dimmer during countdown ─────────────────────────────── */
         #countdown-overlay {
@@ -262,8 +300,8 @@
             letter-spacing: -3px;
         }
 
-        #panel-results::-webkit-scrollbar { width: 4px; }
-        #panel-results::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 2px; }
+        #report-body::-webkit-scrollbar { width: 6px; height: 6px; }
+        #report-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 3px; }
 
         /* ── HUD toggle state ─────────────────────────────────────────────── */
         .toggle-btn          { opacity: 0.4; }
@@ -273,9 +311,19 @@
         .panel--hidden       { display: none !important; }
         #sparkline-canvas.panel--hidden { display: none !important; }
 
+        /* ── CPU stage breakdown bars ────────────────────────────────────────── */
+        .stage-bars { margin-top: 6px; border-top: 1px solid rgba(0,0,0,0.07); padding-top: 5px; }
+        .stage-row  { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+        .stage-label { width: 46px; font-size: 9px; color: rgba(0,0,0,0.4); flex-shrink: 0; }
+        .stage-bar-bg { flex: 1; height: 5px; background: rgba(0,0,0,0.06); border-radius: 2px; overflow: hidden; }
+        .stage-bar-fill { height: 100%; border-radius: 2px; transition: width 0.12s; }
+        .stage-val { width: 38px; font-size: 9px; text-align: right; color: rgba(0,0,0,0.5); flex-shrink: 0; }
+
         /* ── Mode selector ────────────────────────────────────────────────── */
         .mode-btn     { opacity: 0.4; }
         .mode-btn.on  { opacity: 1; color: #1a6030; border-color: rgba(40,160,80,0.45); }
+        .dataset-btn  { opacity: 0.4; }
+        .dataset-btn.on { opacity: 1; color: #5a2080; border-color: rgba(140,60,200,0.45); }
 
         .step-select {
             background: rgba(0,0,0,0.05);
@@ -288,6 +336,7 @@
             padding: 5px 8px;
             min-width: 170px;
         }
+
     </style>
 </head>
 
@@ -320,6 +369,38 @@
                 </div>
             </div>
             <div id="fps-external-stats" style="position:absolute; top:8px; right:8px; width:76px; height:48px; overflow:hidden; pointer-events:none;"></div>
+            <div class="stage-bars" id="cpu-stages">
+                <div class="stage-row">
+                    <span class="stage-label" title="Total CPU-active JS time per frame">CPU/f</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-cpu" style="background:#4070c0;width:0%"></div></div>
+                    <span class="stage-val" id="val-cpu">-- ms</span>
+                </div>
+                <div class="stage-row">
+                    <span class="stage-label" title="Async label build: parse + create + register + screen-grid thin + delete">Build</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-cam" style="background:#20a060;width:0%"></div></div>
+                    <span class="stage-val" id="val-cam">-- ms</span>
+                </div>
+                <div class="stage-row">
+                    <span class="stage-label" title="Tile-tree update + command scheduling">Tiles</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-lyr" style="background:#e08020;width:0%"></div></div>
+                    <span class="stage-val" id="val-lyr">-- ms</span>
+                </div>
+                <div class="stage-row">
+                    <span class="stage-label" title="Position commit + GPU buffer cull + fades/far-cull (instanced) / show-hide (DOM)">GPU/pos</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-shp" style="background:#d04090;width:0%"></div></div>
+                    <span class="stage-val" id="val-shp">-- ms</span>
+                </div>
+                <div class="stage-row">
+                    <span class="stage-label" title="Collision: candidate + priority sort + occlusion">Collide</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-col" style="background:#c0a020;width:0%"></div></div>
+                    <span class="stage-val" id="val-col">-- ms</span>
+                </div>
+                <div class="stage-row">
+                    <span class="stage-label" title="WebGL render submission">WebGL</span>
+                    <div class="stage-bar-bg"><div class="stage-bar-fill" id="bar-rdr" style="background:#9040c0;width:0%"></div></div>
+                    <span class="stage-val" id="val-rdr">-- ms</span>
+                </div>
+            </div>
         </div>
 
         <div class="panel" id="panel-controls" style="flex-direction:column; gap:6px; min-width:560px;">
@@ -339,8 +420,8 @@
             </div>
             <div style="display:flex; gap:6px; align-items:center;">
                 <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">MODE</span>
-                <button class="btn mode-btn on" id="btn-mode-instanced" title="GPU instanced labels (sync — collision on main thread)">Instanced</button>
-                <button class="btn mode-btn"    id="btn-mode-dom-perf"  title="DOM labels — with screen-grid culling (performance:true)">DOM+</button>
+                <button class="btn mode-btn on" id="btn-mode-instanced" title="GPU instanced 3D labels (collision on main thread)">3D</button>
+                <button class="btn mode-btn"    id="btn-mode-dom-perf"  title="DOM labels — screen-grid culling (performance:true)">DOM</button>
                 <button class="btn mode-btn"    id="btn-mode-none"      title="No labels — raw tile baseline">None</button>
                 <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
                 <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">HUD</span>
@@ -349,9 +430,20 @@
                 <button class="btn toggle-btn" id="btn-toggle-stats"   title="Toggle label stats panel (S)">Stats</button>
                 <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
                 <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">LOCK</span>
-                <button class="btn fps-lock-btn" id="btn-lock-60" title="Lock framerate to 60 FPS for stability">60 FPS</button>
-                <button class="btn fps-lock-btn" id="btn-lock-90" title="Lock framerate to 90 FPS">90 FPS</button>
-                <button class="btn fps-lock-btn" id="btn-lock-unlimited" title="Unlimited framerate">∞</button>
+                <button class="btn fps-lock-btn" id="btn-lock-60" title="Cap benchmark render loop to 60 FPS (no effect during idle/manual panning)">60 FPS</button>
+                <button class="btn fps-lock-btn" id="btn-lock-90" title="Cap benchmark render loop to 90 FPS">90 FPS</button>
+                <button class="btn fps-lock-btn" id="btn-lock-unlimited" title="Unlimited framerate during benchmark">∞</button>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">DATASET</span>
+                <button class="btn dataset-btn on" id="btn-ds-ign"
+                    title="IGN Plan v2 — French national dataset (may show 10k+ labels with broken zoom filtering)">IGN</button>
+                <button class="btn dataset-btn" id="btn-ds-ofm"
+                    title="CARTO Positron (OSM-based) — worldwide, proper zoom-level filtering, no API key, good label density">CARTO</button>
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">PREFILT</span>
+                <button class="btn toggle-btn on" id="btn-cap-500"
+                    title="Toggles the per-tile screen-grid pre-filter (performance flag) for BOTH 3D and DOM. On = thinned per tile; off = full label pool. Rebuilds the scene.">Screen-grid filter</button>
             </div>
         </div>
 
@@ -386,111 +478,24 @@
             <div id="step-counter">—</div>
         </div>
 
-        <div class="panel" id="panel-results">
-            <div class="panel-title">Benchmark results</div>
-
-            <div id="cold-start-panel" style="
-                margin-bottom: 8px;
-                padding-bottom: 8px;
-                border-bottom: 1px solid rgba(0,0,0,0.08);
-            ">
-                <div class="panel-title" style="margin-bottom:4px;">Cold start (this page load)</div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; font-size:10px;">
-                    <span style="color:rgba(0,0,0,0.45)">First frame</span>   <span id="cs-first-frame"  style="text-align:right">—</span>
-                    <span style="color:rgba(0,0,0,0.45)">First tile</span>    <span id="cs-first-tile"   style="text-align:right">—</span>
-                    <span style="color:rgba(0,0,0,0.45)">First label</span>   <span id="cs-first-label"  style="text-align:right; color:#1a7a4a">—</span>
-                    <span style="color:rgba(0,0,0,0.45)">Scene ready</span>   <span id="cs-scene-ready"  style="text-align:right">—</span>
-                </div>
+        <div class="panel" id="panel-report">
+            <div id="report-header">
+                <div class="panel-title">Benchmark report</div>
+                <span id="report-progress" style="font-size:10px;color:rgba(0,0,0,0.45);letter-spacing:0.05em;"></span>
+                <button class="btn" id="btn-report-pdf" title="Print / save the report as PDF (keeps this visual style)" style="padding:3px 10px;">⎙ PDF</button>
+                <button class="btn" id="btn-report-collapse" title="Collapse / expand the report" style="padding:3px 10px;">▾ Hide</button>
             </div>
-
-            <table id="results-table">
-                <thead>
-                    <tr>
-                        <th title="Benchmark step">Step</th>
-                        <th title="Average FPS over the step">avg</th>
-                        <th title="Minimum FPS (single worst frame)">min</th>
-                        <th title="5th-percentile FPS — 95% of frames were faster.">p5</th>
-                        <th title="1st-percentile FPS — 99% of frames were faster.">p1</th>
-                        <th title="Worst single frame time in ms — captures even sub-frame spikes.">wf</th>
-                        <th title="Standard deviation of FPS — lower = smoother">σ</th>
-                        <th title="Average total label count">lbls</th>
-                        <th title="Average rendered (visible, not occluded) label count">rend</th>
-                        <th title="Average WebGL draw calls">calls</th>
-                        <th title="Average frame time in milliseconds">ms/f</th>
-                    </tr>
-                </thead>
-                <tbody id="results-tbody"></tbody>
-            </table>
-            <div id="run-summary" style="
-                margin-top: 8px;
-                padding-top: 8px;
-                border-top: 1px solid rgba(0,0,0,0.08);
-                font-size: 10px;
-                color: rgba(0,0,0,0.5);
-                display: none;
-            "></div>
-        </div>
-
-        <div class="panel" id="panel-comparison" style="
-            display: none;
-            top: 100px; right: 10px;
-            width: 620px;
-            bottom: 10px;
-            overflow-y: auto;
-            pointer-events: auto;
-        ">
-            <div class="panel-title">Full Benchmark — Mode Comparison</div>
-
-            <div id="cmp-progress" style="
-                font-size: 10px; color: rgba(0,0,0,0.45);
-                margin-bottom: 8px; letter-spacing: 0.06em;
-            "></div>
-
-            <table id="cmp-summary-table" style="
-                width: 100%; border-collapse: collapse; font-size: 10px;
-                margin-bottom: 10px;
-            ">
-                <thead>
-                    <tr>
-                        <th style="text-align:left; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;">Mode</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Overall average FPS">avg</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="5th-percentile FPS — sustained worst-case floor">p5</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="1st-percentile FPS — captures the very worst hitches">p1</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="FPS standard deviation">σ</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs No-Label baseline (positive = faster)">Δfps%</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Time to first rendered label">1st lbl</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Scene-ready milestone">scene</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average total label count">lbls</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average rendered label count">rend</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average tiles loaded">tiles</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average draw calls">calls</th>
-                        <th style="text-align:right; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average ms per frame">ms/f</th>
-                    </tr>
-                </thead>
-                <tbody id="cmp-summary-tbody"></tbody>
-            </table>
-
-            <div class="panel-title" style="margin-bottom:4px; border-top:1px solid rgba(0,0,0,0.07); padding-top:8px;">Per-step avg FPS</div>
-            <table id="cmp-step-table" style="
-                width: 100%; border-collapse: collapse; font-size: 10px;
-                table-layout: fixed;
-            ">
-                <thead>
-                    <tr>
-                        <th style="text-align:left; width:110px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;">Step</th>
-                        <th style="text-align:right; width:44px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="No labels — raw tile baseline">None</th>
-                        <th style="text-align:right; width:48px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="GPU instanced — sync (main thread collision)">Inst.</th>
-                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs baseline (positive = faster)">Δ%</th>
-                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="DOM labels with screen-grid culling">DOM+</th>
-                        <th style="text-align:right; width:38px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Percent FPS delta vs baseline (positive = faster)">Δ%</th>
-                        <th style="text-align:right; width:44px; padding:3px 5px; color:rgba(0,0,0,0.35); border-bottom:1px solid rgba(0,0,0,0.08); font-weight:400;" title="Average tiles loaded">tiles</th>
-                    </tr>
-                </thead>
-                <tbody id="cmp-step-tbody"></tbody>
-            </table>
+            <div id="report-body"></div>
         </div>
 
     </div>
+
+    <button class="btn" id="btn-report-show" title="Show the benchmark report" style="
+        position: fixed; top: 10px; right: 10px; z-index: 11;
+        display: none; pointer-events: auto;
+        background: rgba(255,255,255,0.9); border:1px solid rgba(0,0,0,0.15);
+        backdrop-filter: blur(6px);
+    ">▸ Show report</button>
 
     <div id="countdown-overlay">
         <div id="countdown-text">3</div>
@@ -575,20 +580,33 @@
         view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
 
         if (labelMode !== 'none') {
+            // The screen-grid filter toggles `performance` for BOTH modes, so DOM
+            // and 3D are always compared on equal footing (both filtered, or both
+            // full-pool).
             const addLabelLayer = {
-                'instanced': { performance: true,  instanced: true,  async: false },
-                'dom-perf':  { performance: true,  instanced: false, async: false },
-            }[labelMode] ?? { performance: true, instanced: true, async: false };
+                'instanced': { performance: useScreenGridFilter, instanced: true,  async: false },
+                'dom-perf':  { performance: useScreenGridFilter, instanced: false, async: false },
+            }[labelMode] ?? { performance: useScreenGridFilter, instanced: true, async: false };
 
-            const mapSource = new itowns.VectorTilesSource({
-                style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
-                filter: (layer) =>
-                    !layer['source-layer'].includes('bati_surf') &&
-                    !layer['source-layer'].includes('oro_')      &&
-                    !layer['source-layer'].includes('routier_ponc') &&
-                    !layer['source-layer'].includes('parcellaire') &&
-                    !layer['source-layer'].includes('fond'),
-            });
+            let mapSource;
+            if (datasetMode === 'openfreemap') {
+                // CARTO Positron — OSM-based, worldwide, no API key, standard Mapbox GL v1 JSON,
+                // proper minzoom/maxzoom per layer (unlike IGN which has broken zoom filtering)
+                mapSource = new itowns.VectorTilesSource({
+                    style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+                });
+            } else {
+                // IGN Plan v2 with noisy layer filtering
+                mapSource = new itowns.VectorTilesSource({
+                    style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
+                    filter: (layer) =>
+                        !layer['source-layer'].includes('bati_surf') &&
+                        !layer['source-layer'].includes('oro_')      &&
+                        !layer['source-layer'].includes('routier_ponc') &&
+                        !layer['source-layer'].includes('parcellaire') &&
+                        !layer['source-layer'].includes('fond'),
+                });
+            }
 
             view.addLayer(new itowns.FeatureGeometryLayer('MVT', {
                 source: mapSource,
@@ -631,13 +649,13 @@
                 heading: 0,
             }),
         },
-        {
-            id: 'idle_street',
-            name: '3. Idle (street level)',
-            desc: 'Camera still at 400 m, tilt 60°. Maximum label density — tests sustained throughput under full load.',
-            duration: 6_000,
-            drive: () => ({ coord: PARIS, range: 400, tilt: 60, heading: 0 }),
-        },
+        // {
+        //     id: 'idle_street',
+        //     name: '3. Idle (street level)',
+        //     desc: 'Camera still at 400 m, tilt 60°. Maximum label density — tests sustained throughput under full load.',
+        //     duration: 6_000,
+        //     drive: () => ({ coord: PARIS, range: 400, tilt: 60, heading: 0 }),
+        // },
         {
             id: 'zoom_out',
             name: '4. Zoom Out',
@@ -650,19 +668,19 @@
                 heading: 0,
             }),
         },
-        {
-            id: 'pan',
-            name: '5. Pan',
-            desc: 'Lateral arc ~9 km and back at 5 km altitude, tilt 50°. Streams new tile columns with a steady label load.',
-            duration: 10_000,
-            drive: (t) => {
-                const offset = Math.sin(t * Math.PI) * 0.13;
-                return {
-                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + offset, 48.8534),
-                    range: 5_000, tilt: 50, heading: 0,
-                };
-            },
-        },
+        // {
+        //     id: 'pan',
+        //     name: '5. Pan',
+        //     desc: 'Lateral arc ~9 km and back at 5 km altitude, tilt 50°. Streams new tile columns with a steady label load.',
+        //     duration: 10_000,
+        //     drive: (t) => {
+        //         const offset = Math.sin(t * Math.PI) * 0.13;
+        //         return {
+        //             coord: new itowns.Coordinates('EPSG:4326', 2.3488 + offset, 48.8534),
+        //             range: 5_000, tilt: 50, heading: 0,
+        //         };
+        //     },
+        // },
         {
             id: 'tilt',
             name: '6. Tilt Sweep',
@@ -675,18 +693,18 @@
                 heading: 0,
             }),
         },
-        {
-            id: 'orbit',
-            name: '7. Orbit (360°)',
-            desc: 'Full 360° heading rotation at 5 km, tilt 30°. Each orientation loads different tile columns.',
-            duration: 12_000,
-            drive: (t) => ({
-                coord: PARIS,
-                range: 5_000,
-                tilt:  30,
-                heading: lerp(0, 360, easeLinear(t)),
-            }),
-        },
+        // {
+        //     id: 'orbit',
+        //     name: '7. Orbit (360°)',
+        //     desc: 'Full 360° heading rotation at 5 km, tilt 30°. Each orientation loads different tile columns.',
+        //     duration: 12_000,
+        //     drive: (t) => ({
+        //         coord: PARIS,
+        //         range: 5_000,
+        //         tilt:  30,
+        //         heading: lerp(0, 360, easeLinear(t)),
+        //     }),
+        // },
         {
             id: 'rapid_zoom',
             name: '8. Rapid Zoom ×10',
@@ -726,21 +744,21 @@
                 heading: t * 360 * 11,
             }),
         },
-        {
-            id: 'pan_fast_circle',
-            name: '11. Circular pan (low tilt)',
-            desc: '6 fast circles (~15 km radius) at 5 km altitude, near-nadir tilt (12°). Rapid tile streaming with a wide visible area.',
-            duration: 12_000,
-            drive: (t) => {
-                const angle = t * Math.PI * 2 * 6;
-                return {
-                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + Math.cos(angle) * 0.2, 48.8534 + Math.sin(angle) * 0.132),
-                    range: 5_000,
-                    tilt: 12,
-                    heading: 0,
-                };
-            },
-        },
+        // {
+        //     id: 'pan_fast_circle',
+        //     name: '11. Circular pan (low tilt)',
+        //     desc: '6 fast circles (~15 km radius) at 5 km altitude, near-nadir tilt (12°). Rapid tile streaming with a wide visible area.',
+        //     duration: 12_000,
+        //     drive: (t) => {
+        //         const angle = t * Math.PI * 2 * 6;
+        //         return {
+        //             coord: new itowns.Coordinates('EPSG:4326', 2.3488 + Math.cos(angle) * 0.2, 48.8534 + Math.sin(angle) * 0.132),
+        //             range: 5_000,
+        //             tilt: 12,
+        //             heading: 0,
+        //         };
+        //     },
+        // },
         {
             id: 'rapid_zoom_high_range',
             name: '12. Extreme zoom (500 km↔50 m)',
@@ -1036,48 +1054,291 @@
         return out;
     }
 
-    class FrameStatsCollector {
-        constructor() { this._frames = []; }
+    // ═══════════════════════════════════════════════════════════════════════
+    // Resource Timing observer — unbiased network measurement
+    // ═══════════════════════════════════════════════════════════════════════
+    // The browser's Resource Timing API measures fetch durations at the
+    // network stack level, completely independent of JavaScript execution.
+    // This removes the main-thread bias that plagued the old begin()/end()
+    // approach (where DOM mode's longer frames inflated fetch timings).
+    // ═══════════════════════════════════════════════════════════════════════
+    const _netQueue = [];  // resource entries awaiting per-frame consumption
+    const _netObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+            // Match vector tile fetches: .pbf (IGN), .mvt (CARTO/Mapbox),
+            // or paths containing /tile/ as fallback
+            if (entry.name.endsWith('.pbf') || entry.name.endsWith('.mvt') || entry.name.includes('/tile/')) {
+                // duration = responseEnd - startTime (full request lifecycle)
+                // For same-origin / CORS-allowed: use responseEnd - requestStart
+                // to exclude DNS/TCP/TLS (cached after first). Fall back to
+                // entry.duration for opaque responses.
+                const rtt = (entry.requestStart > 0)
+                    ? entry.responseEnd - entry.requestStart
+                    : entry.duration;
+                _netQueue.push({
+                    ms: Math.max(0, rtt),
+                    bytes: entry.transferSize || 0,
+                    cached: entry.transferSize === 0 && entry.decodedBodySize > 0,
+                });
+            }
+        }
+    });
+    _netObserver.observe({ type: 'resource', buffered: false });
 
-        record(frameMs, lblStats, drawCalls, tilesLoaded) {
-            this._frames.push({ frameMs, ...lblStats, drawCalls, tilesLoaded });
+    // Per-frame drain: consume all entries that arrived since last frame.
+    // Returns { ms, calls, peak, bytes } for this frame.
+    let _lastNetFrame = { ms: 0, calls: 0, peak: 0, bytes: 0 };
+    function drainNetQueue() {
+        let ms = 0, calls = 0, peak = 0, bytes = 0;
+        while (_netQueue.length > 0) {
+            const e = _netQueue.shift();
+            if (e.cached) continue; // skip cache hits (0 ms is misleading)
+            ms += e.ms;
+            calls++;
+            if (e.ms > peak) peak = e.ms;
+            bytes += e.bytes;
+        }
+        _lastNetFrame = { ms, calls, peak, bytes };
+        return _lastNetFrame;
+    }
+
+    // Stage catalogue. Common stages are measured in BOTH the instanced and the
+    // DOM pipeline (same profiler key, mapped to the conceptually-equivalent work)
+    // so the two methods line up row-for-row. Method-specific stages live in their
+    // own group and are only shown for the mode that uses them.
+    //   src:'loop' → timed by the frame requesters here
+    //   src:'prof' → itowns.LabelProfiler.ms/.calls key (timed inside the library)
+    //   src:'net'  → Resource Timing API (unbiased network measurement)
+    //   modes      → which label modes this stage is relevant to (report filter)
+    const ALL_MODES = ['instanced', 'dom-perf', 'none'];
+    const STAGE_DEFS = [
+        // ── Network I/O (Resource Timing API — unbiased) ──────────────────
+        { key: 'net',       label: 'Tile fetch (network)', group: 'Network', src: 'net', warn: 80, bad: 200, modes: ALL_MODES },
+        // ── Tile decode (sync CPU in microtasks — accurate) ───────────────
+        { key: 'decode',    label: 'PBF decode + extract', group: 'Tile decode', src: 'prof', warn: 2, bad: 8, modes: ALL_MODES },
+        // ── Render loop (sync CPU during frame) ───────────────────────────
+        { key: 'cam',       label: 'Camera',          group: 'Render loop', src: 'loop', warn: 2,  bad: 5,  modes: ALL_MODES },
+        { key: 'tiles',     label: 'Tiles + schedule', group: 'Render loop', src: 'loop', warn: 3, bad: 8,  modes: ALL_MODES },
+        { key: 'webgl',     label: 'WebGL submit (CPU)', group: 'Render loop', src: 'prof', warn: 4, bad: 10, modes: ALL_MODES },
+        // ── GPU (async timer query) ───────────────────────────────────────
+        { key: 'gpu',       label: 'GPU execution',   group: 'GPU', src: 'prof', warn: 6,  bad: 12, modes: ALL_MODES },
+        // ── Geometry build (shared by 3D + DOM; absent in None) ────────────
+        { key: 'geomBuild', label: 'Geometry build',  group: 'Geometry',   src: 'prof', warn: 2,  bad: 6,  modes: ['instanced', 'dom-perf'] },
+        // ── Label build (async pipeline — runs in microtasks) ─────────────
+        { key: 'parse',     label: 'Parse + create',  group: 'Label build', src: 'prof', warn: 1,  bad: 4,  modes: ALL_MODES },
+        { key: 'register',  label: 'Register',        group: 'Label build', src: 'prof', warn: 1,  bad: 4,  modes: ['instanced', 'dom-perf'] },
+        { key: 'layout',    label: 'Layout / measure', group: 'Label build', src: 'prof', warn: 1, bad: 4,  modes: ['instanced', 'dom-perf'] },
+        { key: 'thin',      label: 'Screen-grid thin', group: 'Label build', src: 'prof', warn: 1, bad: 4,  modes: ['instanced', 'dom-perf'] },
+        { key: 'delete',    label: 'Delete',          group: 'Label build', src: 'prof', warn: 1,  bad: 4,  modes: ['instanced', 'dom-perf'] },
+        // ── Label collision (per-frame visibility resolution) ──────────────
+        { key: 'candidate', label: 'Candidate / cull', group: 'Label collision', src: 'prof', warn: 1, bad: 4, modes: ['instanced', 'dom-perf'] },
+        { key: 'priority',  label: 'Priority sort',   group: 'Label collision', src: 'prof', warn: 0.5, bad: 2, modes: ['instanced', 'dom-perf'] },
+        { key: 'occlusion', label: 'Occlusion',       group: 'Label collision', src: 'prof', warn: 1,  bad: 4,  modes: ['instanced', 'dom-perf'] },
+        { key: 'position',  label: 'Position commit', group: 'Label collision', src: 'prof', warn: 1,  bad: 4,  modes: ['instanced', 'dom-perf'] },
+        // ── Instanced 3D rendering ────────────────────────────────────────
+        { key: 'atlas',     label: 'SDF atlas build', group: '3D rendering', src: 'prof', warn: 2, bad: 8, modes: ['instanced'] },
+        { key: 'cull',      label: 'GPU buffer cull', group: '3D rendering', src: 'prof', warn: 1,  bad: 4,  modes: ['instanced'] },
+        { key: 'fades',     label: 'Fades',           group: '3D rendering', src: 'prof', warn: 0.5, bad: 2, modes: ['instanced'] },
+        { key: 'farcull',   label: 'Far-cull',        group: '3D rendering', src: 'prof', warn: 0.5, bad: 2, modes: ['instanced'] },
+        // ── DOM rendering ─────────────────────────────────────────────────
+        { key: 'showhide',  label: 'Show / hide',     group: 'DOM rendering', src: 'prof', warn: 0.5, bad: 2,  modes: ['dom-perf'] },
+    ];
+    const PROF_KEYS = STAGE_DEFS.filter(s => s.src === 'prof').map(s => s.key);
+
+    // Per-stage, per-method detail: the concrete strategy each pipeline uses for
+    // a conceptual stage, plus the source location. Shown inline + on hover in
+    // the breakdown for the table's own mode (so DOM rows describe DOM, etc.).
+    //   { <stageKey>: { <mode>: { name, ref } } }   ('all' = same for every mode)
+    const STAGE_DETAIL = {
+        net:       { all: { name: 'true network RTT (Resource Timing API: responseEnd − requestStart, independent of JS execution)', ref: 'PerformanceObserver → PerformanceResourceTiming' } },
+        decode:    { all: { name: 'PBF binary decode + style filter + feature geometry extraction (sync CPU in microtask)', ref: 'VectorTileParser.readPBF → Protobuf + vtFeatureToFeatureGeometry' } },
+        cam:       { all: { name: 'camera.update()', ref: 'MainLoop.step → Camera.update' } },
+        tiles:     { all: { name: 'tile-tree traversal + command scheduling', ref: 'MainLoop._update → LabelLayer.update' } },
+        webgl:     {
+            instanced: { name: 'CPU cost to submit the draw (label meshes on layer 31)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
+            'dom-perf': { name: 'CPU cost to submit the draw (tiles only; labels are DOM)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
+            none:      { name: 'CPU cost to submit the draw (no labels)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
+        },
+        gpu:       { all: { name: 'actual GPU execution of the render (async timer query, incl. buffer/texture uploads)', ref: 'c3DEngine GPU timer → EXT_disjoint_timer_query' } },
+        geomBuild: { all: { name: 'Feature2Mesh: features → THREE meshes (Earcut / extrude / buffers)', ref: 'Converter/Feature2Mesh.convert' } },
+        parse:     { all: { name: 'vector features → Label objects', ref: 'LabelLayer.convert' } },
+        register:  {
+            instanced: { name: 'add to font group + build InstancedLabel', ref: 'InstancedLabelManager.addLabels' },
+            'dom-perf': { name: 'append <div> to the DOM tree', ref: 'LabelLayer LabelsNode.addLabel' },
+        },
+        layout:    {
+            instanced: { name: 'layoutText() — shape glyph quads', ref: 'Shaping/TextLayout → InstancedLabelManager._syncGroup' },
+            'dom-perf': { name: 'getBoundingClientRect() — browser reflow', ref: 'Core/Label.initDimensions' },
+        },
+        thin:      { all: { name: 'per-tile screen-grid pre-filter', ref: 'LabelLayer.#removeCulledLabels → ScreenGrid.insert' } },
+        candidate: {
+            instanced: { name: 'visibility/opacity filter + distance·size score', ref: 'LabelCollisionEngine.evaluate (phase 1)' },
+            'dom-perf': { name: 'frustum + globe-horizon culling', ref: 'Label2DRenderer.culling' },
+        },
+        priority:  {
+            instanced: { name: 'scatter into depth buckets by score', ref: 'LabelCollisionEngine.evaluate (phase 2)' },
+            'dom-perf': { name: 'sort grid.visible by label order', ref: 'Label2DRenderer.render (grid.visible.sort)' },
+        },
+        occlusion: {
+            instanced: { name: 'hierarchical occupancy bitmap', ref: 'LabelCollisionEngine.evaluate (phase 3) → HierarchicalBitmap' },
+            'dom-perf': { name: 'screen-grid AABB overlap test', ref: 'Label2DRenderer.render → ScreenGrid.insert' },
+        },
+        position:  {
+            instanced: { name: 'write GPU data textures', ref: 'LabelMeshGroup.update' },
+            'dom-perf': { name: 'updateCSSPosition() transform', ref: 'Core/Label.updateCSSPosition' },
+        },
+        delete:    {
+            instanced: { name: 'remove from font group + GPU slot', ref: 'InstancedLabelManager.removeLabels' },
+            'dom-perf': { name: 'removeChild from the DOM', ref: 'LabelLayer LabelsNode.removeLabel' },
+        },
+        atlas:     { instanced: { name: 'rasterize new glyphs (TinySDF) + flag full-atlas GPU re-upload', ref: 'LabelFontGroup.getAtlas → SDFAtlas.addChars' } },
+        cull:      { instanced: { name: 'compact GPU instance buffers', ref: 'LabelMeshGroup.cull' } },
+        fades:     { instanced: { name: 'advance occlusion fade tweens', ref: 'InstancedLabelManager._advanceFades' } },
+        farcull:   { instanced: { name: 'far-distance cull', ref: 'InstancedLabelManager._applyFarCull' } },
+        showhide:  { 'dom-perf': { name: 'hide tile nodes that left view', ref: 'Label2DRenderer.render (toHide)' } },
+    };
+    const stageDetailFor = (key, mode) => {
+        const d = STAGE_DETAIL[key];
+        return d ? (d[mode] || d.all || null) : null;
+    };
+
+    class FrameStatsCollector {
+        constructor() {
+            this._frames = [];
+        }
+
+        // One record per rendered frame. Loop stages come from `stage`; every
+        // label sub-stage comes from the profiler delta (_lastProfMs/_lastProfCalls).
+        // Network metrics come from the Resource Timing observer (drainNetQueue).
+        record(frameMs) {
+            const prof = {}, profCalls = {}, profCallPeak = {}, counts = {};
+            for (const k of PROF_KEYS) {
+                prof[k]         = _lastProfMs[k] || 0;
+                profCalls[k]    = _lastProfCalls[k] || 0;
+                profCallPeak[k] = _lastProfCallPeak[k] || 0;
+            }
+            for (const k of COUNT_KEYS) { counts[k] = _lastProfCounts[k] || 0; }
+            this._frames.push({
+                frameMs,
+                ...runner._stepLabelSnapshot,
+                drawCalls:   _frameDrawCalls,
+                tris:        _frameTris,
+                tilesLoaded: getTileStats().loaded,
+                cpuMs: stage.cpu,
+                cam:   stage.cam,
+                tiles: stage.tiles,
+                prof,
+                profCalls,
+                profCallPeak,
+                counts,
+                net: { ..._lastNetFrame },
+            });
         }
 
         summarize() {
             const n = this._frames.length;
             if (n === 0) return null;
 
-            const totalMs  = this._frames.reduce((s, f) => s + f.frameMs, 0);
-            const msAvg    = totalMs / n;
-            const fpsAvg   = 1000 / msAvg;
-            const lblAvg   = Math.round(this._frames.reduce((s, f) => s + f.total, 0) / n);
-            const rendAvg  = Math.round(this._frames.reduce((s, f) => s + f.isRendered, 0) / n);
-            const callsAvg       = Math.round(this._frames.reduce((s, f) => s + f.drawCalls, 0) / n);
-            const tilesLoadedAvg = Math.round(this._frames.reduce((s, f) => s + (f.tilesLoaded ?? 0), 0) / n);
+            const sum  = (key) => this._frames.reduce((s, f) => s + (f[key] ?? 0), 0);
+            const avg  = (key) => sum(key) / n;
+            const peak = (key) => this._frames.reduce((m, f) => Math.max(m, f[key] ?? 0), 0);
+
+            const totalMs = sum('frameMs');
+            const msAvg   = totalMs / n;
+            const fpsAvg  = 1000 / msAvg;
 
             const buckets = fpsBuckets(this._frames.map(f => f.frameMs), STATS_BUCKET_MS);
-            const bn = buckets.length;
+            const bn  = buckets.length;
             const pct = (p) => buckets[Math.max(0, Math.floor((p / 100) * (bn - 1)))];
-
             const bMean    = buckets.reduce((s, v) => s + v, 0) / bn;
             const fpsSigma = Math.sqrt(buckets.reduce((s, v) => s + (v - bMean) ** 2, 0) / bn);
 
-            const msWorst = Math.max(...this._frames.map(f => f.frameMs));
+            // Per-stage metrics. Loop stages read from the frame field directly;
+            // prof stages read from the nested prof/profCalls maps;
+            // net stages read from the Resource Timing observer data.
+            // For each stage: avgMs (per frame), peakMs (worst frame),
+            // totalMs (over step), calls (over step) → ms/call = total/calls.
+            const stages = {};
+            for (const def of STAGE_DEFS) {
+                let aMs = 0, pMs = 0, tMs = 0, calls = 0, callPeakMs = 0;
+                if (def.src === 'net') {
+                    // Resource Timing: per-frame {ms, calls, peak, bytes}
+                    for (const f of this._frames) {
+                        const net = f.net || { ms: 0, calls: 0, peak: 0 };
+                        aMs += net.ms;
+                        calls += net.calls;
+                        // peakMs = worst single-frame total network time
+                        if (net.ms > pMs) pMs = net.ms;
+                        // callPeakMs = worst single tile RTT across all frames
+                        if (net.peak > callPeakMs) callPeakMs = net.peak;
+                    }
+                    tMs = aMs; aMs /= n;
+                } else if (def.src === 'loop') {
+                    for (const f of this._frames) {
+                        const v = f[def.key] ?? 0;
+                        aMs += v; if (v > pMs) pMs = v;
+                    }
+                    tMs = aMs; aMs /= n;
+                    calls = n; // one per frame
+                } else {
+                    for (const f of this._frames) {
+                        const v = f.prof[def.key] ?? 0;
+                        aMs += v; if (v > pMs) pMs = v;
+                        calls += f.profCalls[def.key] ?? 0;
+                        const cp = f.profCallPeak[def.key] ?? 0;
+                        if (cp > callPeakMs) callPeakMs = cp;
+                    }
+                    tMs = aMs; aMs /= n;
+                }
+                stages[def.key] = {
+                    avgMs: aMs, peakMs: pMs, totalMs: tMs, calls,
+                    msPerCall: calls > 0 ? tMs / calls : 0,
+                    callPeakMs,
+                };
+            }
+
+            // Burst signals: total over the step + worst single frame (peak).
+            // For each peak we also capture how many convert() calls that frame ran
+            // (parse calls), so labels-per-convert is recoverable downstream.
+            const counts = {};
+            for (const k of COUNT_KEYS) {
+                let total = 0, peakV = 0, peakConverts = 0;
+                for (const f of this._frames) {
+                    const v = f.counts[k] ?? 0;
+                    total += v;
+                    if (v > peakV) { peakV = v; peakConverts = f.profCalls.parse ?? 0; }
+                }
+                counts[k] = { total, peak: peakV, peakConverts };
+            }
 
             return {
-                n,
-                fpsAvg,
-                fpsMin:  buckets[0],
-                fpsP5:   pct(5),
-                fpsP1:   pct(1),
+                n, fpsAvg,
+                fpsMin: buckets[0], fpsP5: pct(5), fpsP1: pct(1), fpsMax: buckets[bn - 1],
                 fpsSigma,
-                fpsMax:  buckets[bn - 1],
                 msAvg,
-                msWorst,
-                lblAvg,
-                rendAvg,
-                callsAvg,
-                tilesLoadedAvg,
+                msWorst: peak('frameMs'),
+                cpuAvg:  avg('cpuMs'),
+                cpuWorst: peak('cpuMs'),
+                // Inter-frame gap: time NOT accounted for by the render loop
+                // (microtask work: network callbacks, PBF decode, label pipeline)
+                interFrameAvg: (() => {
+                    const gaps = this._frames.map(f => Math.max(0, f.frameMs - f.cpuMs));
+                    return gaps.reduce((s, v) => s + v, 0) / n;
+                })(),
+                interFrameWorst: (() => {
+                    let w = 0;
+                    for (const f of this._frames) { const g = f.frameMs - f.cpuMs; if (g > w) w = g; }
+                    return w;
+                })(),
+                lblAvg:  Math.round(avg('total')),
+                rendAvg: Math.round(avg('isRendered')),
+                callsAvg: Math.round(avg('drawCalls')),
+                callsPeak: peak('drawCalls'),
+                trisAvg: Math.round(avg('tris')),
+                trisPeak: peak('tris'),
+                tilesLoadedAvg: Math.round(avg('tilesLoaded')),
+                stages,
+                counts,
             };
         }
 
@@ -1114,7 +1375,8 @@
             this._planIdx     = -1;
             this._stepPlan    = Array.isArray(stepPlan) && stepPlan.length ? [...stepPlan] : [...ALL_STEP_INDEXES];
             this._running     = true;
-            _lastPlacement    = null; 
+            _lastPlacement    = null;
+            resetProfilerBaseline();   // don't attribute scene-load build cost to step 1
             setSceneInputEnabled(false);
             this._nextStep();
             if (view) view.notifyChange(view.camera.camera3D);
@@ -1128,8 +1390,8 @@
 
         get stepStartTime() { return this._stepStart; }
 
-        record(frameMs, drawCalls) {
-            this._collector.record(frameMs, this._stepLabelSnapshot, drawCalls, getTileStats().loaded);
+        record(frameMs) {
+            this._collector.record(frameMs);
         }
 
         _nextStep() {
@@ -1152,7 +1414,8 @@
         finishStep() {
             const summary = this._collector.summarize();
             this._stepResults.push({ step: STEPS[this._stepIdx], summary });
-            updateResultsTable(this._stepResults);
+            // Refresh the report live as each step completes.
+            publishResults(labelMode, [...this._stepResults]);
             this._nextStep();
         }
 
@@ -1182,11 +1445,14 @@
     const elBtnRun      = document.getElementById('btn-run');
     const elBtnStop     = document.getElementById('btn-stop');
     const elBtnReset    = document.getElementById('btn-reset');
-    const elResults     = document.getElementById('panel-results');
+    const elReport      = document.getElementById('panel-report');
+    const elReportBody  = document.getElementById('report-body');
+    const elReportProg  = document.getElementById('report-progress');
+    const elReportShow  = document.getElementById('btn-report-show');
+    const elBtnReportCollapse = document.getElementById('btn-report-collapse');
     const elControls    = document.getElementById('panel-controls');
     const elStepPanel   = document.getElementById('panel-step');
     const elLabelsPanel = document.getElementById('panel-labels');
-    const elTbody       = document.getElementById('results-tbody');
 
     let rollingFrames = [];                
 
@@ -1208,12 +1474,29 @@
         }
     }
 
-    function updateFPSPanel() {
+    function updateFPSPanel(now = performance.now()) {
+        // Purge frames outside the 1-second rolling window
+        while (rollingFrames.length > 1 && now - rollingFrames[0].t > FPS_WINDOW_MS) {
+            rollingFrames.shift();
+        }
+
         const n = rollingFrames.length;
-        if (n === 0) return;
+        const lastFrameAge = n > 0 ? now - rollingFrames[n - 1].t : Infinity;
+
+        // Show idle state when no frames in the last 2 seconds
+        if (n === 0 || lastFrameAge > 2000) {
+            elFPS.textContent = '--';
+            elFPS.style.color = 'rgba(0,0,0,0.25)';
+            elFPSAvg.textContent = 'avg --';
+            elFPSMin.textContent = 'min --';
+            elFPSMax.textContent = 'max --';
+            elFrameTime.textContent = '-- ms';
+            return;
+        }
+
         let sum = 0;
         for (const f of rollingFrames) sum += f.ms;
-        const avgFps = 1000 * n / sum;      
+        const avgFps = 1000 * n / sum;
 
         const buckets = fpsBuckets(rollingFrames.map(f => f.ms), STATS_BUCKET_MS);
         const worstFps = buckets[0];
@@ -1225,6 +1508,36 @@
         elFPSMin.textContent = `min ${fmt(worstFps, 0)}`;
         elFPSMax.textContent = `max ${fmt(bestFps, 0)}`;
         elFrameTime.textContent = `${fmt(sum / n)} ms`;
+    }
+
+    const _elValCpu = document.getElementById('val-cpu');
+    const _elValCam = document.getElementById('val-cam');
+    const _elValLyr = document.getElementById('val-lyr');
+    const _elValShp = document.getElementById('val-shp');
+    const _elValCol = document.getElementById('val-col');
+    const _elValRdr = document.getElementById('val-rdr');
+    const _elBarCpu = document.getElementById('bar-cpu');
+    const _elBarCam = document.getElementById('bar-cam');
+    const _elBarLyr = document.getElementById('bar-lyr');
+    const _elBarShp = document.getElementById('bar-shp');
+    const _elBarCol = document.getElementById('bar-col');
+    const _elBarRdr = document.getElementById('bar-rdr');
+
+    function updateCpuPanel() {
+        const maxMs = Math.max(_smCpu, 4);
+        const pct = v => `${Math.min(100, (v / maxMs) * 100).toFixed(0)}%`;
+        _elValCpu.textContent = `${_smCpu.toFixed(1)} ms`;
+        _elValCam.textContent = `${_smBuild.toFixed(1)} ms`;
+        _elValLyr.textContent = `${_smTiles.toFixed(1)} ms`;
+        _elValShp.textContent = `${_smShape.toFixed(1)} ms`;
+        _elValCol.textContent = `${_smCollide.toFixed(1)} ms`;
+        _elValRdr.textContent = `${_smRender.toFixed(1)} ms`;
+        _elBarCpu.style.width = pct(_smCpu);
+        _elBarCam.style.width = pct(_smBuild);
+        _elBarLyr.style.width = pct(_smTiles);
+        _elBarShp.style.width = pct(_smShape);
+        _elBarCol.style.width = pct(_smCollide);
+        _elBarRdr.style.width = pct(_smRender);
     }
 
     function updateLabelPanel(lblStats, renderer, tileStats) {
@@ -1265,59 +1578,444 @@
         elStepCounter.textContent = `Step ${stepIdx + 1} / ${stepCount}`;
     }
 
-    const elCsFirstFrame  = document.getElementById('cs-first-frame');
-    const elCsFirstTile   = document.getElementById('cs-first-tile');
-    const elCsFirstLabel  = document.getElementById('cs-first-label');
-    const elCsSceneReady  = document.getElementById('cs-scene-ready');
-    const elRunSummary    = document.getElementById('run-summary');
-
     function msLabel(ms) {
         return ms != null ? `${(ms / 1000).toFixed(2)} s` : '—';
     }
+    const renderTimingLabel = msLabel;
 
-    function updateColdStartPanel() {
-        elCsFirstFrame.textContent = msLabel(coldStart.firstFrame);
-        elCsFirstTile.textContent  = msLabel(coldStart.firstTile);
-        elCsFirstLabel.textContent = msLabel(coldStart.firstLabel);
-        elCsSceneReady.textContent = msLabel(coldStart.sceneReady);
+    // Colour a millisecond cost: gray (cheap) → amber (notable) → red (expensive).
+    function msColor(v, warn = 4, bad = 10) {
+        if (!isFinite(v)) return '#555';
+        if (v >= bad)  return '#b02020';
+        if (v >= warn) return '#8a5800';
+        return '#555';
+    }
+    function deltaPct(modeFps, baseFps) {
+        if (baseFps == null || modeFps == null) return '—';
+        const pct = (modeFps / baseFps - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        return `<span style="color:${pct >= 0 ? '#1a7a4a' : '#b02020'}">${sign}${pct.toFixed(0)}%</span>`;
     }
 
-    function renderTimingLabel(ms) {
-        return ms != null ? `${(ms / 1000).toFixed(2)} s` : '—';
+    // ── Consolidated report ───────────────────────────────────────────────────
+    // Single source of truth for both single-mode and full (multi-mode) runs.
+    // _reportState.modeResults: { mode: [{ step, summary }] }
+    // _reportState.coldStartByMode: { mode: coldStartSnapshot }
+    const _reportState = { modeResults: {}, coldStartByMode: {}, batchMaxByMode: {}, atlasTexelsByMode: {}, progress: '' };
+
+    function resetReport() {
+        _reportState.modeResults = {};
+        _reportState.coldStartByMode = {};
+        _reportState.batchMaxByMode = {};
+        _reportState.atlasTexelsByMode = {};
+        _reportState.progress = '';
+        elReportBody.innerHTML = '';
+        elReportProg.textContent = '';
     }
 
-    function updateResultsTable(results) {
-        elTbody.innerHTML = '';
-        for (const { step, summary } of results) {
-            if (!summary) continue;
-            const tr = document.createElement('tr');
-            const shortName = step.name.replace(/^[①-⑨]\s/, '');
-            tr.innerHTML = `
-                <td title="${step.desc}">${shortName}</td>
-                <td style="color:${fpsColor(summary.fpsAvg)}">${fmt(summary.fpsAvg, 0)}</td>
-                <td style="color:${fpsColor(summary.fpsMin)}">${fmt(summary.fpsMin, 0)}</td>
-                <td style="color:${fpsColor(summary.fpsP5)}">${fmt(summary.fpsP5, 0)}</td>
-                <td style="color:${fpsColor(summary.fpsP1)}">${fmt(summary.fpsP1, 0)}</td>
-                <td style="color:${summary.msWorst > 100 ? '#b02020' : summary.msWorst > 50 ? '#8a5800' : '#555'}">${fmt(summary.msWorst, 0)}ms</td>
-                <td>${fmt(summary.fpsSigma, 1)}</td>
-                <td>${summary.lblAvg.toLocaleString()}</td>
-                <td>${summary.rendAvg.toLocaleString()}</td>
-                <td>${summary.callsAvg}</td>
-                <td>${fmt(summary.msAvg)}</td>
-            `;
-            elTbody.appendChild(tr);
-        }
+    function showReport() {
+        elReport.classList.add('visible');
+        elReport.classList.remove('collapsed');
+        elBtnReportCollapse.textContent = '▾ Hide';
+        elReportShow.style.display = 'none';
+        elLabelsPanel.style.display = 'none';
+        sizeReport();
+    }
+    function collapseReport() {
+        elReport.classList.add('collapsed');
+        elReport.classList.remove('visible');
+        elReportShow.style.display = 'block';
+        elLabelsPanel.style.display = '';
+    }
 
-        if (results.length > 0) {
-            updateColdStartPanel();
-            elResults.classList.add('visible');
-            elLabelsPanel.style.display = 'none';
-            if (elRunSummary.style.display !== 'block') {
-                elRunSummary.style.display = 'block';
-                elRunSummary.innerHTML = `Render timing: avg frame <b>—</b> | first label <b>${renderTimingLabel(coldStart.firstLabel)}</b> | scene ready <b>${renderTimingLabel(coldStart.sceneReady)}</b>`;
+    function sizeReport() {
+        const top = 10;
+        const maxW = Math.min(900, window.innerWidth - 20);
+        elReport.style.width = `${maxW}px`;
+        elReport.style.maxHeight = `${window.innerHeight - top - 10}px`;
+        elReportBody.style.maxHeight = `${window.innerHeight - top - 60}px`;
+    }
+
+    const GROUP_ORDER = ['Network', 'Tile decode', 'Render loop', 'GPU', 'Geometry', 'Label build', 'Label collision', '3D rendering', 'DOM rendering'];
+
+    // Frame-weighted aggregate of a mode's per-step summaries → one overall summary.
+    function overallOf(stepResults) {
+        const sums = (stepResults || []).map(r => r.summary).filter(Boolean);
+        if (sums.length === 0) return null;
+        const N = sums.reduce((s, x) => s + (x.n || 0), 0) || 1;
+        const wAvg = (k) => sums.reduce((s, x) => s + (x[k] ?? 0) * (x.n || 0), 0) / N; // frame-weighted
+        const sAvg = (k) => sums.reduce((s, x) => s + (x[k] ?? 0), 0) / sums.length;    // step-mean
+
+        // Iterate the {step, summary} entries (not just summaries) so we can
+        // record WHICH step produced each stage's worst frame.
+        const entries = (stepResults || []).filter(e => e && e.summary);
+        const stepName = (step) => step ? step.name.replace(/^\d+\.\s*/, '') : null;
+
+        const stages = {};
+        for (const def of STAGE_DEFS) {
+            let totalMs = 0, calls = 0, peakMs = 0, peakStep = null, callPeakMs = 0;
+            for (const { step, summary } of entries) {
+                const st = summary.stages?.[def.key];
+                if (!st) { continue; }
+                totalMs += st.totalMs;
+                calls   += st.calls;
+                if (st.peakMs > peakMs) { peakMs = st.peakMs; peakStep = stepName(step); }
+                if (st.callPeakMs > callPeakMs) { callPeakMs = st.callPeakMs; }
             }
-            updateFloatingPanelLayout();
+            stages[def.key] = {
+                avgMs: totalMs / N, peakMs, peakStep, totalMs, calls,
+                msPerCall: calls > 0 ? totalMs / calls : 0,
+                callsPerFrame: calls / N,
+                callPeakMs,
+            };
         }
+
+        // Burst signals: total over the run + worst single frame, its step, and
+        // how many convert() calls that worst frame ran.
+        const counts = {};
+        for (const k of COUNT_KEYS) {
+            let total = 0, peak = 0, peakStep = null, peakConverts = 0;
+            for (const { step, summary } of entries) {
+                const c = summary.counts?.[k];
+                if (!c) { continue; }
+                total += c.total;
+                if (c.peak > peak) { peak = c.peak; peakStep = stepName(step); peakConverts = c.peakConverts || 0; }
+            }
+            counts[k] = { total, peak, peakStep, peakConverts };
+        }
+
+        const msAvg = wAvg('msAvg');
+        return {
+            n: N,
+            fpsAvg: msAvg > 0 ? 1000 / msAvg : 0,
+            fpsMin: Math.min(...sums.map(x => x.fpsMin ?? 0)),
+            fpsP5: sAvg('fpsP5'), fpsP1: sAvg('fpsP1'), fpsSigma: sAvg('fpsSigma'),
+            msAvg, msWorst: Math.max(...sums.map(x => x.msWorst ?? 0)),
+            cpuAvg: wAvg('cpuAvg'),
+            interFrameAvg: wAvg('interFrameAvg'),
+            interFrameWorst: Math.max(...sums.map(x => x.interFrameWorst ?? 0)),
+            lblAvg: Math.round(wAvg('lblAvg')), rendAvg: Math.round(wAvg('rendAvg')),
+            callsAvg: Math.round(wAvg('callsAvg')), tilesLoadedAvg: Math.round(wAvg('tilesLoadedAvg')),
+            callsPeak: Math.max(...sums.map(x => x.callsPeak ?? 0)),
+            trisAvg: Math.round(wAvg('trisAvg')),
+            trisPeak: Math.max(...sums.map(x => x.trisPeak ?? 0)),
+            stages,
+            counts,
+        };
+    }
+
+    const fpsCell = (v) => `<td style="color:${fpsColor(v)}">${fmt(v, 0)}</td>`;
+    // Per-frame label CPU = sum of every label pipeline stage (excludes the
+    // render-loop stages cam / tiles / webgl, tile decode, GPU, and network).
+    const LABEL_PROF_KEYS = PROF_KEYS.filter(k => !['webgl', 'gpu', 'decode'].includes(k));
+    const labelCpuOf = (o) => LABEL_PROF_KEYS.reduce((s, k) => s + (o.stages?.[k]?.avgMs ?? 0), 0);
+
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    // Auto verdict: the stage with the worst single frame (the actual jank
+    // source). FPS-locked runs hide this — every fps column looks healthy and the
+    // story lives only in the peak column, so we surface it as one headline.
+    function worstFrameVerdict(o, mode) {
+        let worst = null;
+        for (const def of STAGE_DEFS) {
+            if (!def.modes.includes(mode)) { continue; }
+            const st = o.stages[def.key];
+            if (st && st.peakMs > (worst?.peakMs ?? 0)) { worst = { ...st, def }; }
+        }
+        if (!worst || worst.peakMs < 0.5) { return ''; }
+        const detail = stageDetailFor(worst.def.key, mode);
+        const col = msColor(worst.peakMs, 16, 50);
+        return `<div style="font-size:10px;margin:2px 0 4px;padding:4px 6px;background:rgba(0,0,0,0.03);border-left:3px solid ${col};">
+            <b>Worst frame: ${fmt(worst.peakMs, 0)} ms</b> — <b style="color:${col}">${worst.def.label}</b>${detail ? ` (${esc(detail.name)})` : ''}${worst.peakStep ? ` @ ${esc(worst.peakStep)}` : ''}
+            ${detail ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;">${esc(detail.ref)}</span>` : ''}
+        </div>`;
+    }
+
+    // Renders the stages-as-rows pipeline breakdown for one aggregated summary.
+    // Only the stages relevant to `mode` are shown; each row names the concrete
+    // strategy THIS mode uses for that stage, with a source reference. Stages that
+    // never fired (no time, no calls) are hidden to cut zero-row clutter.
+    function pipelineBreakdown(o, mode) {
+        // %share is computed against the SUM of measured stages, not the per-frame
+        // cpu/f window: async build stages (parse/register/layout/thin/delete) run
+        // in tile-resolve microtasks outside that window, so dividing by cpu/f
+        // produced >100%. Sum-of-stages keeps every share in 0–100 and meaningful.
+        const measured = STAGE_DEFS
+            .filter(d => d.modes.includes(mode))
+            .reduce((s, d) => s + (o.stages[d.key]?.avgMs ?? 0), 0);
+        const denom = Math.max(measured, 0.01);
+        const fired = (st) => st && (st.totalMs > 0.05 || st.calls > 0 || st.peakMs > 0.05);
+
+        let rows = '';
+        for (const group of GROUP_ORDER) {
+            const defs = STAGE_DEFS.filter(d => d.group === group && d.modes.includes(mode) && fired(o.stages[d.key]));
+            if (defs.length === 0) { continue; }
+            const modeSpecific = group === '3D rendering' || group === 'DOM rendering';
+            rows += `<tr><td colspan="7" style="padding-top:7px;color:${modeSpecific ? '#5a2080' : 'rgba(0,0,0,0.4)'};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;">${group}</td></tr>`;
+            for (const def of defs) {
+                const st = o.stages[def.key] || { avgMs: 0, peakMs: 0, msPerCall: 0, callsPerFrame: 0, callPeakMs: 0 };
+                const share = (st.avgMs / denom) * 100;
+                const detail = stageDetailFor(def.key, mode);
+                const sub = detail
+                    ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;line-height:1.25;">${esc(detail.name)} · <span style="color:rgba(0,0,0,0.3)">${esc(detail.ref)}</span></span>`
+                    : '';
+                const peakWhen = st.peakStep && st.peakMs > 0
+                    ? `<span style="display:block;color:rgba(0,0,0,0.35);font-size:8px;font-weight:400;">@ ${esc(st.peakStep)}</span>`
+                    : '';
+                rows += `<tr>
+                    <td style="padding-left:12px;"${detail ? ` title="${esc(detail.ref)}"` : ''}>${def.label}${sub}</td>
+                    <td style="color:${msColor(st.avgMs, def.warn, def.bad)}">${fmt(st.avgMs, 2)}</td>
+                    <td style="color:${msColor(st.peakMs, def.bad, def.bad * 3)}"${st.peakStep ? ` title="worst frame during: ${esc(st.peakStep)}"` : ''}>${fmt(st.peakMs, 1)}${peakWhen}</td>
+                    <td>${st.callPeakMs > 0.05 ? `<span style="color:${msColor(st.callPeakMs, def.bad, def.bad * 6)}">${fmt(st.callPeakMs, 1)}</span>` : '—'}</td>
+                    <td>${st.msPerCall > 0 ? fmt(st.msPerCall, 3) : '—'}</td>
+                    <td>${st.callsPerFrame > 0 ? fmt(st.callsPerFrame, 2) : '—'}</td>
+                    <td>${share >= 0.5 ? fmt(share, 0) + '%' : '·'}</td>
+                </tr>`;
+            }
+        }
+        return `<table class="rep-table"><thead><tr>
+            <th>Stage / strategy</th>
+            <th title="Average ms per frame (amortised over every frame — biased by frame rate for async stages)">avg/f</th>
+            <th title="Worst single-frame total for this stage (sum of all calls in that frame — biased by clustering)">frame↑</th>
+            <th title="Worst single invocation (true peak cost of one call, unbiased by frame rate)">call↑</th>
+            <th title="ms per actual invocation (average cost when it runs)">ms/call</th>
+            <th title="Average invocations per frame (shows how often a throttled stage runs)">calls/f</th>
+            <th title="Share of total measured pipeline time (sums to 100%)">share</th>
+        </tr></thead><tbody>${rows}
+            <tr class="rep-overall"><td>Σ measured / frame${o.cpuAvg ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;">interactive frame cpu/f: ${fmt(o.cpuAvg, 2)} ms (async build runs between frames)</span>` : ''}</td>
+                <td>${fmt(measured, 2)}</td>
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>100%</td></tr>
+        </tbody></table>`;
+    }
+
+    // Burst signals — diagnose worst-frame causes the per-frame averages hide.
+    // Each row: total over the run + the single worst frame (and the step it hit).
+    // `perConvert` rows annotate the peak with how many convert() calls produced
+    // it (labels ÷ converts) so a per-frame sum can't be mistaken for one tile.
+    const BURST_DEFS = [
+        { key: 'geomTileAdded', label: 'Geom tiles uploaded / frame', modes: ['instanced', 'dom-perf'],
+          hint: 'Tile geometry meshes entering the scene that frame → GPU buffer upload on next render. The streaming burst that drives nonCPU/GPU during zoom — heavier/unfiltered datasets spike here.' },
+        { key: 'geomVertsAdded', label: '↳ vertices uploaded / frame', modes: ['instanced', 'dom-perf'],
+          hint: 'Total vertices in those newly-streamed tile meshes (size of the GPU upload burst).' },
+        { key: 'geomFeatures', label: 'Geometry features built / frame', modes: ['instanced', 'dom-perf'],
+          hint: 'Vector features meshed by Feature2Mesh that frame (CPU build). Often ~0 in steady nav because meshes are cached per tile (Layer.getData) — the cost shifts to GPU upload, see geom tiles uploaded.' },
+        { key: 'labelsCreated', label: 'Labels created / frame', modes: ['instanced', 'dom-perf'], perConvert: true,
+          hint: 'Pre-thinning convert() output, SUMMED over every convert() in the frame (a frame runs many when cached tiles resolve together). This is candidates before the screen-grid filter discards most — so it far exceeds the surviving label pool.' },
+        { key: 'reshape', label: 'Re-shapes (text/layout)', modes: ['instanced'],
+          hint: 'layoutText() re-runs on already-built labels — e.g. a zoom-dependent text-field {name_en}→{name} switching at a zoom threshold.' },
+        { key: 'glyphsRasterized', label: 'Glyphs rasterized / frame', modes: ['instanced'],
+          hint: 'New characters drawn into the SDF atlas via TinySDF that frame (CPU). Each batch also flags a FULL-atlas GPU re-upload. Worldwide/CJK character sets keep producing these during pan/zoom → periodic stall frames; a fixed Latin set goes quiet after warmup.' },
+        { key: 'atlasUpload', label: 'Full-atlas re-uploads / frame', modes: ['instanced'],
+          hint: 'Times the whole SDF atlas texture was re-flagged for GPU upload (any new glyph, not just resize). Big atlas (CJK) × frequent uploads = the zoom stall.' },
+        { key: 'atlasResize', label: 'Glyph-atlas rebuilds', modes: ['instanced'],
+          hint: 'Atlas grew → every label in the font group is re-laid-out + re-emitted (O(group)). Heavy/CJK font stacks resize more.' },
+        { key: 'atlasReemit', label: '↳ labels re-emitted', modes: ['instanced'],
+          hint: 'Labels touched by atlas rebuilds — the size of that spike.' },
+        { key: 'tilesDecoded', label: 'Tiles decoded (PBF) / frame', modes: ALL_MODES,
+          hint: 'Vector tiles whose PBF was decoded that frame. When several resolve together from network, decode runs back-to-back in one microtask queue → inter-frame stall.' },
+    ];
+    function burstSignals(o, mode) {
+        const defs = BURST_DEFS.filter(d => d.modes.includes(mode) && o.counts?.[d.key]);
+        const batchMax = _reportState.batchMaxByMode[mode] || 0;
+        const atlasTexels = _reportState.atlasTexelsByMode[mode] || 0;
+        if (defs.length === 0 && !batchMax && !atlasTexels) { return ''; }
+        let rows = '';
+        for (const d of defs) {
+            const c = o.counts[d.key];
+            let peakCell = `${c.peak.toLocaleString()}`;
+            if (d.perConvert && c.peak > 0) {
+                const nc = c.peakConverts || 0;
+                const per = nc > 0 ? Math.round(c.peak / nc) : c.peak;
+                peakCell += `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8px;">over ${nc.toLocaleString()} convert${nc === 1 ? '' : 's'} ≈ ${per.toLocaleString()}/convert</span>`;
+            }
+            if (c.peakStep && c.peak > 0) {
+                peakCell += `<span style="display:block;color:rgba(0,0,0,0.35);font-size:8px;">@ ${esc(c.peakStep)}</span>`;
+            }
+            rows += `<tr>
+                <td title="${esc(d.hint)}">${d.label}</td>
+                <td>${c.total.toLocaleString()}</td>
+                <td>${peakCell}</td>
+            </tr>`;
+        }
+        // The literal "one convert()" number: biggest single tile over the run.
+        if (batchMax) {
+            rows += `<tr>
+                <td title="Largest batch produced by a SINGLE convert() call over the run — i.e. the most label candidates one tile held (pre-thinning). Big here = overzoom/feature-dense tiles.">Biggest single tile (1 convert)</td>
+                <td>—</td>
+                <td>${batchMax.toLocaleString()}</td>
+            </tr>`;
+        }
+        // SDF atlas texture size — every full re-upload costs this much GPU bandwidth.
+        if (atlasTexels) {
+            const px = Math.round(Math.sqrt(atlasTexels));
+            const mb = (atlasTexels / (1024 * 1024)).toFixed(1);
+            rows += `<tr>
+                <td title="SDF glyph-atlas texture size (max over run). It is re-uploaded in FULL on every new glyph (see 'Full-atlas re-uploads'). CJK/Noto fonts → huge atlas → each upload is a big GPU stall.">SDF atlas size (1 ch, R8)</td>
+                <td>—</td>
+                <td>${px}×${px} px · ${mb} MB</td>
+            </tr>`;
+        }
+        return `<table class="rep-table" style="margin-top:4px;"><thead><tr>
+            <th>Burst signal</th>
+            <th title="Total over the whole run">total</th>
+            <th title="Worst single frame, and the step it happened in">peak/frame @step</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    // GPU draw load (from renderer.info) — proxy for the geometry GPU cost that
+    // None mode doesn't pay. Compare across modes/datasets to see geometry weight.
+    function gpuLoad(o) {
+        return `<table class="rep-table" style="margin-top:4px;"><thead><tr>
+            <th>GPU draw / frame</th>
+            <th title="Average over the run">avg</th>
+            <th title="Worst single frame">peak</th>
+        </tr></thead><tbody>
+            <tr><td title="WebGLRenderer.info.render.calls — one per mesh batch; geometry dominates this">Draw calls</td>
+                <td>${(o.callsAvg ?? 0).toLocaleString()}</td><td>${(o.callsPeak ?? 0).toLocaleString()}</td></tr>
+            <tr><td title="WebGLRenderer.info.render.triangles — geometry fills/extrusions dominate this">Triangles</td>
+                <td>${(o.trisAvg ?? 0).toLocaleString()}</td><td>${(o.trisPeak ?? 0).toLocaleString()}</td></tr>
+        </tbody></table>`;
+    }
+
+    function renderReport() {
+        const modes = FULL_MODES.filter(m => _reportState.modeResults[m]?.length);
+        if (modes.length === 0) { elReportBody.innerHTML = '<div style="color:rgba(0,0,0,0.4);font-size:11px;">No results yet.</div>'; return; }
+
+        const baseFps = overallOf(_reportState.modeResults['none'])?.fpsAvg ?? null;
+        let html = '';
+
+        // ── Section 1: Overview (one row per mode) ────────────────────────────
+        html += `<div class="rep-section-title">Overview — frame-weighted averages across all steps</div>`;
+        html += `<table class="rep-table"><thead><tr>
+                <th title="Label mode">Mode</th>
+                <th title="Average FPS">fps</th>
+                <th title="5th-percentile FPS (sustained floor)">p5</th>
+                <th title="1st-percentile FPS (worst hitches)">p1</th>
+                <th title="FPS standard deviation — lower is smoother">σ</th>
+                <th title="FPS delta vs No-labels baseline">Δ%</th>
+                <th title="Average frame time">ms/f</th>
+                <th title="Worst frame time (ms)">wf</th>
+                <th title="Total CPU-active JS time per frame (render loop only)">cpu/f</th>
+                <th class="grp" title="Inter-frame gap: time between frames NOT in render loop (microtask work: tile decode, network callbacks, label creation). The \'dark time\' that causes stalls.">gap/f</th>
+                <th title="Worst inter-frame gap (ms) — the single biggest stall caused by microtask work between frames">gap wf</th>
+                <th class="grp" title="Sum of every label pipeline stage, per frame">lbl/f</th>
+                <th class="grp" title="Total labels in manager (avg)">lbls</th>
+                <th title="Rendered (visible) labels (avg)">rend</th>
+                <th title="WebGL draw calls (avg)">calls</th>
+                <th class="grp" title="Time to first rendered label">1st lbl</th>
+                <th title="Scene-ready milestone">scene</th>
+            </tr></thead><tbody>`;
+        for (const mode of modes) {
+            const o = overallOf(_reportState.modeResults[mode]);
+            if (!o) { continue; }
+            const cs = _reportState.coldStartByMode[mode] || {};
+            const isBase = mode === 'none';
+            html += `<tr>
+                <td style="color:${isBase ? 'rgba(0,0,0,0.45)' : '#1a2030'};font-weight:600;">${MODE_SHORT[mode]}${isBase ? ' <span style="opacity:0.5;font-weight:400;font-size:9px">(base)</span>' : ''}</td>
+                ${fpsCell(o.fpsAvg)}${fpsCell(o.fpsP5)}${fpsCell(o.fpsP1)}
+                <td>${fmt(o.fpsSigma, 1)}</td>
+                <td>${isBase ? '—' : deltaPct(o.fpsAvg, baseFps)}</td>
+                <td>${fmt(o.msAvg, 1)}</td>
+                <td style="color:${o.msWorst > 100 ? '#b02020' : o.msWorst > 50 ? '#8a5800' : '#555'}">${fmt(o.msWorst, 0)}</td>
+                <td style="color:${msColor(o.cpuAvg, 10, 20)}">${fmt(o.cpuAvg, 1)}</td>
+                <td class="grp" style="color:${msColor(o.interFrameAvg ?? 0, 5, 15)}">${fmt(o.interFrameAvg ?? 0, 1)}</td>
+                <td style="color:${(o.interFrameWorst ?? 0) > 100 ? '#b02020' : (o.interFrameWorst ?? 0) > 50 ? '#8a5800' : '#555'}">${fmt(o.interFrameWorst ?? 0, 0)}</td>
+                <td class="grp" style="color:${msColor(labelCpuOf(o), 4, 10)}">${fmt(labelCpuOf(o), 2)}</td>
+                <td class="grp">${o.lblAvg.toLocaleString()}</td>
+                <td>${o.rendAvg.toLocaleString()}</td>
+                <td>${o.callsAvg}</td>
+                <td class="grp" style="color:#1a7a4a">${renderTimingLabel(cs.firstLabel)}</td>
+                <td>${renderTimingLabel(cs.sceneReady)}</td>
+            </tr>`;
+        }
+        html += `</tbody></table>`;
+
+        // ── Section 2: per-mode pipeline breakdown (stages as rows) ───────────
+        for (const mode of modes) {
+            const o = overallOf(_reportState.modeResults[mode]);
+            if (!o) { continue; }
+            html += `<div class="rep-mode-title">${MODE_LABELS[mode]} — pipeline breakdown (whole run)</div>`;
+            html += worstFrameVerdict(o, mode);
+            html += pipelineBreakdown(o, mode);
+            html += burstSignals(o, mode);
+            html += gpuLoad(o);
+        }
+
+        // ── Section 3: per-mode per-step FPS ──────────────────────────────────
+        for (const mode of modes) {
+            const stepResults = _reportState.modeResults[mode];
+            html += `<div class="rep-mode-title">${MODE_LABELS[mode]} — per step</div>`;
+            html += `<table class="rep-table"><thead><tr>
+                    <th>Step</th>
+                    <th title="Average FPS">fps</th>
+                    <th title="Worst single-frame FPS">min</th>
+                    <th title="5th-percentile FPS">p5</th>
+                    <th title="1st-percentile FPS">p1</th>
+                    <th title="Worst frame time (ms) — captures spikes">wf</th>
+                    <th title="FPS standard deviation">σ</th>
+                    <th title="CPU-active JS time per frame (render loop)">cpu/f</th>
+                    <th class="grp" title="Average inter-frame gap (microtask stall between frames)">gap/f</th>
+                    <th title="Worst inter-frame gap (single worst stall)">gap wf</th>
+                    <th class="grp" title="Sum of all label pipeline stages, per frame">lbl/f</th>
+                    <th class="grp" title="Total labels (avg)">lbls</th>
+                    <th title="Rendered labels (avg)">rend</th>
+                    <th title="Draw calls (avg)">calls</th>
+                </tr></thead><tbody>`;
+            for (const { step, summary: s } of stepResults) {
+                if (!s) { continue; }
+                const shortName = step.name.replace(/^\d+\.\s*/, '');
+                const lblCpu = labelCpuOf(s);
+                html += `<tr>
+                    <td title="${step.desc}">${shortName}</td>
+                    ${fpsCell(s.fpsAvg)}${fpsCell(s.fpsMin)}${fpsCell(s.fpsP5)}${fpsCell(s.fpsP1)}
+                    <td style="color:${s.msWorst > 100 ? '#b02020' : s.msWorst > 50 ? '#8a5800' : '#555'}">${fmt(s.msWorst, 0)}</td>
+                    <td>${fmt(s.fpsSigma, 1)}</td>
+                    <td style="color:${msColor(s.cpuAvg, 10, 20)}">${fmt(s.cpuAvg, 1)}</td>
+                    <td class="grp" style="color:${msColor(s.interFrameAvg ?? 0, 5, 15)}">${fmt(s.interFrameAvg ?? 0, 1)}</td>
+                    <td style="color:${(s.interFrameWorst ?? 0) > 100 ? '#b02020' : (s.interFrameWorst ?? 0) > 50 ? '#8a5800' : '#555'}">${fmt(s.interFrameWorst ?? 0, 0)}</td>
+                    <td class="grp" style="color:${msColor(lblCpu, 4, 10)}">${fmt(lblCpu, 2)}</td>
+                    <td class="grp">${(s.lblAvg ?? 0).toLocaleString()}</td>
+                    <td>${(s.rendAvg ?? 0).toLocaleString()}</td>
+                    <td>${s.callsAvg ?? 0}</td>
+                </tr>`;
+            }
+            const o = overallOf(stepResults);
+            if (o) {
+                html += `<tr class="rep-overall">
+                    <td>Overall</td>
+                    ${fpsCell(o.fpsAvg)}${fpsCell(o.fpsMin)}${fpsCell(o.fpsP5)}${fpsCell(o.fpsP1)}
+                    <td>${fmt(o.msWorst, 0)}</td>
+                    <td>${fmt(o.fpsSigma, 1)}</td>
+                    <td style="color:${msColor(o.cpuAvg, 10, 20)}">${fmt(o.cpuAvg, 1)}</td>
+                    <td class="grp" style="color:${msColor(o.interFrameAvg ?? 0, 5, 15)}">${fmt(o.interFrameAvg ?? 0, 1)}</td>
+                    <td style="color:${(o.interFrameWorst ?? 0) > 100 ? '#b02020' : (o.interFrameWorst ?? 0) > 50 ? '#8a5800' : '#555'}">${fmt(o.interFrameWorst ?? 0, 0)}</td>
+                    <td class="grp" style="color:${msColor(labelCpuOf(o), 4, 10)}">${fmt(labelCpuOf(o), 2)}</td>
+                    <td class="grp">${o.lblAvg.toLocaleString()}</td>
+                    <td>${o.rendAvg.toLocaleString()}</td>
+                    <td>${o.callsAvg}</td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+        }
+
+        elReportBody.innerHTML = html;
+    }
+
+    // Record a mode's results into the report and refresh it.
+    function publishResults(mode, stepResults, progress) {
+        _reportState.modeResults[mode] = stepResults;
+        _reportState.coldStartByMode[mode] = { ...coldStart };
+        // Run-level gauges (reset at runner.start): biggest single convert()
+        // batch, and the SDF atlas texture size (texels) — CARTO's CJK/Noto atlas
+        // should dwarf IGN's Latin one, which is the per-upload stall cost.
+        _reportState.batchMaxByMode[mode] = LabelProfiler.counts.labelBatchMax || 0;
+        _reportState.atlasTexelsByMode[mode] = LabelProfiler.counts.atlasTexelsMax || 0;
+        if (progress != null) {
+            _reportState.progress = progress;
+            elReportProg.textContent = progress;
+        }
+        showReport();
+        renderReport();
     }
 
     const runner = new BenchmarkRunner();
@@ -1374,20 +2072,20 @@
 
         elStepName.textContent = 'Scene ready';
         elStepDesc.textContent = `Initialized in ${(sceneLoadMs / 1000).toFixed(2)} s — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
-        updateColdStartPanel();
-        elResults.classList.add('visible');
-        elLabelsPanel.style.display = 'none';
+        resetReport();
+        showReport();
 
         _lastFrameMs = 16;
         rollingFrames = [];
 
         elStatus.textContent = 'RUNNING';
+        elReportProg.textContent = `Running: ${MODE_LABELS[labelMode]}`;
         runner.start((allResults) => {
             elStatus.textContent = 'DONE';
             setQuickControlsDisabled(false);
             elBtnStop.disabled   = true;
             elBtnReset.disabled  = false;
-            appendSummaryRow(allResults);
+            finishRun(labelMode, allResults, 'Single-mode run complete');
         });
     });
 
@@ -1413,20 +2111,20 @@
 
         elStepName.textContent = 'Scene ready';
         elStepDesc.textContent = `Initialized in ${(sceneLoadMs / 1000).toFixed(2)} s — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
-        updateColdStartPanel();
-        elResults.classList.add('visible');
-        elLabelsPanel.style.display = 'none';
+        resetReport();
+        showReport();
 
         _lastFrameMs = 16;
         rollingFrames = [];
 
         elStatus.textContent = 'RUNNING STEP';
+        elReportProg.textContent = `Running: ${MODE_LABELS[labelMode]} — ${STEPS[selectedIdx].name}`;
         runner.start((allResults) => {
             elStatus.textContent = 'DONE';
             setQuickControlsDisabled(false);
             elBtnStop.disabled   = true;
             elBtnReset.disabled  = false;
-            appendSummaryRow(allResults);
+            finishRun(labelMode, allResults, 'Single-step run complete');
         }, [selectedIdx]);
     });
 
@@ -1440,12 +2138,11 @@
 
     elBtnReset.addEventListener('click', () => {
         runner.stop();
-        elTbody.innerHTML = '';
-        elResults.classList.remove('visible');
+        resetReport();
+        collapseReport();
+        elReport.classList.remove('visible');
+        elReportShow.style.display = 'none';
         elLabelsPanel.style.display = '';
-        elCmpPanel.style.display = 'none';
-        elRunSummary.style.display = 'none';
-        elRunSummary.textContent = '';
         rollingFrames = [];
         fpsHistory.fill(0);
         fpsHistoryHead = 0;
@@ -1454,59 +2151,113 @@
         elBtnStop.disabled   = true;
         elBtnReset.disabled  = true;
         updateStepPanel(null, 0, 0);
-        updateFloatingPanelLayout();
     });
 
-    function appendSummaryRow(allResults) {
-        if (allResults.length === 0) return;
-        const sums = allResults.map(r => r.summary).filter(Boolean);
-        if (sums.length === 0) return;
-        const overall = {
-            fpsAvg:   sums.reduce((s, x) => s + x.fpsAvg,   0) / sums.length,
-            fpsMin:   Math.min(...sums.map(x => x.fpsMin)),
-            fpsP5:    sums.reduce((s, x) => s + x.fpsP5,    0) / sums.length,
-            fpsP1:    sums.reduce((s, x) => s + x.fpsP1,    0) / sums.length,
-            msWorst:  Math.max(...sums.map(x => x.msWorst ?? 0)),
-            fpsSigma: sums.reduce((s, x) => s + x.fpsSigma, 0) / sums.length,
-            lblAvg:   Math.round(sums.reduce((s, x) => s + x.lblAvg,   0) / sums.length),
-            rendAvg:  Math.round(sums.reduce((s, x) => s + x.rendAvg,  0) / sums.length),
-            callsAvg: Math.round(sums.reduce((s, x) => s + x.callsAvg, 0) / sums.length),
-            msAvg:    sums.reduce((s, x) => s + x.msAvg,    0) / sums.length,
-        };
-
-        const tr = document.createElement('tr');
-        tr.style.borderTop  = '1px solid rgba(0,0,0,0.12)';
-        tr.style.fontWeight = '600';
-        tr.innerHTML = `
-            <td>Overall</td>
-            <td style="color:${fpsColor(overall.fpsAvg)}">${fmt(overall.fpsAvg, 0)}</td>
-            <td style="color:${fpsColor(overall.fpsMin)}">${fmt(overall.fpsMin, 0)}</td>
-            <td style="color:${fpsColor(overall.fpsP5)}">${fmt(overall.fpsP5,  0)}</td>
-            <td style="color:${fpsColor(overall.fpsP1)}">${fmt(overall.fpsP1,  0)}</td>
-            <td style="color:${(overall.msWorst??0) > 100 ? '#b02020' : (overall.msWorst??0) > 50 ? '#8a5800' : '#555'}">${fmt(overall.msWorst, 0)}ms</td>
-            <td>${fmt(overall.fpsSigma, 1)}</td>
-            <td>${overall.lblAvg.toLocaleString()}</td>
-            <td>${overall.rendAvg.toLocaleString()}</td>
-            <td>${overall.callsAvg}</td>
-            <td>${fmt(overall.msAvg)}</td>
-        `;
-        elTbody.appendChild(tr);
-
+    // Finalize a single-mode (or single-step) run: publish to the report and
+    // wire the export payload.
+    function finishRun(mode, allResults, progressText) {
+        publishResults(mode, [...allResults], progressText);
         const payload = {
-            mode: labelMode,
-            coldStart,
-            steps: allResults.map(({ step, summary }) => ({ step: step.id, ...summary })),
+            mode,
+            dataset: datasetMode,
+            screenGridFilter: useScreenGridFilter,
+            coldStart: { ...coldStart },
+            batchMax: _reportState.batchMaxByMode[mode] || 0,
+            atlasTexels: _reportState.atlasTexelsByMode[mode] || 0,
+            steps: allResults.map(({ step, summary }) => ({ step: step.id, name: step.name, desc: step.desc, ...summary })),
         };
         enableExport(payload);
-
-        elRunSummary.style.display = 'block';
-        elRunSummary.innerHTML = `Render timing: avg frame <b>${fmt(overall.msAvg)} ms</b> | first label <b>${renderTimingLabel(coldStart.firstLabel)}</b> | scene ready <b>${renderTimingLabel(coldStart.sceneReady)}</b>`;
     }
 
-    let FPS_LOCK = 0;           
-    let _lastFrameMs = 16;      
-    let _lastPlacement = null;  
-    let _frameDrawCalls = 0;    
+    let FPS_LOCK = 0;
+    let _lastFrameMs = 16;
+    let _lastPlacement = null;
+    let _frameDrawCalls = 0;
+    let _frameTris = 0;
+
+    // ── CPU / pipeline stage timing ──────────────────────────────────────────
+    // The render loop fires (per MainLoop.step):
+    //   BEFORE_CAMERA_UPDATE → camera.update() → AFTER_CAMERA_UPDATE
+    //   [per layer] BEFORE_LAYER_UPDATE → tile tree update + scheduling → AFTER_LAYER_UPDATE
+    //   BEFORE_RENDER → instancedLabelManager.tick() → render → AFTER_RENDER
+    //
+    // Loop phases (cam / tiles / webgl) are timed here via frame requesters.
+    // Every label sub-stage is timed inside the library by itowns.LabelProfiler
+    // (shaping, GPU upload, collision sub-phases, registration, deletion, …) and
+    // read back per frame as a delta — this captures async build work (parse /
+    // register / thin) that runs in tile-resolve microtasks between frames too.
+    const LabelProfiler = itowns.LabelProfiler;
+    LabelProfiler.enabled = true;   // ~microsecond timers; keeps live HUD + report fed
+
+    let _cpuFrameStart  = 0;    // set at BEFORE_CAMERA_UPDATE
+    let _camT0          = 0;
+    let _layerT0        = 0;
+
+    // Per-frame loop-phase costs (ms), filled by the frame requesters.
+    const stage = { cam: 0, tiles: 0, cpu: 0 };
+
+    // Burst-signal counters (LabelProfiler.counts keys) — diagnose worst-frame
+    // causes the timers alone can't explain.
+    const COUNT_KEYS = ['labelsCreated', 'reshape', 'atlasResize', 'atlasReemit', 'glyphsRasterized', 'atlasUpload', 'geomFeatures', 'geomTileAdded', 'geomVertsAdded', 'tilesDecoded'];
+
+    // Per-frame profiler delta (ms + calls per prof key, + burst counts), filled
+    // in afterRender.
+    let _lastProfMs       = {};
+    let _lastProfCalls    = {};
+    let _lastProfCallPeak = {};
+    let _lastProfCounts   = {};
+    const _profPrevMs     = {};
+    const _profPrevCalls  = {};
+    const _profPrevCounts = {};
+
+    function resetProfilerBaseline() {
+        LabelProfiler.reset();
+        for (const k of PROF_KEYS)  { _profPrevMs[k] = 0; _profPrevCalls[k] = 0; _lastProfMs[k] = 0; _lastProfCalls[k] = 0; _lastProfCallPeak[k] = 0; }
+        for (const k of COUNT_KEYS) { _profPrevCounts[k] = 0; _lastProfCounts[k] = 0; }
+        // Flush any stale network entries from a previous run
+        _netQueue.length = 0;
+        _lastNetFrame = { ms: 0, calls: 0, peak: 0, bytes: 0 };
+    }
+
+    // Sample monotonic profiler counters into this-frame deltas.
+    function sampleProfilerDelta() {
+        const dMs = {}, dCalls = {}, dCounts = {}, dCallPeak = {};
+        for (const k of PROF_KEYS) {
+            const m = LabelProfiler.ms[k] || 0;
+            const c = LabelProfiler.calls[k] || 0;
+            dMs[k] = m - (_profPrevMs[k] || 0);
+            dCalls[k] = c - (_profPrevCalls[k] || 0);
+            _profPrevMs[k] = m;
+            _profPrevCalls[k] = c;
+            // callPeak tracks the worst single begin/end pair since last read.
+            // Read and reset each frame so we can track the step-level maximum.
+            dCallPeak[k] = LabelProfiler.callPeak[k] || 0;
+            LabelProfiler.callPeak[k] = 0;
+        }
+        for (const k of COUNT_KEYS) {
+            const v = LabelProfiler.counts[k] || 0;
+            dCounts[k] = v - (_profPrevCounts[k] || 0);
+            _profPrevCounts[k] = v;
+        }
+        _lastProfMs = dMs;
+        _lastProfCalls = dCalls;
+        _lastProfCallPeak = dCallPeak;
+        _lastProfCounts = dCounts;
+    }
+
+    // Grouped sums for the coarse live HUD bars.
+    const profSum = (keys) => keys.reduce((s, k) => s + (_lastProfMs[k] || 0), 0);
+
+    // Exponential-moving-average for smooth live HUD display
+    const STAGE_ALPHA   = 0.12;
+    let _smCpu = 0, _smTiles = 0, _smBuild = 0, _smShape = 0, _smCollide = 0, _smRender = 0;
+
+    // ── Dataset / pre-filter state ───────────────────────────────────────────
+    let datasetMode = 'ign';            // 'ign' | 'openfreemap'
+    // When true, the instanced label layer runs the same per-tile screen-grid
+    // thinning that DOM mode uses (performance:true). DOM always uses it; this
+    // toggles it for 3D so you can compare thinned vs full-pool behaviour.
+    let useScreenGridFilter = true;
 
     function placementMoved(p) {
         const q = _lastPlacement;
@@ -1548,7 +2299,7 @@
     }
 
     function beforeRender() {
-        perfStats.begin();
+        if (!runner.running) perfStats.begin();
         if (view) {
             const r = view.mainLoop.gfxEngine.getRenderer();
             r.info.autoReset = false;
@@ -1559,15 +2310,38 @@
 
     function afterRender(dt) {
         if (!view) return;
-        perfStats.end();
+        if (!runner.running) perfStats.end();
+
+        const tEnd  = performance.now();
+        stage.cpu   = _cpuFrameStart > 0 ? tEnd - _cpuFrameStart : 0;
+
+        // Pull this frame's label sub-stage costs from the library profiler
+        // (includes 'webgl', timed inside c3DEngine.renderView).
+        sampleProfilerDelta();
+
+        // Drain the Resource Timing observer queue for this frame's network data.
+        drainNetQueue();
+
+        // Smooth grouped values for the live HUD (idle / non-benchmark only)
+        if (!runner.running) {
+            const build   = profSum(['parse', 'register', 'layout', 'thin', 'delete']);
+            const tickGpu = profSum(['position', 'cull', 'fades', 'farcull', 'showhide']);
+            const collide = profSum(['candidate', 'priority', 'occlusion']);
+            _smTiles   += (stage.tiles          - _smTiles)   * STAGE_ALPHA;
+            _smBuild   += (build                - _smBuild)   * STAGE_ALPHA;
+            _smShape   += (tickGpu              - _smShape)   * STAGE_ALPHA;
+            _smCollide += (collide              - _smCollide) * STAGE_ALPHA;
+            _smRender  += ((_lastProfMs.webgl||0) - _smRender) * STAGE_ALPHA;
+            _smCpu     += (stage.cpu   - _smCpu)     * STAGE_ALPHA;
+        }
 
         const frameMs = (dt > 0 && dt < 2000) ? dt : _lastFrameMs;
         _lastFrameMs  = frameMs;
         const fps     = 1000 / frameMs;
-        const now     = performance.now();
+        const now     = tEnd;
 
-        pushFPS(fps);                       
-        recordFrameTime(frameMs, now);      
+        pushFPS(fps);
+        recordFrameTime(frameMs, now);
 
         const elapsed = now - sceneEpoch;
         if (coldStart.firstFrame === null) coldStart.firstFrame = elapsed;
@@ -1577,11 +2351,12 @@
             const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
             const r = view.mainLoop.gfxEngine.getRenderer();
             _frameDrawCalls += r.info.render.calls;
-            runner.record(frameMs, _frameDrawCalls);
+            _frameTris       = r.info.render.triangles;
+            runner.record(frameMs);
             if (t >= 1) runner.finishStep();
         }
 
-        scheduleHud();          
+        scheduleHud();
         scheduleNextRender(frameMs);
     }
 
@@ -1605,6 +2380,17 @@
     }
 
     function drawHud(now) {
+        // During a benchmark run the HUD is intentionally minimal: only the step
+        // progress bar updates. The expensive widgets (canvas sparkline, minimap
+        // re-projection of every label, Stats.js, per-label DOM stat writes) are
+        // skipped so they can't perturb the numbers being measured.
+        if (runner.running && runner.stepIdx >= 0) {
+            const step = STEPS[runner.stepIdx];
+            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
+            updateStepPanel(step, t, runner.planIdx, runner.planLen);
+            return;
+        }
+
         const renderer = view.mainLoop.gfxEngine.getRenderer();
 
         const elapsed   = now - sceneEpoch;
@@ -1620,17 +2406,11 @@
             }
         }
 
-        updateFPSPanel();
+        updateFPSPanel(now);
+        updateCpuPanel();
         if (hudToggles.graph) drawSparkline();
-
-        if (runner.running && runner.stepIdx >= 0) {
-            const step = STEPS[runner.stepIdx];
-            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
-            updateStepPanel(step, t, runner.planIdx, runner.planLen);
-        } else {
-            if (hudToggles.stats)   updateLabelPanel(getLabelStats(), renderer, getTileStats());
-            if (hudToggles.minimap) drawMinimap();
-        }
+        if (hudToggles.stats)   updateLabelPanel(getLabelStats(), renderer, getTileStats());
+        if (hudToggles.minimap) drawMinimap();
     }
 
     function scheduleNextRender(frameMs) {
@@ -1660,7 +2440,23 @@
     function installRenderLoop(v) {
         v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, beforeRender);
         v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.AFTER_RENDER,  afterRender);
-        v.notifyChange(v.camera.camera3D); 
+
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_CAMERA_UPDATE, () => {
+            _cpuFrameStart = performance.now();
+            stage.tiles = 0;   // accumulates across geometry layers this frame
+            _camT0      = _cpuFrameStart;
+        });
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.AFTER_CAMERA_UPDATE, () => {
+            stage.cam = performance.now() - _camT0;
+        });
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_LAYER_UPDATE, () => {
+            _layerT0 = performance.now();
+        });
+        v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.AFTER_LAYER_UPDATE, () => {
+            stage.tiles += performance.now() - _layerT0;
+        });
+
+        v.notifyChange(v.camera.camera3D);
     }
 
     const hudToggles = { minimap: true, graph: true, stats: true };
@@ -1732,8 +2528,8 @@
     const elBtnExport    = document.getElementById('btn-export');
 
     const MODE_LABELS = {
-        'instanced': 'Instanced (sync)',
-        'dom-perf':  'DOM + screen-grid culling',
+        'instanced': '3D Labels',
+        'dom-perf':  'DOM Labels',
         none:        'No labels (baseline)',
     };
     const ALL_MODE_BTNS = {
@@ -1765,160 +2561,54 @@
     elBtnDomPerf.addEventListener('click',   () => setLabelMode('dom-perf'));
     elBtnNone.addEventListener('click',      () => setLabelMode('none'));
 
-    const elBtnFullBench    = document.getElementById('btn-full-bench');
-    const elCmpPanel        = document.getElementById('panel-comparison');
-    const elCmpProgress     = document.getElementById('cmp-progress');
-    const elCmpSummaryTbody = document.getElementById('cmp-summary-tbody');
-    const elCmpStepTbody    = document.getElementById('cmp-step-tbody');
+    // ── Dataset selector ─────────────────────────────────────────────────────
+    const elBtnDsIgn = document.getElementById('btn-ds-ign');
+    const elBtnDsOfm = document.getElementById('btn-ds-ofm');
+    const elBtnCap500 = document.getElementById('btn-cap-500');
 
-    function updateFloatingPanelLayout() {
-        const gap = 10;
-        const controlsRect = elControls.getBoundingClientRect();
-        const stepRect = elStepPanel.getBoundingClientRect();
-
-        const top = Math.max(10, Math.ceil(controlsRect.bottom + gap));
-        const bottom = Math.max(10, Math.ceil(window.innerHeight - stepRect.top + gap));
-        const maxH = Math.max(180, window.innerHeight - top - bottom);
-
-        const maxW = Math.max(360, Math.min(620, window.innerWidth - 20));
-        elResults.style.width = `${maxW}px`;
-        elCmpPanel.style.width = `${maxW}px`;
-
-        const resultsVisible = elResults.classList.contains('visible');
-        const cmpVisible = elCmpPanel.style.display !== 'none';
-
-        if (resultsVisible && cmpVisible) {
-            const splitGap = 8;
-            const cmpH = Math.max(180, Math.floor((maxH - splitGap) * 0.48));
-            const resH = Math.max(180, maxH - cmpH - splitGap);
-
-            elCmpPanel.style.top = `${top}px`;
-            elCmpPanel.style.bottom = 'auto';
-            elCmpPanel.style.height = `${cmpH}px`;
-            elCmpPanel.style.maxHeight = `${cmpH}px`;
-
-            const resTop = top + cmpH + splitGap;
-            elResults.style.top = `${resTop}px`;
-            elResults.style.bottom = 'auto';
-            elResults.style.height = `${resH}px`;
-            elResults.style.maxHeight = `${resH}px`;
-            return;
-        }
-
-        for (const panel of [elResults, elCmpPanel]) {
-            panel.style.height = 'auto';
-            panel.style.top = `${top}px`;
-            panel.style.bottom = `${bottom}px`;
-            panel.style.maxHeight = `${maxH}px`;
-        }
+    function syncDatasetButtons() {
+        elBtnDsIgn.classList.toggle('on', datasetMode === 'ign');
+        elBtnDsOfm.classList.toggle('on', datasetMode === 'openfreemap');
     }
 
-    window.addEventListener('resize', updateFloatingPanelLayout);
+    function setDataset(mode) {
+        if (runner.running || mode === datasetMode) return;
+        datasetMode = mode;
+        syncDatasetButtons();
+        elStatus.textContent = 'LOADING';
+        setupScene().then(() => {
+            elStepName.textContent = 'Ready';
+            elStepDesc.textContent = `Dataset: ${mode === 'ign' ? 'IGN Plan v2' : 'CARTO Positron (OSM)'} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
+            elStatus.textContent   = 'READY';
+        });
+    }
+
+    elBtnDsIgn.addEventListener('click', () => setDataset('ign'));
+    elBtnDsOfm.addEventListener('click', () => setDataset('openfreemap'));
+
+    // Toggle the per-tile screen-grid thinning for 3D mode. Same pre-filter DOM
+    // uses; needs a scene rebuild because it changes the label layer config.
+    elBtnCap500.addEventListener('click', () => {
+        if (runner.running) return;
+        useScreenGridFilter = !useScreenGridFilter;
+        elBtnCap500.classList.toggle('on', useScreenGridFilter);
+        elStatus.textContent = 'LOADING';
+        setupScene().then(() => {
+            elStepName.textContent = 'Ready';
+            elStepDesc.textContent = `Screen-grid filter ${useScreenGridFilter ? 'ON' : 'OFF'} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
+            elStatus.textContent   = 'READY';
+        });
+    });
+
+    const elBtnFullBench = document.getElementById('btn-full-bench');
+
+    window.addEventListener('resize', () => { if (elReport.classList.contains('visible')) sizeReport(); });
 
     const FULL_MODES = ['none', 'instanced', 'dom-perf'];
-    const MODE_SHORT = { none: 'None', instanced: 'Inst.sync', 'dom-perf': 'DOM+' };
+    const MODE_SHORT = { none: 'None', instanced: '3D', 'dom-perf': 'DOM' };
 
     function runBenchmarkPromise(stepPlan = ALL_STEP_INDEXES) {
         return new Promise(resolve => runner.start(resolve, stepPlan));
-    }
-
-    function deltaVsBaselineStr(modeFps, baseFps) {
-        if (baseFps == null || modeFps == null) return '—';
-        const pct = (modeFps / baseFps - 1) * 100;
-        const sign = pct >= 0 ? '+' : '';
-        const color = pct >= 0 ? '#1a7a4a' : '#b02020';
-        return `<span style="color:${color}">${sign}${pct.toFixed(0)}%</span>`;
-    }
-
-    function buildComparisonTable(modeResults) {
-        const n = STEPS.length;
-        const modeColdStart = modeResults.__coldStartByMode ?? {};
-
-        function modeOverall(mode) {
-            const res = modeResults[mode];
-            if (!res) return null;
-            return res.reduce((acc, { summary }) => {
-                if (!summary) return acc;
-                acc.fpsAvg        += summary.fpsAvg        / n;
-                acc.fpsP5         += summary.fpsP5         / n;
-                acc.fpsP1         += summary.fpsP1         / n;
-                acc.fpsSigma      += summary.fpsSigma      / n;
-                acc.lblAvg        += summary.lblAvg        / n;
-                acc.rendAvg       += summary.rendAvg       / n;
-                acc.tilesLoadedAvg += (summary.tilesLoadedAvg ?? 0) / n;
-                acc.callsAvg      += summary.callsAvg      / n;
-                acc.msAvg         += summary.msAvg         / n;
-                return acc;
-            }, { fpsAvg: 0, fpsP5: 0, fpsP1: 0, fpsSigma: 0, lblAvg: 0, rendAvg: 0, tilesLoadedAvg: 0, callsAvg: 0, msAvg: 0 });
-        }
-
-        const baseOverall = modeOverall('none');
-        const baseFps     = baseOverall?.fpsAvg ?? null;
-
-        elCmpSummaryTbody.innerHTML = '';
-        for (const mode of FULL_MODES) {
-            const overall = modeOverall(mode);
-            if (!overall) continue;
-
-            const isBase = mode === 'none';
-            const S = 'text-align:right; padding:4px 5px; border-bottom:1px solid rgba(0,0,0,0.05);';
-
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td style="text-align:left; padding:4px 5px; border-bottom:1px solid rgba(0,0,0,0.05); color:${isBase ? 'rgba(0,0,0,0.4)' : '#1a2030'}">
-                    ${MODE_SHORT[mode]}${isBase ? ' <span style="opacity:0.4;font-size:9px">(baseline)</span>' : ''}
-                </td>
-                <td style="${S} color:${fpsColor(overall.fpsAvg)}">${fmt(overall.fpsAvg, 0)}</td>
-                <td style="${S} color:${fpsColor(overall.fpsP5)}">${fmt(overall.fpsP5, 0)}</td>
-                <td style="${S} color:${fpsColor(overall.fpsP1)}">${fmt(overall.fpsP1, 0)}</td>
-                <td style="${S}">${fmt(overall.fpsSigma, 1)}</td>
-                <td style="${S}">${isBase ? '—' : deltaVsBaselineStr(overall.fpsAvg, baseFps)}</td>
-                <td style="${S}">${renderTimingLabel(modeColdStart[mode]?.firstLabel)}</td>
-                <td style="${S}">${renderTimingLabel(modeColdStart[mode]?.sceneReady)}</td>
-                <td style="${S}">${Math.round(overall.lblAvg).toLocaleString()}</td>
-                <td style="${S}">${Math.round(overall.rendAvg).toLocaleString()}</td>
-                <td style="${S}">${Math.round(overall.tilesLoadedAvg ?? 0).toLocaleString()}</td>
-                <td style="${S}">${Math.round(overall.callsAvg)}</td>
-                <td style="${S}">${fmt(overall.msAvg)}</td>
-            `;
-            elCmpSummaryTbody.appendChild(tr);
-        }
-
-        const S = 'text-align:right;padding:3px 5px;border-bottom:1px solid rgba(0,0,0,0.05);';
-
-        const tdFps = (summary) => {
-            if (!summary) return `<td style="${S} color:rgba(255,255,255,0.2)">—</td>`;
-            return `<td style="${S} color:${fpsColor(summary.fpsAvg)}">${fmt(summary.fpsAvg, 0)}</td>`;
-        };
-        const tdCost = (summary, base) => {
-            if (!summary || !base) return `<td style="${S} color:rgba(255,255,255,0.2)">—</td>`;
-            return `<td style="${S}">${deltaVsBaselineStr(summary.fpsAvg, base.fpsAvg)}</td>`;
-        };
-
-        elCmpStepTbody.innerHTML = '';
-        for (let i = 0; i < STEPS.length; i++) {
-            const step        = STEPS[i];
-            const noneSum    = modeResults['none']?.[i]?.summary;
-            const instSum    = modeResults['instanced']?.[i]?.summary;
-            const domPerfSum = modeResults['dom-perf']?.[i]?.summary;
-            const shortName  = step.name.replace(/^[①-⑩]\s/, '');
-
-            const tilesAvg = [noneSum, instSum, domPerfSum]
-                .filter(Boolean)
-                .reduce((s, x, _, a) => s + (x.tilesLoadedAvg ?? 0) / a.length, 0);
-
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td style="text-align:left;padding:3px 5px;border-bottom:1px solid rgba(0,0,0,0.05);color:rgba(0,0,0,0.55);font-size:9.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${step.desc}">${shortName}</td>
-                ${tdFps(noneSum)}
-                ${tdFps(instSum)}
-                ${tdCost(instSum, noneSum)}
-                ${tdFps(domPerfSum)}
-                ${tdCost(domPerfSum, noneSum)}
-                <td style="${S}">${tilesAvg > 0 ? Math.round(tilesAvg).toLocaleString() : '—'}</td>
-            `;
-            elCmpStepTbody.appendChild(tr);
-        }
     }
 
     let _fullBenchAborted = false;
@@ -1932,15 +2622,10 @@
         elBtnReset.disabled = true;
         rollingFrames = [];
 
-        elResults.classList.add('visible');
-        elLabelsPanel.style.display = 'none';
-        elCmpPanel.style.display    = 'block';
-        elCmpSummaryTbody.innerHTML = '';
-        elCmpStepTbody.innerHTML    = '';
-        updateFloatingPanelLayout();
+        resetReport();
+        showReport();
 
         const modeResults = {};
-        modeResults.__coldStartByMode = {};
 
         for (const mode of FULL_MODES) {
             if (_fullBenchAborted) break;
@@ -1948,8 +2633,9 @@
             labelMode = mode;
             Object.values(ALL_MODE_BTNS).forEach(b => b?.classList.remove('on'));
             ALL_MODE_BTNS[mode]?.classList.add('on');
-            elCmpProgress.textContent = `● Running: ${MODE_LABELS[mode]} (${FULL_MODES.indexOf(mode) + 1}/${FULL_MODES.length})`;
-            elStatus.textContent      = 'RUNNING';
+            const progress = `Running ${MODE_LABELS[mode]} (${FULL_MODES.indexOf(mode) + 1}/${FULL_MODES.length})`;
+            elReportProg.textContent = progress;
+            elStatus.textContent     = 'RUNNING';
 
             await countdown();
             if (_fullBenchAborted) break;
@@ -1962,8 +2648,8 @@
             _lastFrameMs = 16;
 
             modeResults[mode] = await runBenchmarkPromise();
-            modeResults.__coldStartByMode[mode] = { ...coldStart };
-            buildComparisonTable(modeResults);
+            // publishResults stamps the just-finished mode's cold start + refreshes the report
+            publishResults(mode, [...modeResults[mode]], progress);
 
             console.log(`[LabelBench] ${mode} complete:`, JSON.stringify({
                 coldStart,
@@ -1973,18 +2659,21 @@
         }
 
         const didComplete = !_fullBenchAborted && FULL_MODES.every(mode => Array.isArray(modeResults[mode]));
-        elCmpProgress.textContent = didComplete
-            ? '✓ All modes complete'
-            : '■ Stopped';
+        elReportProg.textContent = didComplete ? '✓ All modes complete' : '■ Stopped';
         elStatus.textContent = didComplete ? 'DONE' : 'STOPPED';
 
         if (didComplete) {
             const fullPayload = {
                 type: 'full',
+                dataset: datasetMode,
+                screenGridFilter: useScreenGridFilter,
+                coldStartByMode: { ..._reportState.coldStartByMode },
+                batchMaxByMode: { ..._reportState.batchMaxByMode },
+                atlasTexelsByMode: { ..._reportState.atlasTexelsByMode },
                 modes: Object.fromEntries(
                     Object.entries(modeResults).map(([mode, res]) => [
                         mode,
-                        res.map(({ step, summary }) => ({ step: step.id, ...summary })),
+                        res.map(({ step, summary }) => ({ step: step.id, name: step.name, desc: step.desc, ...summary })),
                     ])
                 ),
             };
@@ -2021,12 +2710,72 @@
         URL.revokeObjectURL(a.href);
     });
 
+    // Report show / collapse controls
+    elBtnReportCollapse.addEventListener('click', () => {
+        if (elReport.classList.contains('collapsed')) {
+            showReport();
+        } else {
+            elReport.classList.add('collapsed');
+            elBtnReportCollapse.textContent = '▴ Show';
+        }
+    });
+    elReportShow.addEventListener('click', showReport);
+
+    // PDF export: open a standalone window containing the WHOLE report + a copy
+    // of the report CSS, then print it. Printing the live page clipped to the
+    // first screen (fixed-position HUD + scroll container); a dedicated document
+    // lays the full content out across pages with vector text, same style.
+    const REPORT_PRINT_CSS = `
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        body { font-family: 'Consolas','Cascadia Code','Fira Code',monospace; color: #1a2030; padding: 16px; background: #fff; }
+        h1 { font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(0,0,0,0.6); margin-bottom: 4px; }
+        .meta { font-size: 10px; color: rgba(0,0,0,0.45); margin-bottom: 14px; }
+        .rep-section-title { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(0,0,0,0.45); margin: 14px 0 5px; }
+        .rep-mode-title { font-size: 11px; font-weight: 600; color: #1a3060; margin: 14px 0 4px; page-break-after: avoid; }
+        .rep-table { width: 100%; border-collapse: collapse; font-size: 10px; white-space: nowrap; margin-bottom: 6px; page-break-inside: auto; }
+        .rep-table tr { page-break-inside: avoid; }
+        .rep-table th { color: rgba(0,0,0,0.45); text-align: right; padding: 3px 6px; border-bottom: 1px solid rgba(0,0,0,0.25); font-weight: 400; }
+        .rep-table th:first-child, .rep-table td:first-child { text-align: left; }
+        .rep-table td { padding: 3px 6px; text-align: right; border-bottom: 1px solid rgba(0,0,0,0.08); }
+        .rep-table td:first-child { color: rgba(0,0,0,0.65); }
+        .rep-table tr.rep-overall td { font-weight: 600; border-top: 1px solid rgba(0,0,0,0.3); }
+        .grp { border-left: 1px solid rgba(0,0,0,0.12); }
+        @page { size: A4 landscape; margin: 10mm; }
+    `;
+    document.getElementById('btn-report-pdf').addEventListener('click', () => {
+        if (!elReportBody.innerHTML.trim()) { return; }
+        const meta = [
+            `Dataset: ${datasetMode === 'ign' ? 'IGN Plan v2' : 'CARTO Positron'}`,
+            `Screen-grid filter: ${useScreenGridFilter ? 'on' : 'off'}`,
+            new Date().toLocaleString(),
+        ].join('  ·  ');
+        const w = window.open('', '_blank');
+        if (!w) { return; }
+        w.document.write(`<!doctype html><html><head><meta charset="utf-8">
+            <title>iTowns Label Benchmark — Report</title><style>${REPORT_PRINT_CSS}</style></head>
+            <body><h1>iTowns Label Benchmark — Report</h1><div class="meta">${meta}</div>
+            ${elReportBody.innerHTML}</body></html>`);
+        w.document.close();
+        w.focus();
+        // Give the new doc a tick to lay out before invoking print.
+        setTimeout(() => w.print(), 250);
+    });
+
     setupScene().then(() => {
         elStepName.textContent = 'Ready';
         elStepDesc.textContent = `Scene loaded — first label at ${coldStart.firstLabel != null ? (coldStart.firstLabel / 1000).toFixed(2) + ' s' : 'pending…'}`;
         elStatus.textContent   = 'READY';
-        updateFloatingPanelLayout();
     });
+
+    // Standalone HUD refresh loop — keeps minimap/stats alive when iTowns is idle (no benchmark running)
+    (function idleHudLoop() {
+        const now = performance.now();
+        if (view && !runner.running && now - _lastHudDrawMs >= HUD_DRAW_RATE_MS) {
+            _lastHudDrawMs = now;
+            drawHud(now);
+        }
+        requestAnimationFrame(idleHudLoop);
+    })();
 
     Object.assign(window, { get view() { return view; }, runner, itowns, THREE, coldStart });
     </script>

@@ -1,4 +1,5 @@
 export * from './Label';
+export * from './Profiler';
 export * from './LabelFontGroup';
 export * from './InstancedLabelManager';
 export * from './InstancedLabelManagerAsync';

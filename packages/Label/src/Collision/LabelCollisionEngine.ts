@@ -3,6 +3,7 @@ import { Label } from '../Label';
 import { HierarchicalBitmap } from './HierarchicalBitmap';
 import { LabelProjector, ScreenAABB } from './LabelProjector';
 import { LabelManagerConfig } from '../Types/LabelConfig';
+import { LabelProfiler } from '../Profiler';
 
 /**
  * Resolves label occlusion by scoring candidates, then placing them 
@@ -92,7 +93,9 @@ export class LabelCollisionEngine {
         const logRange = (logMax - logMin) || 1;
         const logScale = (this._numBuckets - 1) / logRange;
 
-        // Filter visible labels and compute composite sort scores
+        // Phase 1 — candidate filter + score: keep frustum/visibility-passing
+        // labels and compute their composite distance·size priority score.
+        const _pCand = LabelProfiler.begin();
         let changed = false;
         this._candidates.length = 0;
         const { x: cx, y: cy, z: cz } = camera.position;
@@ -120,10 +123,13 @@ export class LabelCollisionEngine {
             label.score      = distSq * (sizeFactor ** this._config.fontSizePriorityPower);
             this._candidates.push(label);
         }
+        LabelProfiler.end('candidate', _pCand);
 
         if (this._candidates.length === 0) { return changed || true; }
 
-        // Scatter into depth buckets (low index = near = high priority)
+        // Phase 2 — priority sort: scatter candidates into depth buckets by
+        // score (low index = near = high priority).
+        const _pSort = LabelProfiler.begin();
         let minBucket = this._numBuckets, maxBucket = -1;
 
         for (let i = 0; i < this._candidates.length; i++) {
@@ -139,8 +145,11 @@ export class LabelCollisionEngine {
             if (b < minBucket) minBucket = b;
             if (b > maxBucket) maxBucket = b;
         }
+        LabelProfiler.end('priority', _pSort);
 
-        // Place labels near-to-far, clearing each bucket as it is consumed
+        // Phase 3 — occlusion placement: walk buckets near-to-far, project each
+        // label and test it against the occupancy bitmap to set shouldRender.
+        const _pOccl = LabelProfiler.begin();
         const aabb = this._scratchAABB;
 
         for (let b = minBucket; b <= maxBucket; b++) {
@@ -176,6 +185,7 @@ export class LabelCollisionEngine {
 
             bucket.length = 0;
         }
+        LabelProfiler.end('occlusion', _pOccl);
 
         return changed;
     }

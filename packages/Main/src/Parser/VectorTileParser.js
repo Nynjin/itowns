@@ -5,6 +5,7 @@ import { FeatureCollection, FEATURE_TYPES } from 'Core/Feature';
 import { globalExtentTMS } from 'Core/Tile/TileGrid';
 import { deprecatedParsingOptionsToNewOne } from 'Core/Deprecated/Undeprecator';
 import { Coordinates } from '@itowns/geographic';
+import { LabelProfiler } from '@itowns/labels';
 
 const worldDimension3857 = globalExtentTMS.get('EPSG:3857').planarDimensions();
 const globalExtent = new Vector3(worldDimension3857.x, worldDimension3857.y, 1);
@@ -114,12 +115,14 @@ function vtFeatureToFeatureGeometry(vtFeature, feature, classify = false) {
 }
 
 function readPBF(file, options) {
+    const _pDecode = LabelProfiler.begin();
     options.out = options.out || {};
     const vectorTile = new VectorTile(new Protobuf(file));
     const vtLayerNames = Object.keys(vectorTile.layers);
 
     const collection = new FeatureCollection(options.out);
     if (vtLayerNames.length < 1) {
+        LabelProfiler.end('decode', _pDecode);
         return Promise.resolve(collection);
     }
 
@@ -203,6 +206,8 @@ function readPBF(file, options) {
     collection.updateExtent();
     collection.extent = options.extent;
     collection.isInverted = options.in.isInverted;
+    LabelProfiler.end('decode', _pDecode);
+    LabelProfiler.count('tilesDecoded', 1);
     return Promise.resolve(collection);
 }
 

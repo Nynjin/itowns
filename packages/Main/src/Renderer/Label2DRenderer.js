@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { LabelProfiler } from '@itowns/labels';
+import GlobeLayer from 'Core/Prefab/Globe/GlobeLayer';
 
 function isIntersectedOrOverlaped(a, b) {
     return !(a.left > b.right || a.right < b.left
@@ -138,6 +140,8 @@ class Label2DRenderer {
         // set camera frustum
         frustum.setFromProjectionMatrix(camera.projectionMatrix);
 
+        // Candidate: project + frustum/horizon cull every label into grid.visible.
+        const _pCand = LabelProfiler.begin();
         labelLayers.forEach((labelLayer) => {
             labelLayer.submittedLabelNodes.forEach(
                 (labelsNode) => {
@@ -151,9 +155,11 @@ class Label2DRenderer {
                     labelsNode.needsUpdate = false;
                 });
         });
+        LabelProfiler.end('candidate', _pCand);
 
-        // sort by order, then by visibility inside those subsets
+        // Priority: sort by order, then by visibility inside those subsets
         // https://docs.mapbox.com/help/troubleshooting/optimize-map-label-placement/#label-hierarchy
+        const _pPrio = LabelProfiler.begin();
         this.grid.visible.sort((a, b) => {
             const r = b.order - a.order;
             if (r == 0) {
@@ -164,19 +170,35 @@ class Label2DRenderer {
                 return r;
             }
         });
+        LabelProfiler.end('priority', _pPrio);
+
+        // Occlusion: place near-to-far into the screen grid, collecting winners.
+        const _pOccl = LabelProfiler.begin();
+        const toPosition = [];
         this.grid.visible.forEach((l) => {
             if (this.grid.insert(l)) {
                 l.visible = true;
-                l.updateCSSPosition();
+                toPosition.push(l);
             } else {
                 l.visible = false;
             }
         });
+        LabelProfiler.end('occlusion', _pOccl);
 
+        // Position: commit the surviving labels' CSS transforms.
+        const _pPos = LabelProfiler.begin();
+        for (const l of toPosition) {
+            l.updateCSSPosition();
+        }
+        LabelProfiler.end('position', _pPos);
+
+        // Show/hide: DOM-specific — drop the nodes that left the view.
+        const _pSH = LabelProfiler.begin();
         labelLayers.forEach((labelLayer) => {
             labelLayer.toHide.children.forEach(labelsNode => labelsNode.domElements?.labels.hide());
             labelLayer.toHide.clear();
         });
+        LabelProfiler.end('showhide', _pSH);
     }
 
     culling(label, camera, tileLayer) {

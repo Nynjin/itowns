@@ -4,6 +4,7 @@ import { FEATURE_TYPES } from 'Core/Feature';
 import ReferLayerProperties from 'Layer/ReferencingLayerProperties';
 import { deprecatedFeature2MeshOptions } from 'Core/Deprecated/Undeprecator';
 import { Extent, Coordinates, OrientationUtils } from '@itowns/geographic';
+import { LabelProfiler } from '@itowns/labels';
 import Style, { StyleContext } from 'Core/Style';
 
 const coord = new Coordinates('EPSG:4326', 0, 0, 0);
@@ -855,12 +856,18 @@ export default {
             if (!features || features.length == 0) { return; }
 
             const layer = this;
+            // Geometry build: vector features → THREE meshes (Earcut triangulation,
+            // extrusion, buffers). This is the FeatureGeometryLayer cost that 'none'
+            // mode never pays — the bulk of a label mode's non-label overhead.
+            const _pGeom = LabelProfiler.begin();
             const meshes = features.map((feature) => {
                 const mesh = featureToMesh(feature, options);
                 mesh.layer = layer;
                 return mesh;
             });
             const featureNode = new FeatureMesh(meshes, collection);
+            LabelProfiler.end('geomBuild', _pGeom);
+            LabelProfiler.count('geomFeatures', features.length);
             featureNode.styleColorVersion = this?._styleColorVersion ?? 0;
             featureNode.stylePositionVersion = this?._stylePositionVersion ?? 0;
             if (this && style !== defaultStyle) {

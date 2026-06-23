@@ -2,6 +2,7 @@ import TinySDF from "@mapbox/tiny-sdf";
 import { DataTexture, LinearFilter, RedFormat, UnsignedByteType } from "three";
 import { FontKey } from "./FontKey";
 import { GlyphInfo } from "./GlyphRun";
+import { LabelProfiler } from "../Profiler";
 
 export interface SDFAtlasOptions {
     /** Font size (px) at which glyphs are rasterized. */
@@ -87,6 +88,12 @@ export class SDFAtlas {
 
         this._drawChars(newChars);
         this.texture.needsUpdate = true;
+        // A full-atlas GPU re-upload is now pending (DataTexture.needsUpdate),
+        // and we just rasterized newChars glyphs on the CPU. Both scale with the
+        // (large, growing) character set; record them so the cost is visible.
+        LabelProfiler.count('glyphsRasterized', newChars.length);
+        LabelProfiler.count('atlasUpload', 1);
+        LabelProfiler.max('atlasTexelsMax', this._width * this._width);
         return { dirty: true, resize };
     }
 

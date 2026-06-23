@@ -6,7 +6,7 @@ import { Coordinates, Extent } from '@itowns/geographic';
 import Label from 'Core/Label';
 import Style, { readExpression, StyleContext } from 'Core/Style';
 import { ScreenGrid } from 'Renderer/Label2DRenderer';
-import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement } from '@itowns/labels';
+import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement, LabelProfiler } from '@itowns/labels';
 
 const context = new StyleContext();
 
@@ -53,6 +53,35 @@ function getTerrainLift(label, pxPerUnit) {
     const labelHeight = fontSize / pxPerUnit;
     const anchorFactor = Math.max(0, 1 + anchor[1]);
     return Math.max(2, labelHeight * anchorFactor);
+}
+
+// Average glyph advance as a fraction of the font size — used to estimate a
+// label's on-screen width without a DOM box. ~0.55 matches typical proportional
+// Latin fonts closely enough for overlap testing.
+const GLYPH_ADVANCE_RATIO = 0.55;
+
+// Instanced labels never go through the DOM, so they never get the `offset`
+// (and thus `boundaries`) that `Label.initDimensions()` derives from
+// `getBoundingClientRect()`. The screen-grid pre-filter needs those bounds, so
+// synthesize an equivalent box from the instanced text metrics. Mirrors the
+// structure produced by `Label.initDimensions()`.
+function ensureInstancedLabelOffset(label) {
+    if (label.offset) { return; }
+
+    const textStyle = label.instancedTextStyle || {};
+    const fontSize = textStyle.size || 16;
+    const text = toInstancedTextContent(label.instancedTextContent || label.content) || '';
+    const longestLine = text.split('\n').reduce((m, l) => Math.max(m, l.length), 0);
+
+    const width = Math.max(fontSize, longestLine * fontSize * GLYPH_ADVANCE_RATIO);
+    const height = fontSize * 1.2;
+
+    const anchor = Array.isArray(label.anchor) ? label.anchor : [0, 0];
+    const styleOffset = Array.isArray(label.styleOffset) ? label.styleOffset : [0, 0];
+    const left = width * anchor[0] + styleOffset[0];
+    const top = height * anchor[1] + styleOffset[1];
+
+    label.offset = { left, top, right: left + width, bottom: top + height };
 }
 
 function resolveTextProperty(context, ...sources) {
@@ -200,15 +229,21 @@ class LabelsNode extends THREE.Group {
             return;
         }
 
+        // Register (DOM): attach the element to the tree.
+        const _pReg = LabelProfiler.begin();
         // add 3d object
         this.add(label);
-
         // add dom label
         this.domElements.labels.dom.append(label.content);
+        LabelProfiler.end('register', _pReg);
 
+        // Layout (DOM): initDimensions() reads getBoundingClientRect — the browser
+        // reflow that measures the label (analog of instanced layoutText).
+        const _pLayout = LabelProfiler.begin();
         // Batch update the dimensions of labels all at once to avoid
         // redraw for at least this tile.
         label.initDimensions();
+        LabelProfiler.end('layout', _pLayout);
 
         // add horizon culling point if it's necessary
         // the horizon culling is applied to nodes that trace the horizon which
@@ -221,20 +256,20 @@ class LabelsNode extends THREE.Group {
     // remove node label
     // remove label 3d and dom label
     removeLabel(label) {
+        const _pDel = LabelProfiler.begin();
         if (this.isInstanced) {
             const instancedLabel = this.instancedLabels.get(label);
             if (instancedLabel && this.instancedLabelManager) {
                 this.instancedLabelManager.removeLabel(instancedLabel);
                 this.instancedLabels.delete(label);
             }
-            return;
+        } else {
+            // remove 3d object
+            this.remove(label);
+            // remove dom label
+            this.domElements.labels.dom.removeChild(label.content);
         }
-
-        // remove 3d object
-        this.remove(label);
-
-        // remove dom label
-        this.domElements.labels.dom.removeChild(label.content);
+        LabelProfiler.end('delete', _pDel);
     }
 
     // update position if it's necessary
@@ -339,6 +374,8 @@ class LabelLayer extends GeometryLayer {
     }
 
     convert(data, extentOrTile) {
+        // Parse + style-extraction + Label creation for one tile/extent.
+        const _pConvert = LabelProfiler.begin();
         const labels = [];
 
         // Converting the extent now is faster for further operation
@@ -383,6 +420,13 @@ class LabelLayer extends GeometryLayer {
                         f.style,
                         this.style,
                     );
+                    // Instanced labels are text-only. Skip text-less features so
+                    // we don't register phantom empty labels — this mirrors the
+                    // DOM branch below (which skips when there's no field/icon)
+                    // and keeps the instanced label count comparable to DOM.
+                    if (content == null || content === '') {
+                        return;
+                    }
                 } else if (this.labelDomelement) {
                     content = readExpression(this.labelDomelement, context);
                 } else if (!geometryField && !featureField && !layerField) {
@@ -427,6 +471,14 @@ class LabelLayer extends GeometryLayer {
             });
         });
 
+        LabelProfiler.end('parse', _pConvert);
+        // labelsCreated: summed per frame by the benchmark (a frame can run many
+        //   convert() calls when cached tiles resolve together).
+        // labelBatchMax: largest batch from ONE convert() over the run — i.e. the
+        //   biggest single tile. Distinguishes "one huge tile" (overzoom) from
+        //   "many tiles in one frame" (churn).
+        LabelProfiler.count('labelsCreated', labels.length);
+        LabelProfiler.max('labelBatchMax', labels.length);
         return labels;
     }
 
@@ -459,10 +511,16 @@ class LabelLayer extends GeometryLayer {
         return object.children.every(c => c.layerUpdateState && c.layerUpdateState[this.id]?.hasFinished());
     }
 
-    // Remove all labels invisible with pre-culling with screen grid.
-    // Only called for DOM mode — instanced labels are culled by the collision engine.
+    // Thin overlapping labels with a per-tile screen grid, so dense tiles don't
+    // flood the renderer. Works for both modes: DOM labels live in node.children,
+    // instanced labels in node.instancedLabels (and get synthesized bounds since
+    // they have no DOM box). Kept labels still go through the regular per-frame
+    // culling afterwards (Label2DRenderer for DOM, the collision engine for instanced).
     #removeCulledLabels(node) {
-        const labels = node.children.slice();
+        const _pThin = LabelProfiler.begin();
+        const labels = node.isInstanced
+            ? [...node.instancedLabels.keys()]
+            : node.children.slice();
 
         // reset filter
         this.#filterGrid.reset();
@@ -471,6 +529,10 @@ class LabelLayer extends GeometryLayer {
         labels.sort((a, b) => b.order - a.order);
 
         labels.forEach((label) => {
+            if (node.isInstanced) {
+                ensureInstancedLabelOffset(label);
+            }
+
             // get node dimensions
             node.nodeParent.extent.planarDimensions(nodeDimensions);
             coord.crs = node.nodeParent.extent.crs;
@@ -494,6 +556,7 @@ class LabelLayer extends GeometryLayer {
                 node.removeLabel(label);
             }
         });
+        LabelProfiler.end('thin', _pThin);
     }
 
     update(context, layer, node, parent) {
@@ -615,9 +678,12 @@ class LabelLayer extends GeometryLayer {
                     });
                 }
 
-                // Pre-cull only makes sense for DOM mode: instanced collision runs
-                // in a worker and handles the full label pool itself.
-                if (this.performance && !labelsNode.isInstanced) {
+                // Screen-grid pre-cull: with performance mode, thin overlapping
+                // labels per tile for both DOM and instanced modes (instanced uses
+                // synthesized bounds — see ensureInstancedLabelOffset). The
+                // collision engine then runs its own occlusion pass on the
+                // already-thinned instanced pool.
+                if (this.performance) {
                     this.#removeCulledLabels(labelsNode);
                 }
             }
