@@ -649,13 +649,13 @@
                 heading: 0,
             }),
         },
-        // {
-        //     id: 'idle_street',
-        //     name: '3. Idle (street level)',
-        //     desc: 'Camera still at 400 m, tilt 60°. Maximum label density — tests sustained throughput under full load.',
-        //     duration: 6_000,
-        //     drive: () => ({ coord: PARIS, range: 400, tilt: 60, heading: 0 }),
-        // },
+        {
+            id: 'idle_street',
+            name: '3. Idle (street level)',
+            desc: 'Camera still at 400 m, tilt 60°. Maximum label density — tests sustained throughput under full load.',
+            duration: 6_000,
+            drive: () => ({ coord: PARIS, range: 400, tilt: 60, heading: 0 }),
+        },
         {
             id: 'zoom_out',
             name: '4. Zoom Out',
@@ -668,19 +668,19 @@
                 heading: 0,
             }),
         },
-        // {
-        //     id: 'pan',
-        //     name: '5. Pan',
-        //     desc: 'Lateral arc ~9 km and back at 5 km altitude, tilt 50°. Streams new tile columns with a steady label load.',
-        //     duration: 10_000,
-        //     drive: (t) => {
-        //         const offset = Math.sin(t * Math.PI) * 0.13;
-        //         return {
-        //             coord: new itowns.Coordinates('EPSG:4326', 2.3488 + offset, 48.8534),
-        //             range: 5_000, tilt: 50, heading: 0,
-        //         };
-        //     },
-        // },
+        {
+            id: 'pan',
+            name: '5. Pan',
+            desc: 'Lateral arc ~9 km and back at 5 km altitude, tilt 50°. Streams new tile columns with a steady label load.',
+            duration: 10_000,
+            drive: (t) => {
+                const offset = Math.sin(t * Math.PI) * 0.13;
+                return {
+                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + offset, 48.8534),
+                    range: 5_000, tilt: 50, heading: 0,
+                };
+            },
+        },
         {
             id: 'tilt',
             name: '6. Tilt Sweep',
@@ -693,18 +693,18 @@
                 heading: 0,
             }),
         },
-        // {
-        //     id: 'orbit',
-        //     name: '7. Orbit (360°)',
-        //     desc: 'Full 360° heading rotation at 5 km, tilt 30°. Each orientation loads different tile columns.',
-        //     duration: 12_000,
-        //     drive: (t) => ({
-        //         coord: PARIS,
-        //         range: 5_000,
-        //         tilt:  30,
-        //         heading: lerp(0, 360, easeLinear(t)),
-        //     }),
-        // },
+        {
+            id: 'orbit',
+            name: '7. Orbit (360°)',
+            desc: 'Full 360° heading rotation at 5 km, tilt 30°. Each orientation loads different tile columns.',
+            duration: 12_000,
+            drive: (t) => ({
+                coord: PARIS,
+                range: 5_000,
+                tilt:  30,
+                heading: lerp(0, 360, easeLinear(t)),
+            }),
+        },
         {
             id: 'rapid_zoom',
             name: '8. Rapid Zoom ×10',
@@ -744,21 +744,21 @@
                 heading: t * 360 * 11,
             }),
         },
-        // {
-        //     id: 'pan_fast_circle',
-        //     name: '11. Circular pan (low tilt)',
-        //     desc: '6 fast circles (~15 km radius) at 5 km altitude, near-nadir tilt (12°). Rapid tile streaming with a wide visible area.',
-        //     duration: 12_000,
-        //     drive: (t) => {
-        //         const angle = t * Math.PI * 2 * 6;
-        //         return {
-        //             coord: new itowns.Coordinates('EPSG:4326', 2.3488 + Math.cos(angle) * 0.2, 48.8534 + Math.sin(angle) * 0.132),
-        //             range: 5_000,
-        //             tilt: 12,
-        //             heading: 0,
-        //         };
-        //     },
-        // },
+        {
+            id: 'pan_fast_circle',
+            name: '11. Circular pan (low tilt)',
+            desc: '6 fast circles (~15 km radius) at 5 km altitude, near-nadir tilt (12°). Rapid tile streaming with a wide visible area.',
+            duration: 12_000,
+            drive: (t) => {
+                const angle = t * Math.PI * 2 * 6;
+                return {
+                    coord: new itowns.Coordinates('EPSG:4326', 2.3488 + Math.cos(angle) * 0.2, 48.8534 + Math.sin(angle) * 0.132),
+                    range: 5_000,
+                    tilt: 12,
+                    heading: 0,
+                };
+            },
+        },
         {
             id: 'rapid_zoom_high_range',
             name: '12. Extreme zoom (500 km↔50 m)',

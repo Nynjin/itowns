@@ -87,6 +87,9 @@ export default () => {
             itowns_lasworker: {
                 import: './packages/Main/src/Worker/LASLoaderWorker.js',
             },
+            itowns_vtworker: {
+                import: './packages/Main/src/Worker/VTDecodeWorker.js',
+            },
             itowns_labelworker: {
                 import: './packages/Label/src/Worker/LabelWorkerScript.ts',
             },

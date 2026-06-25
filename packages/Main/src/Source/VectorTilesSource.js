@@ -4,6 +4,7 @@ import TMSSource from 'Source/TMSSource';
 import URLBuilder from 'Provider/URLBuilder';
 import Fetcher from 'Provider/Fetcher';
 import urlParser from 'Parser/MapBoxUrlParser';
+import VectorTileParser from 'Parser/VectorTileParser';
 
 function mergeCollections(collections) {
     const collection = collections[0];
@@ -74,6 +75,9 @@ class VectorTilesSource extends TMSSource {
         this.styles = {};
         let promise;
         this.isVectorTileSource = true;
+
+        // AbortController for cancelling in-flight fetches on dispose
+        this._abortController = new AbortController();
 
         this.accessToken = source.accessToken;
 
@@ -165,6 +169,12 @@ class VectorTilesSource extends TMSSource {
         }
     }
 
+    onLayerRemoved(options = {}) {
+        // Cancel all in-flight tile fetches immediately
+        this._abortController.abort();
+        super.onLayerRemoved(options);
+    }
+
     loadData(extent, out) {
         const cache = this._featuresCaches[out.crs];
         if (!cache) { return Promise.resolve(null); } // source already disposed
@@ -172,18 +182,23 @@ class VectorTilesSource extends TMSSource {
         // try to get parsed data from cache
         let features = cache.get(key);
         if (!features) {
+            // Merge abort signal into fetch options
+            const fetchOpts = { ...this.networkOptions, signal: this._abortController.signal };
             // otherwise fetch/parse the data
             features = Promise.all(this.urls.map((url) => {
-                return this.fetcher(this.urlFromExtent(extent, url), this.networkOptions)
+                return this.fetcher(this.urlFromExtent(extent, url), fetchOpts)
                     .then((file) => {
                         // Guard: if the source was disposed while this fetch was
                         // in-flight, skip the expensive PBF decode entirely.
                         if (!this._featuresCaches[out.crs]) { return null; }
-                        return this.parser(file, { out, in: this, extent });
+                        return VectorTileParser.parseWorker(file, { out, in: this, extent });
                     });
             }))
                 .then(collections => (collections[0] ? mergeCollections(collections) : null))
-                .catch(err => this.handlingError(err));
+                .catch((err) => {
+                    if (err.name === 'AbortError') { return null; }
+                    return this.handlingError(err);
+                });
 
             cache.set(key, features);
         }
