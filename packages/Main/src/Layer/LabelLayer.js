@@ -7,6 +7,7 @@ import Label from 'Core/Label';
 import Style, { readExpression, StyleContext } from 'Core/Style';
 import { ScreenGrid } from 'Renderer/Label2DRenderer';
 import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement, LabelProfiler } from '@itowns/labels';
+import { enqueueBudgeted } from 'Core/Scheduler/FrameBudget';
 
 const context = new StyleContext();
 
@@ -620,75 +621,84 @@ class LabelLayer extends GeometryLayer {
                 this.#findClosestDomElement(node).add(labelsNode.domElements);
             }
 
-            result.forEach((labels) => {
-                // Clean if there isnt' parent
-                if (!node.parent) {
-                    labels.forEach((l) => {
-                        ObjectRemovalHelper.removeChildrenAndCleanupRecursively(this, l);
-                        if (labelsNode.isInstanced) {
-                            labelsNode.removeLabel(l);
-                        } else {
-                            renderer.removeLabelDOM(l);
-                        }
-                    });
-                    return;
-                }
-
-                labelsNode.needsAltitude = labelsNode.needsAltitude || labels.needsAltitude;
-
-                // Add all labels for this tile at once to batch it
-                labels.forEach((label) => {
-                    if (node.extent.isPointInside(label.coordinates)) {
-                        labelsNode.addLabel(label);
+            // Adding labels is heavy main-thread work (DOM initDimensions reflow;
+            // instanced register). Defer it to a budgeted slice so a burst of
+            // resolved tiles spreads across frames instead of stalling one, then
+            // request a redraw so the deferred labels appear.
+            return enqueueBudgeted(() => {
+                result.forEach((labels) => {
+                    // Clean if there isnt' parent
+                    if (!node.parent) {
+                        labels.forEach((l) => {
+                            ObjectRemovalHelper.removeChildrenAndCleanupRecursively(this, l);
+                            if (labelsNode.isInstanced) {
+                                labelsNode.removeLabel(l);
+                            } else {
+                                renderer.removeLabelDOM(l);
+                            }
+                        });
+                        return;
                     }
-                });
-            });
 
-            if (labelsNode.count()) {
-                if (!labelsNode.isInstanced) {
-                    labelsNode.domElements.labels.hide();
-                    labelsNode.domElements.labels.dom.style.opacity = '1.0';
-                    node.addEventListener('show', () => labelsNode.domElements.labels.show());
-                    node.addEventListener('hidden', () => this.#disallowToRendering(labelsNode));
-                } else {
-                    node.addEventListener('show', () => {
-                        labelsNode.instancedLabels.forEach((instancedLabel, label) => {
-                            instancedLabel.visible = label.visible;
-                            instancedLabel.groupVisible = true;
-                        });
-                    });
-                    node.addEventListener('hidden', () => {
-                        labelsNode.instancedLabels.forEach((instancedLabel) => {
-                            instancedLabel.visible = false;
-                            instancedLabel.groupVisible = false;
-                        });
-                    });
-                }
+                    labelsNode.needsAltitude = labelsNode.needsAltitude || labels.needsAltitude;
 
-                // Necessary event listener, to remove any Label attached to
-                node.addEventListener('removed', () => this.removeNodeDomElement(node));
-
-                if (labelsNode.needsAltitude && node.material.getElevationTile()) {
-                    node.material.getElevationTile().addEventListener('rasterElevationLevelChanged', () => {
-                        labelsNode.needsUpdate = true;
-                        if (labelsNode.isInstanced) {
-                            labelsNode.labels.forEach(l => labelsNode.updatePosition(l));
-                            labelsNode.needsUpdate = false;
+                    // Add all labels for this tile at once to batch it
+                    labels.forEach((label) => {
+                        if (node.extent.isPointInside(label.coordinates)) {
+                            labelsNode.addLabel(label);
                         }
                     });
+                });
+
+                if (labelsNode.count()) {
+                    if (!labelsNode.isInstanced) {
+                        labelsNode.domElements.labels.hide();
+                        labelsNode.domElements.labels.dom.style.opacity = '1.0';
+                        node.addEventListener('show', () => labelsNode.domElements.labels.show());
+                        node.addEventListener('hidden', () => this.#disallowToRendering(labelsNode));
+                    } else {
+                        node.addEventListener('show', () => {
+                            labelsNode.instancedLabels.forEach((instancedLabel, label) => {
+                                instancedLabel.visible = label.visible;
+                                instancedLabel.groupVisible = true;
+                            });
+                        });
+                        node.addEventListener('hidden', () => {
+                            labelsNode.instancedLabels.forEach((instancedLabel) => {
+                                instancedLabel.visible = false;
+                                instancedLabel.groupVisible = false;
+                            });
+                        });
+                    }
+
+                    // Necessary event listener, to remove any Label attached to
+                    node.addEventListener('removed', () => this.removeNodeDomElement(node));
+
+                    if (labelsNode.needsAltitude && node.material.getElevationTile()) {
+                        node.material.getElevationTile().addEventListener('rasterElevationLevelChanged', () => {
+                            labelsNode.needsUpdate = true;
+                            if (labelsNode.isInstanced) {
+                                labelsNode.labels.forEach(l => labelsNode.updatePosition(l));
+                                labelsNode.needsUpdate = false;
+                            }
+                        });
+                    }
+
+                    // Screen-grid pre-cull: with performance mode, thin overlapping
+                    // labels per tile for both DOM and instanced modes (instanced uses
+                    // synthesized bounds — see ensureInstancedLabelOffset). The
+                    // collision engine then runs its own occlusion pass on the
+                    // already-thinned instanced pool.
+                    if (this.performance) {
+                        this.#removeCulledLabels(labelsNode);
+                    }
                 }
 
-                // Screen-grid pre-cull: with performance mode, thin overlapping
-                // labels per tile for both DOM and instanced modes (instanced uses
-                // synthesized bounds — see ensureInstancedLabelOffset). The
-                // collision engine then runs its own occlusion pass on the
-                // already-thinned instanced pool.
-                if (this.performance) {
-                    this.#removeCulledLabels(labelsNode);
-                }
-            }
-
-            node.layerUpdateState[this.id].noMoreUpdatePossible();
+                node.layerUpdateState[this.id].noMoreUpdatePossible();
+                // Deferred adds ran off the command-resolution turn → request a
+                // redraw so the newly-added labels are rendered.
+                context.view.notifyChange(node);
+            });
         });
     }
 

@@ -1,5 +1,6 @@
 import { Label } from '../Label';
 import { GlyphInfo } from './GlyphRun';
+import { glyphKey } from './FontKey';
 
 export interface LineBreaks {
     lines: string[];
@@ -12,7 +13,7 @@ export default function lineBreak(
     baseFontSize: number,
     text = label.getDisplayText(),
 ): LineBreaks {
-    const fallback = glyphs.get('?');
+    const fallback = glyphs.get(glyphKey(label.fontKey, '?'));
     if (!fallback) throw new Error('Atlas missing fallback glyph "?"');
 
     if (!text) {
@@ -44,7 +45,7 @@ export default function lineBreak(
 
         while (i < text.length) {
             const c = text[i];
-            const adv = (glyphs.get(c) ?? fallback).advance;
+            const adv = (glyphs.get(glyphKey(label.fontKey, c)) ?? fallback).advance;
             const charW = adv + (lineStr.length > 0 ? letterSpacing : 0);
 
             // Overflow — only after at least one char is on the line

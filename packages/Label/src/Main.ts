@@ -1,6 +1,6 @@
 export * from './Label';
 export * from './Profiler';
-export * from './LabelFontGroup';
+export * from './LabelAtlasManager';
 export * from './InstancedLabelManager';
 export * from './InstancedLabelManagerAsync';
 export * from './Types/LabelConfig';

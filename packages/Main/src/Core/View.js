@@ -276,31 +276,56 @@ class View extends THREE.EventDispatcher {
             pxPerUnit: 1024,
             globeAlignment: false,
             fadeDurationMs: 300,
+            baseFontSize: 20,
+            sdfScale: 1,
+            sdfCapacityMultiplier: 2,
+            dataTextureCapacityMultiplier: 2,
+            maxDataTextureWidth: 2048,
+            fontSizePriorityPower: 1,
+            downscale: 16,
+            coarseScale: 8,
+            acceptableOcclusion: 0.1,
+            maxOcclusion: 0.2,
+            stationaryThreshold: 0.05,
+            fastMoveFraction: 0.2,
+            collisionBuckets: 4,
+            ndcCullMargin: 0.2,
+            renderPenaltyMultiplier: 8,
+            layoutBudgetPerTick: 0,
+            updateRate: 1,
+            cullingRate: 0.5,
+            autoResizePxPerUnit: true,
+        };
+
+        const _labelManagerAsyncConfig = {
+            pxPerUnit: 1024,
+            globeAlignment: false,
+            fadeDurationMs: 300,
             baseFontSize: 24,
             sdfScale: 2,
             sdfCapacityMultiplier: 2,
             dataTextureCapacityMultiplier: 2,
             maxDataTextureWidth: 4096,
             fontSizePriorityPower: 1,
-            downscale: 8,
+            downscale: 4,
             coarseScale: 16,
             acceptableOcclusion: 0.1,
             maxOcclusion: 0.2,
             stationaryThreshold: 0.05,
             fastMoveFraction: 0.3,
-            collisionBuckets: 16,
+            collisionBuckets: 64,
             ndcCullMargin: 0.2,
             renderPenaltyMultiplier: 8,
-            layoutBudgetPerTick: 25,
-            updateRate: 1,
-            cullingRate: 1,
+            layoutBudgetPerTick: 50,
+            updateRate: 0.5,
+            cullingRate: 0.3,
             autoResizePxPerUnit: true,
         };
 
         const _renderer = this.mainLoop?.gfxEngine?.getRenderer();
 
         this.instancedLabelManager = new InstancedLabelManager(_renderer, _labelManagerConfig);
-        this.instancedLabelManagerAsync = new InstancedLabelManagerAsync(_renderer, _labelManagerConfig);
+        this.instancedLabelManagerAsync = new InstancedLabelManagerAsync(_renderer, _labelManagerAsyncConfig);
 
         this.instancedLabelManager.attachTo(this.scene);
         this.instancedLabelManagerAsync.attachTo(this.scene);

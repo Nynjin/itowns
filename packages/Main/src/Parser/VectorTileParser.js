@@ -5,6 +5,7 @@ import { FeatureCollection, FEATURE_TYPES } from 'Core/Feature';
 import { globalExtentTMS } from 'Core/Tile/TileGrid';
 import { deprecatedParsingOptionsToNewOne } from 'Core/Deprecated/Undeprecator';
 import { LabelProfiler } from '@itowns/labels';
+import { enqueueBudgeted } from 'Core/Scheduler/FrameBudget';
 
 const worldDimension3857 = globalExtentTMS.get('EPSG:3857').planarDimensions();
 const globalExtent = new Vector3(worldDimension3857.x, worldDimension3857.y, 1);
@@ -231,6 +232,8 @@ function _getWorkerPool() {
                 const p = _pending.get(id);
                 if (!p) { return; }
                 _pending.delete(id);
+                // Off-thread/queue latency: post → result (does NOT block the frame).
+                LabelProfiler.end('workerWait', p.token);
                 if (error) { p.reject(new Error(error)); }
                 else { p.resolve(decoded); }
             };
@@ -260,8 +263,9 @@ function decodeInWorker(buffer, wantedLayers) {
     const id = ++_msgId;
     // Register pending BEFORE postMessage to avoid race where onmessage
     // fires before the promise resolver is stored.
+    const token = LabelProfiler.begin();
     const promise = new Promise((resolve, reject) => {
-        _pending.set(id, { resolve, reject });
+        _pending.set(id, { resolve, reject, token });
     });
     try {
         w.postMessage({ id, buffer, wantedLayers }, [buffer]);
@@ -385,7 +389,7 @@ function readPBF(file, options) {
 
     const collection = new FeatureCollection(options.out);
     if (vtLayerNames.length < 1) {
-        LabelProfiler.end('decode', _pDecode);
+        LabelProfiler.end('build', _pDecode);
         return Promise.resolve(collection);
     }
 
@@ -462,7 +466,7 @@ function readPBF(file, options) {
     collection.updateExtent();
     collection.extent = options.extent;
     collection.isInverted = options.in.isInverted;
-    LabelProfiler.end('decode', _pDecode);
+    LabelProfiler.end('build', _pDecode);
     LabelProfiler.count('tilesDecoded', 1);
     return Promise.resolve(collection);
 }
@@ -484,54 +488,61 @@ function readPBFWorker(file, options) {
     // Determine which VT source-layers we care about
     const wantedLayers = Object.keys(options.in.layers);
     if (wantedLayers.length === 0) {
-        LabelProfiler.end('decode', _pDecode);
+        LabelProfiler.end('build', _pDecode);
         return Promise.resolve(new FeatureCollection(options.out));
     }
 
     const workerResult = decodeInWorker(file, wantedLayers);
     if (!workerResult) {
         // Worker transfer failed — fall back to sync
-        LabelProfiler.end('decode', _pDecode);
+        LabelProfiler.end('build', _pDecode);
         return Promise.resolve(readPBF(file, options));
     }
 
-    return workerResult.then((decodedLayers) => {
-        // Now measure only the main-thread portion (feature building)
-        const _pBuild = LabelProfiler.begin();
-        const vtLayerNames = Object.keys(decodedLayers);
-        const collection = new FeatureCollection(options.out);
-        if (vtLayerNames.length === 0) {
-            LabelProfiler.end('decode', _pBuild);
+    // The worker only did the PBF varint parse. Building Features (filter
+    // matching + geometry construction) is main-thread work; defer it to a
+    // budgeted slice (FrameBudget) so a burst of tiles resolving together
+    // spreads across frames instead of stalling one. Timed as 'build'.
+    return workerResult.then(decodedLayers => enqueueBudgeted(
+        () => {
+            const _pBuild = LabelProfiler.begin();
+            const vtLayerNames = Object.keys(decodedLayers);
+            const collection = new FeatureCollection(options.out);
+            if (vtLayerNames.length === 0) {
+                LabelProfiler.end('build', _pBuild);
+                return collection;
+            }
+
+            // x,y,z tile coordinates
+            const x = options.extent.col;
+            const z = options.extent.zoom;
+            const y = options.in.isInverted ? options.extent.row : (1 << z) - options.extent.row - 1;
+
+            // Use the first decoded layer's extent for scale/position
+            const firstLayer = decodedLayers[vtLayerNames[0]];
+            const tileExtent = firstLayer.extent;
+            const size = tileExtent * 2 ** z;
+            const center = -0.5 * size;
+
+            collection.scale.set(globalExtent.x / size, -globalExtent.y / size, 1);
+            collection.position.set(tileExtent * x + center, tileExtent * y + center, 0).multiply(collection.scale);
+            collection.updateMatrixWorld();
+
+            // Build Features from decoded data (filter matching + construction)
+            buildFeaturesFromDecoded(decodedLayers, options, collection);
+
+            collection.removeEmptyFeature();
+            collection.features.sort((a, b) => a.order - b.order);
+            collection.updateExtent();
+            collection.extent = options.extent;
+            collection.isInverted = options.in.isInverted;
+            LabelProfiler.end('build', _pBuild);
+            LabelProfiler.count('tilesDecoded', 1);
             return collection;
-        }
-
-        // x,y,z tile coordinates
-        const x = options.extent.col;
-        const z = options.extent.zoom;
-        const y = options.in.isInverted ? options.extent.row : (1 << z) - options.extent.row - 1;
-
-        // Use the first decoded layer's extent for scale/position
-        const firstLayer = decodedLayers[vtLayerNames[0]];
-        const tileExtent = firstLayer.extent;
-        const size = tileExtent * 2 ** z;
-        const center = -0.5 * size;
-
-        collection.scale.set(globalExtent.x / size, -globalExtent.y / size, 1);
-        collection.position.set(tileExtent * x + center, tileExtent * y + center, 0).multiply(collection.scale);
-        collection.updateMatrixWorld();
-
-        // Build Features from decoded data (filter matching + construction)
-        buildFeaturesFromDecoded(decodedLayers, options, collection);
-
-        collection.removeEmptyFeature();
-        collection.features.sort((a, b) => a.order - b.order);
-        collection.updateExtent();
-        collection.extent = options.extent;
-        collection.isInverted = options.in.isInverted;
-        LabelProfiler.end('decode', _pBuild);
-        LabelProfiler.count('tilesDecoded', 1);
-        return collection;
-    });
+        },
+        // Skip the build if the source was disposed while this tile was queued.
+        () => !(options.in._featuresCaches && options.in._featuresCaches[options.out.crs]),
+    ));
 }
 
 /**

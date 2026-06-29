@@ -2,6 +2,13 @@ import { DataTexture, FloatType, NearestFilter, RGBAFormat } from 'three';
 
 const FLOATS_PER_TEXEL = 4; // RGBA
 
+/**
+ * If more than this fraction of the texture's rows are dirty, do one full
+ * upload instead of many per-row texSubImage2D calls (call overhead would
+ * outweigh the bandwidth saved).
+ */
+const FULL_UPLOAD_ROW_FRACTION = 0.25;
+
 export interface ItemAllocation {
     key: string;
     /** Raw floats: itemCount × texelsPerItem × 4. Empty Float32Array = no-op for add, removal for update. */
@@ -30,10 +37,17 @@ export class InstancedDataTexture {
     private readonly _maxTextureWidth: number;
     private readonly _capacityMultiplier: number;
 
+    // ── Dirty row tracking for partial upload ─────────────────────────────────
+    private _dirtyRowMin = Infinity;
+    private _dirtyRowMax = -1;
+    /** True when texture object was regenerated (needs full upload on first render). */
+    private _fullUploadNeeded = false;
+
     get texture()   { return this._texture; }
     get width()     { return this._width; }
     get capacity()  { return this._itemCapacity; }
     get usedSlots() { return this._usedSlots; }
+    get hasDirty()  { return this._fullUploadNeeded || this._dirtyRowMin <= this._dirtyRowMax; }
 
     constructor(
         texelsPerItem: number,
@@ -85,8 +99,9 @@ export class InstancedDataTexture {
     patchFirstKey(key: string, floatOffset: number, src: Float32Array): void {
         const indices = this._keyToIndices.get(key);
         if (!indices || indices.length === 0) return;
-        this._data.set(src, indices[0] * FLOATS_PER_TEXEL + floatOffset);
-        this._texture.needsUpdate = true;
+        const slot = indices[0];
+        this._data.set(src, slot * FLOATS_PER_TEXEL + floatOffset);
+        this._markDirtySlot(slot);
     }
 
     addToKeys(allocations: ItemAllocation[]) {
@@ -104,18 +119,15 @@ export class InstancedDataTexture {
             if (!this._validate(alloc.flatItems)) continue;
             this._addRaw(alloc.key, alloc.flatItems);
         }
-        this._texture.needsUpdate = true;
     }
 
     updateKeys(allocations: ItemAllocation[]) {
-        // First pass: overwrite / shrink existing slots, collect overflow to insert.
         const toInsert: ItemAllocation[] = [];
         for (const alloc of allocations) {
             if (!this._validate(alloc.flatItems)) continue;
             const overflow = this._updateRaw(alloc.key, alloc.flatItems);
             if (overflow) toInsert.push(overflow);
         }
-        // Second pass: insert overflow items (may need resize).
         if (toInsert.length > 0) {
             let totalNew = 0;
             for (const { flatItems } of toInsert) totalNew += flatItems.length / this._floatsPerItem;
@@ -124,11 +136,51 @@ export class InstancedDataTexture {
             }
             for (const alloc of toInsert) this._addRaw(alloc.key, alloc.flatItems);
         }
-        this._texture.needsUpdate = true;
     }
 
     removeKeys(keys: string[]) {
         for (const key of keys) this._removeRaw(key);
+        // No upload needed: freed slots are never read by the shader.
+    }
+
+    // ─── GPU upload ────────────────────────────────────────────────────────────
+
+    /**
+     * Flush pending writes to the GPU using three.js's managed partial-upload
+     * path: `texture.updateRanges` → per-row `texSubImage2D` inside
+     * WebGLTextures, with correct GL state (no raw GL, no flicker).
+     * Call once per frame from the manager's tick, BEFORE render.
+     *
+     * Emits one full-width strip per dirty row, so a small edit uploads a few
+     * rows instead of the whole texture. three merges sub-ranges *within* a row
+     * but never across rows, so every texSubImage2D stays inside the texture.
+     * Falls back to a single full upload after a resize or when most of the
+     * texture is dirty (many tiny calls would cost more than one big one).
+     */
+    uploadDirty(): void {
+        if (!this.hasDirty) return;
+
+        const minRow = this._dirtyRowMin;
+        const maxRow = this._dirtyRowMax;
+        this._dirtyRowMin = Infinity;
+        this._dirtyRowMax = -1;
+
+        const dirtyRows = maxRow - minRow + 1;
+        // New texture object (post-resize) or a wide dirty span → full upload.
+        // Clear any stale partial ranges so three takes its full-image path.
+        if (this._fullUploadNeeded || dirtyRows > this._width * FULL_UPLOAD_ROW_FRACTION) {
+            this._fullUploadNeeded = false;
+            this._texture.clearUpdateRanges();
+            this._texture.needsUpdate = true;
+            return;
+        }
+
+        // Partial: one full-width row strip per dirty row (units are floats;
+        // three divides by its RGBA componentStride of 4 to get pixels).
+        const rowFloats = this._width * FLOATS_PER_TEXEL;
+        for (let row = minRow; row <= maxRow; row++) {
+            this._texture.addUpdateRange(row * rowFloats, rowFloats);
+        }
         this._texture.needsUpdate = true;
     }
 
@@ -217,17 +269,19 @@ export class InstancedDataTexture {
 
     // ─── Private: typed-array primitives ──────────────────────────────────────
 
-    /**
-     * Copy floatsPerItem floats from src[srcOffset..] into _data at texel slot.
-     * @param texelSlot - destination texel index
-     * @param src - source float array
-     * @param srcOffset - byte offset into src
-     */
     private _write(texelSlot: number, src: Float32Array, srcOffset: number) {
         this._data.set(
             src.subarray(srcOffset, srcOffset + this._floatsPerItem),
             texelSlot * FLOATS_PER_TEXEL,
         );
+        this._markDirtySlot(texelSlot);
+    }
+
+    private _markDirtySlot(texelSlot: number) {
+        const row = (texelSlot / this._width) | 0;
+        const endRow = ((texelSlot + this.texelsPerItem - 1) / this._width) | 0;
+        if (row < this._dirtyRowMin) this._dirtyRowMin = row;
+        if (endRow > this._dirtyRowMax) this._dirtyRowMax = endRow;
     }
 
     /**
@@ -288,6 +342,9 @@ export class InstancedDataTexture {
         this._texture = new DataTexture(this._data, this._width, this._width, RGBAFormat, FloatType);
         this._texture.minFilter = NearestFilter;
         this._texture.magFilter = NearestFilter;
-        this._texture.needsUpdate = true;
+        // Full upload needed: new texture object must be sent to GPU on next render.
+        this._fullUploadNeeded = true;
+        this._dirtyRowMin = Infinity;
+        this._dirtyRowMax = -1;
     }
 }

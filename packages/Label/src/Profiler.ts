@@ -19,11 +19,25 @@ class Profiler {
     /** Master switch. Leave false in production. */
     enabled = false;
 
-    /** Accumulated milliseconds per stage key, since the last reset(). */
+    /**
+     * Whether we are currently inside the interactive per-frame CPU window
+     * (BEFORE_CAMERA_UPDATE → AFTER_RENDER). The consumer flips this; work that
+     * runs while false is "between-frame" (async build/streaming microtasks that
+     * delay the next rAF rather than the current frame's render).
+     */
+    inFrame = false;
+
+    /** Accumulated ms per stage key that ran INSIDE the frame CPU window. */
     readonly ms: Record<string, number> = {};
 
-    /** Invocation count per stage key, since the last reset(). */
+    /** Accumulated ms per stage key that ran BETWEEN frames (delays next rAF). */
+    readonly msBetween: Record<string, number> = {};
+
+    /** Invocation count per stage key, inside the frame CPU window. */
     readonly calls: Record<string, number> = {};
+
+    /** Invocation count per stage key, between frames. */
+    readonly callsBetween: Record<string, number> = {};
 
     /**
      * Maximum duration of any single begin/end pair since the last reset().
@@ -55,8 +69,13 @@ class Profiler {
     end(key: string, token: number): void {
         if (!this.enabled || token === 0) { return; }
         const elapsed = performance.now() - token;
-        this.ms[key] = (this.ms[key] || 0) + elapsed;
-        this.calls[key] = (this.calls[key] || 0) + 1;
+        if (this.inFrame) {
+            this.ms[key] = (this.ms[key] || 0) + elapsed;
+            this.calls[key] = (this.calls[key] || 0) + 1;
+        } else {
+            this.msBetween[key] = (this.msBetween[key] || 0) + elapsed;
+            this.callsBetween[key] = (this.callsBetween[key] || 0) + 1;
+        }
         if (elapsed > (this.callPeak[key] || 0)) { this.callPeak[key] = elapsed; }
     }
 
@@ -82,14 +101,21 @@ class Profiler {
      */
     addMs(key: string, ms: number): void {
         if (!this.enabled) { return; }
-        this.ms[key] = (this.ms[key] || 0) + ms;
-        this.calls[key] = (this.calls[key] || 0) + 1;
+        if (this.inFrame) {
+            this.ms[key] = (this.ms[key] || 0) + ms;
+            this.calls[key] = (this.calls[key] || 0) + 1;
+        } else {
+            this.msBetween[key] = (this.msBetween[key] || 0) + ms;
+            this.callsBetween[key] = (this.callsBetween[key] || 0) + 1;
+        }
     }
 
     /** Zero every accumulator while keeping the key set stable (cheap to read). */
     reset(): void {
         for (const k in this.ms) { this.ms[k] = 0; }
+        for (const k in this.msBetween) { this.msBetween[k] = 0; }
         for (const k in this.calls) { this.calls[k] = 0; }
+        for (const k in this.callsBetween) { this.callsBetween[k] = 0; }
         for (const k in this.callPeak) { this.callPeak[k] = 0; }
         for (const k in this.counts) { this.counts[k] = 0; }
     }

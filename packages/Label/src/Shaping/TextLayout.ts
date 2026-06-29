@@ -1,6 +1,7 @@
 import { Vector2 } from 'three';
 import { Label } from '../Label';
 import { GlyphInfo, GlyphInstance } from './GlyphRun';
+import { glyphKey } from './FontKey';
 import lineBreak from './LineBreak';
 import textAlign from './TextAlign';
 import { applyShaping, reorderParagraph, isParagraphRTL } from './RTL';
@@ -20,7 +21,8 @@ export default function layoutText(
     glyphs: Map<string, GlyphInfo>,
     baseFontSize: number,
 ): Label {
-    const fallback = glyphs.get('?');
+    const fk = label.fontKey;
+    const fallback = glyphs.get(glyphKey(fk, '?'));
     if (!fallback) throw new Error('Atlas missing fallback glyph "?"');
     const chars: GlyphInstance[] = [];
 
@@ -40,7 +42,7 @@ export default function layoutText(
     const resolvedLines: GlyphInfo[][] = visualLines.map((line) => {
         const resolved: GlyphInfo[] = new Array(line.length);
         for (let i = 0; i < line.length; i++) {
-            resolved[i] = glyphs.get(line[i]) ?? fallback;
+            resolved[i] = glyphs.get(glyphKey(fk, line[i])) ?? fallback;
         }
         return resolved;
     });
@@ -124,8 +126,8 @@ export default function layoutText(
         let minY = Infinity, maxY = -Infinity;
 
         for (const ch of chars) {
-            const halfW = ch.glyph.w / 4; // glyphs are scaled ×2 so /4 instead of /2
-            const halfH = ch.glyph.h / 4;
+            const halfW = ch.glyph.w / 2;
+            const halfH = ch.glyph.h / 2;
             const x0 = ch.offset.x - halfW, x1 = ch.offset.x + halfW;
             const y0 = ch.offset.y - halfH, y1 = ch.offset.y + halfH;
             if (x0 < minX) minX = x0;

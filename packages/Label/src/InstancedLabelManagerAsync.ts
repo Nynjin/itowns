@@ -15,22 +15,14 @@
  */
 
 import { Camera, Matrix4, PerspectiveCamera, Scene, Vector2, WebGLRenderer } from 'three';
-import { fontKeyOf, fontKeyString } from './Shaping/FontKey';
-import { LabelFontGroup, DirtyLevel } from './LabelFontGroup';
+import { LabelAtlasManager, DirtyLevel } from './LabelAtlasManager';
 import { Label } from './Label';
-import { LabelMeshGroup } from './Rendering/LabelMeshGroup';
-import type { GlyphInfo } from './Shaping/GlyphRun';
+import { LabelBatch } from './Rendering/LabelBatch';
+import type { LabelMesh } from './Rendering/LabelBatch';
+import { LabelProfiler } from './Profiler';
 import { DefaultLabelConfig, LabelManagerConfig } from './Types/LabelConfig';
 import { computePxPerUnit } from './Utils';
-import type { LabelMeshPair } from './InstancedLabelManager';
 import type { MainToWorker, WorkerToMain, SerialisedLabel } from './Worker/WorkerMessages';
-
-interface LabelGroup {
-    fontGroup:  LabelFontGroup;
-    meshGroup:  LabelMeshGroup;
-    /** Last atlas dirty flag — used to gate SET_ATLAS posts. */
-    atlasSent:  boolean;
-}
 
 /** Max element-wise diff of two 4×4 matrices (clip space, scale-invariant). */
 function matrixMaxDiff(a: Matrix4, b: Matrix4): number {
@@ -41,12 +33,15 @@ function matrixMaxDiff(a: Matrix4, b: Matrix4): number {
 
 export class InstancedLabelManagerAsync {
     readonly config: LabelManagerConfig;
-    readonly meshes: LabelMeshPair[] = [];
+    readonly meshes: LabelMesh[] = [];
 
     private readonly _renderer:    WebGLRenderer;
-    private readonly _groups       = new Map<string, LabelGroup>();
+    private _atlas:  LabelAtlasManager | null = null;
+    private _batch:  LabelBatch | null = null;
+    /** Whether the first SET_ATLAS has been posted to the worker. */
+    private _atlasSentToWorker = false;
     private readonly _labelsById   = new Map<string, Label>();
-    /** Maps labelId → fontKey for O(1) group lookup in message handlers. */
+    /** Maps labelId → fontKey for the worker serialiser. */
     private readonly _labelFontKey = new Map<string, string>();
 
     private _scene:         Scene | null = null;
@@ -121,7 +116,7 @@ export class InstancedLabelManagerAsync {
 
     attachTo(scene: Scene) {
         this._scene = scene;
-        for (const pair of this.meshes) scene.add(pair.fill, pair.halo);
+        for (const mesh of this.meshes) scene.add(mesh);
     }
 
     // ── Labels in / out ──────────────────────────────────────────────────────
@@ -130,33 +125,31 @@ export class InstancedLabelManagerAsync {
     removeLabel(label: Label) { this.removeLabels([label]); }
 
     addLabels(labels: Label[]) {
-        const byKey = this._groupByFontKey(labels);
-        for (const [key, bucket] of byKey) {
-            this._getOrCreate(key, bucket[0]).fontGroup.addLabels(bucket);
-        }
+        const _p = LabelProfiler.begin();
+        this._getOrCreate().atlas.addLabels(labels);
         for (const l of labels) {
             this._labelsById.set(l.id, l);
-            this._labelFontKey.set(l.id, fontKeyString(fontKeyOf(l)));
+            this._labelFontKey.set(l.id, l.fontKeyString);
         }
+        LabelProfiler.end('register', _p);
     }
 
     removeLabels(labels: Label[]) {
-        const byKey = this._groupByFontKey(labels);
-        for (const [key, bucket] of byKey) {
-            this._groups.get(key)?.fontGroup.removeLabels(bucket);
-        }
+        const _p = LabelProfiler.begin();
+        this._atlas?.removeLabels(labels);
         const ids = labels.map(l => l.id);
         for (const l of labels) {
             this._labelsById.delete(l.id);
             this._labelFontKey.delete(l.id);
             this._pendingGlyphs.delete(l.id);
         }
+        LabelProfiler.end('delete', _p);
         this._post({ type: 'REMOVE_LABELS', ids });
     }
 
     updatePxPerUnit(pxPerUnit: number) {
         this.config.pxPerUnit = pxPerUnit;
-        for (const g of this._groups.values()) g.meshGroup.updatePxPerUnit(pxPerUnit);
+        this._batch?.updatePxPerUnit(pxPerUnit);
         this._post({ type: 'SET_PX_PER_UNIT', pxPerUnit });
     }
 
@@ -175,16 +168,14 @@ export class InstancedLabelManagerAsync {
         for (let i = 0; i < this._inbox.length; i++) this._handleWorkerMsg(this._inbox[i]);
         this._inbox.length = 0;
 
-        // 2. Sync font groups (atlas + GPU label slots, send deltas to worker)
+        // 2. Sync single atlas+batch (GPU label slots + atlas, send deltas to worker)
         let anySynced = false;
         const dueForUpdate = this._hasPendingWork || now - this._lastUpdateTime >= this.config.updateRate * 1000;
         if (dueForUpdate) {
             this._hasPendingWork = false;
-            for (const [key, group] of this._groups) {
-                if (group.fontGroup.dirty.size > 0) {
-                    this._syncGroup(key, group);
-                    anySynced = true;
-                }
+            if (this._atlas && this._batch && this._atlas.dirty.size > 0) {
+                this._syncGroup(this._atlas, this._batch);
+                anySynced = true;
             }
             if (anySynced) {
                 if (!this._hasPendingWork) this._lastUpdateTime = now;
@@ -211,7 +202,9 @@ export class InstancedLabelManagerAsync {
         // 4. Send EVALUATE to worker — forced when labels changed (anySynced),
         // otherwise when due and the camera is moving at a moderate pace.
         const dueForCollision = now - this._lastCullTime >= this.config.cullingRate * 1000;
-        if (this._labelsById.size > 0 && (anySynced || (dueForCollision && !isStationary && !isFastMove))) {
+        // Worker is async — no point blocking evaluation during fast moves;
+        // the response arrives after the camera slows down regardless.
+        if (this._labelsById.size > 0 && (anySynced || (dueForCollision && !isStationary))) {
             const vpSize = this._renderer.getSize(this._vpSize);
             let near = 0.1, far = 1e7;
             if (camera instanceof PerspectiveCamera) { near = camera.near; far = camera.far; }
@@ -238,10 +231,10 @@ export class InstancedLabelManagerAsync {
 
         // 6. Cull if anything changed this tick
         const farCullChanged = this._applyFarCull(camera);
-        if (this._needsCull || anySynced || farCullChanged) {
-            for (const group of this._groups.values()) {
-                group.meshGroup.cull(group.fontGroup.labels);
-            }
+        if ((this._needsCull || anySynced || farCullChanged) && this._atlas && this._batch) {
+            const _pCull = LabelProfiler.begin();
+            this._batch.cull(this._atlas.labels);
+            LabelProfiler.end('cull', _pCull);
         }
     }
 
@@ -249,13 +242,12 @@ export class InstancedLabelManagerAsync {
         this._resizeObserver?.disconnect();
         this._worker.terminate();
         if (this._scene) {
-            for (const pair of this.meshes) this._scene.remove(pair.fill, pair.halo);
+            for (const mesh of this.meshes) this._scene.remove(mesh);
         }
-        for (const g of this._groups.values()) {
-            g.fontGroup.dispose();
-            g.meshGroup.dispose();
-        }
-        this._groups.clear();
+        this._atlas?.dispose();
+        this._batch?.dispose();
+        this._atlas = null;
+        this._batch = null;
         this.meshes.length = 0;
         this._labelsById.clear();
     }
@@ -266,46 +258,37 @@ export class InstancedLabelManagerAsync {
         this._worker.postMessage(msg);
     }
 
-    private _groupByFontKey(labels: Label[]): Map<string, Label[]> {
-        const byKey = new Map<string, Label[]>();
-        for (const label of labels) {
-            const key = fontKeyString(fontKeyOf(label));
-            if (!key) continue;
-            let b = byKey.get(key);
-            if (!b) { b = []; byKey.set(key, b); }
-            b.push(label);
-        }
-        return byKey;
+    private _getOrCreate(): { atlas: LabelAtlasManager; batch: LabelBatch } {
+        if (this._atlas && this._batch) return { atlas: this._atlas, batch: this._batch };
+        this._atlas = new LabelAtlasManager(this.config);
+        this._batch = new LabelBatch(this.config);
+        this.meshes.push(this._batch.mesh);
+        this._scene?.add(this._batch.mesh);
+        return { atlas: this._atlas, batch: this._batch };
     }
 
-    private _getOrCreate(key: string, sample: Label): LabelGroup {
-        const existing = this._groups.get(key);
-        if (existing) return existing;
-        const meshGroup  = new LabelMeshGroup(this.config);
-        const fontGroup  = new LabelFontGroup(fontKeyOf(sample), this.config);
-        const group: LabelGroup = { fontGroup, meshGroup, atlasSent: false };
-        this._groups.set(key, group);
-        this.meshes.push({ fill: meshGroup.fillMesh, halo: meshGroup.haloMesh });
-        this._scene?.add(meshGroup.fillMesh, meshGroup.haloMesh);
-        return group;
-    }
+    private _syncGroup(atlas: LabelAtlasManager, batch: LabelBatch) {
+        const _pAtlas = LabelProfiler.begin();
+        const { atlas: sdfAtlas, dirty, resized } = atlas.getAtlas();
+        LabelProfiler.end('atlas', _pAtlas);
 
-    private _syncGroup(fontKey: string, group: LabelGroup) {
-        const { fontGroup, meshGroup } = group;
-        const { atlas, dirty, resized } = fontGroup.getAtlas();
-
-        // If atlas changed, sync GPU material + send glyph metrics to worker
-        if (dirty || resized || !group.atlasSent) {
-            meshGroup.syncAtlas(atlas);
-            // Convert Map<string, GlyphInfo> to plain Record for postMessage.
-            // resized → worker re-lays-out ALL labels of this font (atlas coords moved).
-            const glyphsRecord: Record<string, GlyphInfo> = {};
-            for (const [ch, g] of atlas.glyphs) glyphsRecord[ch] = g;
-            this._post({
-                type: 'SET_ATLAS', fontKey, glyphs: glyphsRecord,
-                baseFontSize: this.config.baseFontSize, resized,
-            });
-            group.atlasSent = true;
+        // Sync GPU material + send per-fontKey glyph metrics to worker on any atlas change.
+        if (dirty || resized || !this._atlasSentToWorker) {
+            batch.syncAtlas(sdfAtlas);
+            for (const { fkStr, fontKey } of atlas.fontVariants) {
+                this._post({
+                    type: 'SET_ATLAS',
+                    fontKey: fkStr,
+                    glyphs: sdfAtlas.getGlyphsForFont(fontKey),
+                    baseFontSize: this.config.baseFontSize,
+                    resized,
+                });
+            }
+            this._atlasSentToWorker = true;
+            if (resized) {
+                LabelProfiler.count('atlasResize', 1);
+                LabelProfiler.count('atlasReemit', atlas.labels.size);
+            }
         }
 
         const budget  = this.config.layoutBudgetPerTick;
@@ -315,8 +298,9 @@ export class InstancedLabelManagerAsync {
         const toRemove: string[] = [];
         const toStyle:  Label[] = [];
         const workerAdd: SerialisedLabel[] = [];
+        const processed: Label[] = [];
 
-        for (const [label, level] of fontGroup.dirty) {
+        for (const [label, level] of atlas.dirty) {
             switch (level) {
                 case DirtyLevel.Add:
                 case DirtyLevel.LayoutUpdate: {
@@ -328,34 +312,34 @@ export class InstancedLabelManagerAsync {
                     toAdd.push(label);
                     this._pendingGlyphs.set(label.id, label);
                     this._gpuLabels.add(label.id);
-                    workerAdd.push(this._serialise(label, fontKey));
+                    workerAdd.push(this._serialise(label, this._labelFontKey.get(label.id) ?? label.fontKeyString));
+                    processed.push(label);
                     layoutCount++;
                     break;
                 }
                 case DirtyLevel.StyleUpdate:
-                    // Only style-update labels that already have a GPU slot.
-                    if (this._gpuLabels.has(label.id)) toStyle.push(label);
+                    if (this._gpuLabels.has(label.id)) { toStyle.push(label); processed.push(label); }
                     break;
                 case DirtyLevel.Dispose:
                 case DirtyLevel.ChangeGroup:
-                    // Only remove from GPU if a slot was ever allocated.
                     if (this._gpuLabels.has(label.id)) {
                         toRemove.push(label.id);
                         this._gpuLabels.delete(label.id);
                     }
                     this._pendingGlyphs.delete(label.id);
+                    processed.push(label);
                     break;
             }
         }
 
-        // GPU writes for removes + adds (label T0-T5 data) + style
-        meshGroup.update(toAdd, toRemove, [], toStyle, dirty ? atlas : undefined, false);
+        const _pPosition = LabelProfiler.begin();
+        batch.update(toAdd, toRemove, [], toStyle, dirty ? sdfAtlas : undefined, false);
+        LabelProfiler.end('position', _pPosition);
 
-        // Worker: register new labels (for layout + collision)
         if (workerAdd.length > 0) this._post({ type: 'ADD_LABELS', labels: workerAdd });
         if (toRemove.length  > 0) this._post({ type: 'REMOVE_LABELS', ids: toRemove });
 
-        fontGroup.flushDirty();
+        atlas.flushDirtyFor(processed);
     }
 
     private _serialise(label: Label, fontKey: string): SerialisedLabel {
@@ -411,9 +395,7 @@ export class InstancedLabelManagerAsync {
             this._pendingGlyphs.delete(id);
 
             // Write glyph data to GPU
-            const key   = this._labelFontKey.get(id);
-            const group = key ? this._groups.get(key) : undefined;
-            group?.meshGroup.reemitGlyphs(label);
+            this._batch?.reemitGlyphs(label);
         }
         this._needsCull = true;
     }

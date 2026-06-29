@@ -1,5 +1,6 @@
 import { Color, Euler, Quaternion, Vector2, Vector3 } from 'three';
 import { GlyphInstance } from './Shaping/GlyphRun';
+import { parseFontString, FontKey } from './Shaping/FontKey';
 
 export enum TextAnchorX {
     Left   = 0,
@@ -41,14 +42,14 @@ export enum SymbolPlacement {
 }
 
 export const LabelChangeType = {
-    None:       0,
-    Font:       1 << 0,
-    Text:       1 << 1,
-    Layout:     1 << 2,
-    Style:      1 << 3,
-    Transform:  1 << 4,
+    None: 0,
+    Font: 1 << 0,
+    Text: 1 << 1,
+    Layout: 1 << 2,
+    Style: 1 << 3,
+    Transform: 1 << 4,
     Visibility: 1 << 5,
-    Dispose:    1 << 6,
+    Dispose: 1 << 6,
 } as const;
 
 /** Accumulated bitmask of LabelChangeType flags passed to onChange listeners. */
@@ -73,34 +74,34 @@ export interface LabelOptions {
 
     position?: [number, number, number] | Vector3;
     rotation?: [number, number, number] | Euler | Quaternion;
-    offset?:   [number, number] | Vector2;
+    offset?: [number, number] | Vector2;
 
-    font?:          string;
-    fontSize?:      number;
-    fontWeight?:    string;
-    fontStyle?:     string;
+    font?: string;
+    fontSize?: number;
+    fontWeight?: string;
+    fontStyle?: string;
     letterSpacing?: number;
-    lineHeight?:    number;
+    lineHeight?: number;
 
-    maxWidth?:  number;
+    maxWidth?: number;
     textAlign?: TextAlign;
-    anchorX?:   TextAnchorX;
-    anchorY?:   TextAnchorY;
-    padding?:   TextPadding | number | [number, number, number, number];
+    anchorX?: TextAnchorX;
+    anchorY?: TextAnchorY;
+    padding?: TextPadding | number | [number, number, number, number];
 
-    color?:   string | number | Color | Vector3;
+    color?: string | number | Color | Vector3;
     opacity?: number;
 
-    haloColor?:   string | number | Color | Vector3;
-    haloWidth?:   number;
-    haloBlur?:    number;
+    haloColor?: string | number | Color | Vector3;
+    haloWidth?: number;
+    haloBlur?: number;
     haloOpacity?: number;
 
     rotationAlignment?: RotationAlignment;
-    symbolPlacement?:   SymbolPlacement;
+    symbolPlacement?: SymbolPlacement;
 
     textTransform?: TextTransform;
-    visible?:       boolean;
+    visible?: boolean;
 
     /** Passed by clone() to restore layout results without re-running layoutText. */
     bounds?: LabelBounds;
@@ -120,6 +121,7 @@ export class Label {
     private _fontSize                      = 20;
     private _fontWeight                    = 'normal';
     private _fontStyle                     = 'normal';
+    private _fontKey: FontKey | null = null;
     private _letterSpacing                 = 0;
     private _lineHeight                    = 1.2;
     private _maxWidth                      = Infinity;
@@ -146,6 +148,8 @@ export class Label {
     isRendered     = false;
     bounds: LabelBounds     = { width: 0, height: 0 };
     glyphs: GlyphInstance[] = [];
+    /** Cached glyph texel indices — set by LabelBatch._writeGlyphs for O(1) cull(). */
+    _cachedGlyphIndices: number[] | null = null;
     /** Scratch value written each frame by the collision engine for bucket sorting. */
     score = 0;
     /**
@@ -207,13 +211,33 @@ export class Label {
     set font(value: string) { this._font = value; this._emit(LabelChangeType.Font); }
 
     get fontSize(): number { return this._fontSize; }
-    set fontSize(value: number) { this._fontSize = value; this._emit(LabelChangeType.Font); }
+    set fontSize(value: number) {
+        this._fontSize = value;
+        this._fontKey = null;
+        this._emit(LabelChangeType.Font);
+    }
 
     get fontWeight(): string { return this._fontWeight; }
-    set fontWeight(value: string) { this._fontWeight = value; this._emit(LabelChangeType.Font); }
+    set fontWeight(value: string) {
+        this._fontWeight = value;
+        this._fontKey = null;
+        this._emit(LabelChangeType.Font);
+    }
 
     get fontStyle(): string { return this._fontStyle; }
-    set fontStyle(value: string) { this._fontStyle = value; this._emit(LabelChangeType.Font); }
+    set fontStyle(value: string) {
+        this._fontStyle = value;
+        this._fontKey = null;
+        this._emit(LabelChangeType.Font);
+    }
+
+    get fontKey(): FontKey {
+        if (!this._fontKey) {
+            this._fontKey = fontKeyOf(this);
+        }
+        return this._fontKey;
+    }
+    get fontKeyString(): string { return fontKeyString(this.fontKey); }
 
     // Layout
 
@@ -335,35 +359,35 @@ export class Label {
 
     clone(): Label {
         return new Label({
-            text:          this._text,
-            position:      this._position.clone(),
-            rotation:      this._rotation.clone(),
-            offset:        this._offset.clone(),
-            font:          this._font,
-            fontSize:      this._fontSize,
-            fontWeight:    this._fontWeight,
-            fontStyle:     this._fontStyle,
+            text: this._text,
+            position: this._position.clone(),
+            rotation: this._rotation.clone(),
+            offset: this._offset.clone(),
+            font: this._font,
+            fontSize: this._fontSize,
+            fontWeight: this._fontWeight,
+            fontStyle: this._fontStyle,
             letterSpacing: this._letterSpacing,
-            lineHeight:    this._lineHeight,
-            maxWidth:      this._maxWidth,
-            textAlign:     this._textAlign,
-            anchorX:       this._anchorX,
-            anchorY:       this._anchorY,
-            padding:       { ...this._padding },
-            color:         this._color.clone(),
-            opacity:       this._opacity,
-            haloColor:     this._haloColor.clone(),
-            haloWidth:     this._haloWidth,
-            haloBlur:      this._haloBlur,
-            haloOpacity:   this._haloOpacity,
+            lineHeight: this._lineHeight,
+            maxWidth: this._maxWidth,
+            textAlign: this._textAlign,
+            anchorX: this._anchorX,
+            anchorY: this._anchorY,
+            padding: { ...this._padding },
+            color: this._color.clone(),
+            opacity: this._opacity,
+            haloColor: this._haloColor.clone(),
+            haloWidth: this._haloWidth,
+            haloBlur: this._haloBlur,
+            haloOpacity: this._haloOpacity,
             rotationAlignment: this._rotationAlignment,
-            symbolPlacement:   this._symbolPlacement,
-            visible:       this._visible,
+            symbolPlacement: this._symbolPlacement,
+            visible: this._visible,
             textTransform: this._textTransform,
             bounds: { ...this.bounds },
             glyphs: this.glyphs.map(g => ({
-                glyph:    { ...g.glyph },
-                offset:   g.offset.clone(),
+                glyph: { ...g.glyph },
+                offset: g.offset.clone(),
                 rotation: g.rotation?.clone(),
             })),
         });
@@ -434,4 +458,18 @@ function toQuaternion(value: [number, number, number] | Euler | Quaternion): Qua
     if (value instanceof Quaternion) return value.clone();
     if (value instanceof Euler)      return new Quaternion().setFromEuler(value);
     return new Quaternion().setFromEuler(new Euler(...value, 'XYZ'));
+}
+
+function fontKeyOf(label: Label): FontKey {
+    const parsed = parseFontString(label.font);
+    return {
+        font: parsed.font,
+        // Explicit label properties override what was parsed from the font string
+        weight: label.fontWeight !== 'normal' ? label.fontWeight : parsed.weight,
+        style: label.fontStyle !== 'normal' ? label.fontStyle : parsed.style,
+    };
+}
+
+function fontKeyString(key: FontKey): string {
+    return `${key.font}|${key.weight}|${key.style}`;
 }

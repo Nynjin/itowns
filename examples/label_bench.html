@@ -420,8 +420,8 @@
             </div>
             <div style="display:flex; gap:6px; align-items:center;">
                 <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">MODE</span>
-                <button class="btn mode-btn on" id="btn-mode-instanced" title="GPU instanced 3D labels (collision on main thread)">3D</button>
-                <button class="btn mode-btn"    id="btn-mode-dom-perf"  title="DOM labels — screen-grid culling (performance:true)">DOM</button>
+                <button class="btn mode-btn on" id="btn-mode-instanced"       title="GPU instanced 3D labels (collision on main thread)">3D</button>
+                <button class="btn mode-btn"    id="btn-mode-dom-perf"         title="DOM labels — screen-grid culling (performance:true)">DOM</button>
                 <button class="btn mode-btn"    id="btn-mode-none"      title="No labels — raw tile baseline">None</button>
                 <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
                 <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">HUD</span>
@@ -579,13 +579,50 @@
         osmData.source = new itowns.TMSSource(osmData.source);
         view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
 
+        // 1. Await the elevation configurations BEFORE continuing
+        async function addElevationLayerFromConfig(url) {
+            const config = await itowns.Fetcher.json(url);
+            config.source = new itowns.WMTSSource(config.source);
+            // Return the addLayer promise so we can wait for it
+            return view.addLayer(new itowns.ElevationLayer(config.id, config));
+        }
+
+        await addElevationLayerFromConfig('./layers/JSONLayers/IGN_MNT_HIGHRES.json');
+        await addElevationLayerFromConfig('./layers/JSONLayers/WORLD_DTM.json');
+
+        const buildingsSource = new itowns.VectorTilesSource({
+            style: "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json",
+            // FIX 1: Simplify the filter. Just look for layers with 'bati' in the name.
+            zoom: { max: 16 },
+            filter: (layer) => {
+                return layer['source-layer']?.includes('bati');
+            },
+        });
+
+        var buildingsLayer = new itowns.FeatureGeometryLayer('VTBuilding', {
+            source: buildingsSource,
+            zoom: { min: 14 }, // FIX 2: Lowered slightly so they pop in sooner
+            accurate: false,
+            style: {
+                fill: {
+                    // FIX 3: Force a visible color so they don't blend into the terrain
+                    color: '#e0e4e8', 
+                    // FIX 4: Check for z_min (common in IGN data) as well as alti_sol
+                    base_altitude: (p) => p.z_min ?? p.alti_sol ?? 0,
+                    extrusion_height: (p) => p.hauteur ?? 15,
+                }
+            },
+        });
+
+        await view.addLayer(buildingsLayer);
+
         if (labelMode !== 'none') {
             // The screen-grid filter toggles `performance` for BOTH modes, so DOM
             // and 3D are always compared on equal footing (both filtered, or both
             // full-pool).
             const addLabelLayer = {
-                'instanced': { performance: useScreenGridFilter, instanced: true,  async: false },
-                'dom-perf':  { performance: useScreenGridFilter, instanced: false, async: false },
+                'instanced':       { performance: useScreenGridFilter, instanced: true,  async: false },
+                'dom-perf':        { performance: useScreenGridFilter, instanced: false, async: false },
             }[labelMode] ?? { performance: useScreenGridFilter, instanced: true, async: false };
 
             let mapSource;
@@ -824,22 +861,20 @@
     function _computeLabelStats() {
         if (!view) return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
 
-        if (labelMode === 'instanced') {
-            const mgr = view.instancedLabelManager;
+        if (labelMode === 'instanced' || labelMode === 'instanced-async') {
+            const mgr = labelMode === 'instanced-async'
+                ? view.instancedLabelManagerAsync
+                : view.instancedLabelManager;
             if (!mgr) return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
             let total = 0, isCandidate = 0, shouldRender = 0, isRendered = 0;
-            const groups = mgr._groups;
-            if (groups) {
-                for (const g of groups.values()) {
-                    for (const label of g.fontGroup.labels) {
-                        total++;
-                        if (label.isCandidate) isCandidate++;
-                        if (label.shouldRender) shouldRender++;
-                        if (label.isRendered)   isRendered++;
-                    }
-                }
+            for (const label of mgr._labelsById.values()) {
+                total++;
+                if (label.isCandidate) isCandidate++;
+                if (label.shouldRender) shouldRender++;
+                if (label.isRendered)   isRendered++;
             }
-            return { total, isCandidate, shouldRender, isRendered, groups: groups ? groups.size : 0 };
+            const groups = mgr._atlas ? 1 : 0;
+            return { total, isCandidate, shouldRender, isRendered, groups };
         }
 
         if (labelMode === 'none') return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
@@ -982,18 +1017,18 @@
         const scaleY = MM_H / H;
 
         function* labelDots() {
-            if (labelMode === 'instanced') {
-                const mgr = view.instancedLabelManager;
-                if (!mgr || !mgr._groups) return;
-                for (const g of mgr._groups.values()) {
-                    for (const lbl of g.fontGroup.labels) {
-                        if (!lbl.position) continue;
-                        yield {
-                            pos: lbl.position,
-                            rendered: lbl.isRendered,
-                            pending: lbl.shouldRender && !lbl.isRendered,
-                        };
-                    }
+            if (labelMode === 'instanced' || labelMode === 'instanced-async') {
+                const mgr = labelMode === 'instanced-async'
+                    ? view.instancedLabelManagerAsync
+                    : view.instancedLabelManager;
+                if (!mgr) return;
+                for (const lbl of mgr._labelsById.values()) {
+                    if (!lbl.position) continue;
+                    yield {
+                        pos: lbl.position,
+                        rendered: lbl.isRendered,
+                        pending: lbl.shouldRender && !lbl.isRendered,
+                    };
                 }
             } else {
                 const renderer2d = view.mainLoop.gfxEngine.label2dRenderer;
@@ -1085,6 +1120,22 @@
     });
     _netObserver.observe({ type: 'resource', buffered: false });
 
+    // ── Long Tasks API: ground-truth main-thread blocking (tasks >50ms) ──────
+    // Independent of the self-timers — confirms real stalls and where they land.
+    let _longTaskMs = 0;
+    let _ltObserver = null;
+    try {
+        _ltObserver = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) { _longTaskMs += entry.duration; }
+        });
+        _ltObserver.observe({ entryTypes: ['longtask'] });
+    } catch { _ltObserver = null; } // Safari/Firefox may lack 'longtask'
+    function drainLongTaskQueue() {
+        const ms = _longTaskMs;
+        _longTaskMs = 0;
+        return ms;
+    }
+
     // Per-frame drain: consume all entries that arrived since last frame.
     // Returns { ms, calls, peak, bytes } for this frame.
     let _lastNetFrame = { ms: 0, calls: 0, peak: 0, bytes: 0 };
@@ -1112,10 +1163,11 @@
     //   modes      → which label modes this stage is relevant to (report filter)
     const ALL_MODES = ['instanced', 'dom-perf', 'none'];
     const STAGE_DEFS = [
-        // ── Network I/O (Resource Timing API — unbiased) ──────────────────
-        { key: 'net',       label: 'Tile fetch (network)', group: 'Network', src: 'net', warn: 80, bad: 200, modes: ALL_MODES },
-        // ── Tile decode (sync CPU in microtasks — accurate) ───────────────
-        { key: 'decode',    label: 'PBF decode + extract', group: 'Tile decode', src: 'prof', warn: 2, bad: 8, modes: ALL_MODES },
+        // ── Network I/O (Resource Timing API — async, does NOT block a frame) ──
+        { key: 'net',       label: 'Tile fetch — network RTT', group: 'Network', src: 'net', warn: 80, bad: 200, modes: ALL_MODES },
+        // ── Tile decode: worker PBF parse is OFF-thread; feature build is main-thread ──
+        { key: 'workerWait', label: 'PBF worker (off-thread)', group: 'Tile decode', src: 'prof', warn: 8, bad: 30, modes: ALL_MODES },
+        { key: 'build',     label: 'Feature build (main thread)', group: 'Tile decode', src: 'prof', warn: 2, bad: 8, modes: ALL_MODES },
         // ── Render loop (sync CPU during frame) ───────────────────────────
         { key: 'cam',       label: 'Camera',          group: 'Render loop', src: 'loop', warn: 2,  bad: 5,  modes: ALL_MODES },
         { key: 'tiles',     label: 'Tiles + schedule', group: 'Render loop', src: 'loop', warn: 3, bad: 8,  modes: ALL_MODES },
@@ -1145,13 +1197,16 @@
     ];
     const PROF_KEYS = STAGE_DEFS.filter(s => s.src === 'prof').map(s => s.key);
 
+    // Worker mode is temporarily disabled in benchmark/UI.
+
     // Per-stage, per-method detail: the concrete strategy each pipeline uses for
     // a conceptual stage, plus the source location. Shown inline + on hover in
     // the breakdown for the table's own mode (so DOM rows describe DOM, etc.).
     //   { <stageKey>: { <mode>: { name, ref } } }   ('all' = same for every mode)
     const STAGE_DETAIL = {
-        net:       { all: { name: 'true network RTT (Resource Timing API: responseEnd − requestStart, independent of JS execution)', ref: 'PerformanceObserver → PerformanceResourceTiming' } },
-        decode:    { all: { name: 'PBF binary decode + style filter + feature geometry extraction (sync CPU in microtask)', ref: 'VectorTileParser.readPBF → Protobuf + vtFeatureToFeatureGeometry' } },
+        net:       { all: { name: 'network RTT (Resource Timing API: responseEnd − requestStart) — async, does NOT block the frame', ref: 'PerformanceObserver → PerformanceResourceTiming' } },
+        workerWait: { all: { name: 'PBF varint parse in a Web Worker — off the main thread (post → result wall time, non-blocking)', ref: 'VectorTileParser.decodeInWorker → VTDecodeWorker' } },
+        build:     { all: { name: 'main-thread Feature build from worker output (filter match + geometry replay), deferred via FrameBudget', ref: 'VectorTileParser.readPBFWorker → buildFeaturesFromDecoded (Core/Scheduler/FrameBudget)' } },
         cam:       { all: { name: 'camera.update()', ref: 'MainLoop.step → Camera.update' } },
         tiles:     { all: { name: 'tile-tree traversal + command scheduling', ref: 'MainLoop._update → LabelLayer.update' } },
         webgl:     {
@@ -1184,15 +1239,15 @@
             'dom-perf': { name: 'screen-grid AABB overlap test', ref: 'Label2DRenderer.render → ScreenGrid.insert' },
         },
         position:  {
-            instanced: { name: 'write GPU data textures', ref: 'LabelMeshGroup.update' },
+            instanced: { name: 'write GPU data textures', ref: 'LabelBatch.update' },
             'dom-perf': { name: 'updateCSSPosition() transform', ref: 'Core/Label.updateCSSPosition' },
         },
         delete:    {
             instanced: { name: 'remove from font group + GPU slot', ref: 'InstancedLabelManager.removeLabels' },
             'dom-perf': { name: 'removeChild from the DOM', ref: 'LabelLayer LabelsNode.removeLabel' },
         },
-        atlas:     { instanced: { name: 'rasterize new glyphs (TinySDF) + flag full-atlas GPU re-upload', ref: 'LabelFontGroup.getAtlas → SDFAtlas.addChars' } },
-        cull:      { instanced: { name: 'compact GPU instance buffers', ref: 'LabelMeshGroup.cull' } },
+        atlas:     { instanced: { name: 'rasterize new glyphs (TinySDF) + flag full-atlas GPU re-upload', ref: 'LabelAtlasManager.getAtlas → SDFAtlas.setChars' } },
+        cull:      { instanced: { name: 'compact GPU instance buffers', ref: 'LabelBatch.cull' } },
         fades:     { instanced: { name: 'advance occlusion fade tweens', ref: 'InstancedLabelManager._advanceFades' } },
         farcull:   { instanced: { name: 'far-distance cull', ref: 'InstancedLabelManager._applyFarCull' } },
         showhide:  { 'dom-perf': { name: 'hide tile nodes that left view', ref: 'Label2DRenderer.render (toHide)' } },
@@ -1211,9 +1266,10 @@
         // label sub-stage comes from the profiler delta (_lastProfMs/_lastProfCalls).
         // Network metrics come from the Resource Timing observer (drainNetQueue).
         record(frameMs) {
-            const prof = {}, profCalls = {}, profCallPeak = {}, counts = {};
+            const prof = {}, profBetween = {}, profCalls = {}, profCallPeak = {}, counts = {};
             for (const k of PROF_KEYS) {
                 prof[k]         = _lastProfMs[k] || 0;
+                profBetween[k]  = _lastProfBetween[k] || 0;
                 profCalls[k]    = _lastProfCalls[k] || 0;
                 profCallPeak[k] = _lastProfCallPeak[k] || 0;
             }
@@ -1228,10 +1284,12 @@
                 cam:   stage.cam,
                 tiles: stage.tiles,
                 prof,
+                profBetween,
                 profCalls,
                 profCallPeak,
                 counts,
                 net: { ..._lastNetFrame },
+                blockedMs: drainLongTaskQueue(),
             });
         }
 
@@ -1260,19 +1318,18 @@
             // totalMs (over step), calls (over step) → ms/call = total/calls.
             const stages = {};
             for (const def of STAGE_DEFS) {
-                let aMs = 0, pMs = 0, tMs = 0, calls = 0, callPeakMs = 0;
+                let aMs = 0, bMs = 0, pMs = 0, tMs = 0, bTMs = 0, calls = 0, callPeakMs = 0;
                 if (def.src === 'net') {
-                    // Resource Timing: per-frame {ms, calls, peak, bytes}
+                    // Resource Timing: per-frame {ms, calls, peak, bytes}. Network
+                    // is async (off the main thread) — reported as non-blocking.
                     for (const f of this._frames) {
                         const net = f.net || { ms: 0, calls: 0, peak: 0 };
-                        aMs += net.ms;
+                        bMs += net.ms;        // all network time is "between-frame"
                         calls += net.calls;
-                        // peakMs = worst single-frame total network time
                         if (net.ms > pMs) pMs = net.ms;
-                        // callPeakMs = worst single tile RTT across all frames
                         if (net.peak > callPeakMs) callPeakMs = net.peak;
                     }
-                    tMs = aMs; aMs /= n;
+                    bTMs = bMs; bMs /= n;
                 } else if (def.src === 'loop') {
                     for (const f of this._frames) {
                         const v = f[def.key] ?? 0;
@@ -1281,18 +1338,24 @@
                     tMs = aMs; aMs /= n;
                     calls = n; // one per frame
                 } else {
+                    // prof: split into in-frame (blocks the cpu window) and
+                    // between-frame (delays the next rAF). peakMs = worst single
+                    // frame's TOTAL main-thread cost for this stage (in + between).
                     for (const f of this._frames) {
-                        const v = f.prof[def.key] ?? 0;
-                        aMs += v; if (v > pMs) pMs = v;
+                        const v  = f.prof[def.key] ?? 0;
+                        const vb = f.profBetween?.[def.key] ?? 0;
+                        aMs += v; bMs += vb;
+                        if (v + vb > pMs) pMs = v + vb;
                         calls += f.profCalls[def.key] ?? 0;
                         const cp = f.profCallPeak[def.key] ?? 0;
                         if (cp > callPeakMs) callPeakMs = cp;
                     }
                     tMs = aMs; aMs /= n;
+                    bTMs = bMs; bMs /= n;
                 }
                 stages[def.key] = {
-                    avgMs: aMs, peakMs: pMs, totalMs: tMs, calls,
-                    msPerCall: calls > 0 ? tMs / calls : 0,
+                    avgMs: aMs, betweenMs: bMs, peakMs: pMs,
+                    totalMs: tMs, betweenTotalMs: bTMs, calls,
                     callPeakMs,
                 };
             }
@@ -1319,6 +1382,10 @@
                 msWorst: peak('frameMs'),
                 cpuAvg:  avg('cpuMs'),
                 cpuWorst: peak('cpuMs'),
+                // Ground-truth main-thread blocking from the Long Tasks API
+                // (tasks >50ms), independent of the self-timers.
+                blockedAvg: avg('blockedMs'),
+                blockedWorst: peak('blockedMs'),
                 // Inter-frame gap: time NOT accounted for by the render loop
                 // (microtask work: network callbacks, PBF decode, label pipeline)
                 interFrameAvg: (() => {
@@ -1653,18 +1720,19 @@
 
         const stages = {};
         for (const def of STAGE_DEFS) {
-            let totalMs = 0, calls = 0, peakMs = 0, peakStep = null, callPeakMs = 0;
+            let totalMs = 0, betweenTotalMs = 0, calls = 0, peakMs = 0, peakStep = null, callPeakMs = 0;
             for (const { step, summary } of entries) {
                 const st = summary.stages?.[def.key];
                 if (!st) { continue; }
-                totalMs += st.totalMs;
+                totalMs += st.totalMs || 0;
+                betweenTotalMs += st.betweenTotalMs || 0;
                 calls   += st.calls;
                 if (st.peakMs > peakMs) { peakMs = st.peakMs; peakStep = stepName(step); }
                 if (st.callPeakMs > callPeakMs) { callPeakMs = st.callPeakMs; }
             }
             stages[def.key] = {
-                avgMs: totalMs / N, peakMs, peakStep, totalMs, calls,
-                msPerCall: calls > 0 ? totalMs / calls : 0,
+                avgMs: totalMs / N, betweenMs: betweenTotalMs / N,
+                peakMs, peakStep, totalMs, betweenTotalMs, calls,
                 callsPerFrame: calls / N,
                 callPeakMs,
             };
@@ -1692,6 +1760,8 @@
             fpsP5: sAvg('fpsP5'), fpsP1: sAvg('fpsP1'), fpsSigma: sAvg('fpsSigma'),
             msAvg, msWorst: Math.max(...sums.map(x => x.msWorst ?? 0)),
             cpuAvg: wAvg('cpuAvg'),
+            blockedAvg: wAvg('blockedAvg'),
+            blockedWorst: Math.max(...sums.map(x => x.blockedWorst ?? 0)),
             interFrameAvg: wAvg('interFrameAvg'),
             interFrameWorst: Math.max(...sums.map(x => x.interFrameWorst ?? 0)),
             lblAvg: Math.round(wAvg('lblAvg')), rendAvg: Math.round(wAvg('rendAvg')),
@@ -1707,8 +1777,10 @@
     const fpsCell = (v) => `<td style="color:${fpsColor(v)}">${fmt(v, 0)}</td>`;
     // Per-frame label CPU = sum of every label pipeline stage (excludes the
     // render-loop stages cam / tiles / webgl, tile decode, GPU, and network).
-    const LABEL_PROF_KEYS = PROF_KEYS.filter(k => !['webgl', 'gpu', 'decode'].includes(k));
-    const labelCpuOf = (o) => LABEL_PROF_KEYS.reduce((s, k) => s + (o.stages?.[k]?.avgMs ?? 0), 0);
+    const LABEL_PROF_KEYS = PROF_KEYS.filter(k => !['webgl', 'gpu', 'build', 'workerWait'].includes(k));
+    // Total label main-thread cost per frame = in-frame + between-frame (label
+    // build runs mostly between frames now, collision/cull runs in-frame).
+    const labelCpuOf = (o) => LABEL_PROF_KEYS.reduce((s, k) => s + (o.stages?.[k]?.avgMs ?? 0) + (o.stages?.[k]?.betweenMs ?? 0), 0);
 
     const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -1722,12 +1794,18 @@
             const st = o.stages[def.key];
             if (st && st.peakMs > (worst?.peakMs ?? 0)) { worst = { ...st, def }; }
         }
-        if (!worst || worst.peakMs < 0.5) { return ''; }
+        const blocked = (o.blockedWorst ?? 0) > 50
+            ? `<span style="display:block;color:rgba(0,0,0,0.55);font-size:8.5px;margin-top:2px;">Long Tasks API (ground truth): worst frame blocked <b style="color:${msColor(o.blockedWorst, 80, 200)}">${fmt(o.blockedWorst, 0)} ms</b> · avg ${fmt(o.blockedAvg ?? 0, 1)} ms/frame</span>`
+            : '';
+        if (!worst || worst.peakMs < 0.5) {
+            return blocked ? `<div style="font-size:10px;margin:2px 0 4px;padding:4px 6px;background:rgba(0,0,0,0.03);">${blocked}</div>` : '';
+        }
         const detail = stageDetailFor(worst.def.key, mode);
         const col = msColor(worst.peakMs, 16, 50);
         return `<div style="font-size:10px;margin:2px 0 4px;padding:4px 6px;background:rgba(0,0,0,0.03);border-left:3px solid ${col};">
             <b>Worst frame: ${fmt(worst.peakMs, 0)} ms</b> — <b style="color:${col}">${worst.def.label}</b>${detail ? ` (${esc(detail.name)})` : ''}${worst.peakStep ? ` @ ${esc(worst.peakStep)}` : ''}
             ${detail ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;">${esc(detail.ref)}</span>` : ''}
+            ${blocked}
         </div>`;
     }
 
@@ -1736,25 +1814,24 @@
     // strategy THIS mode uses for that stage, with a source reference. Stages that
     // never fired (no time, no calls) are hidden to cut zero-row clutter.
     function pipelineBreakdown(o, mode) {
-        // %share is computed against the SUM of measured stages, not the per-frame
-        // cpu/f window: async build stages (parse/register/layout/thin/delete) run
-        // in tile-resolve microtasks outside that window, so dividing by cpu/f
-        // produced >100%. Sum-of-stages keeps every share in 0–100 and meaningful.
-        const measured = STAGE_DEFS
-            .filter(d => d.modes.includes(mode))
-            .reduce((s, d) => s + (o.stages[d.key]?.avgMs ?? 0), 0);
-        const denom = Math.max(measured, 0.01);
-        const fired = (st) => st && (st.totalMs > 0.05 || st.calls > 0 || st.peakMs > 0.05);
+        // Each stage's per-frame cost is split by WHERE it lands in the frame:
+        //   in-frame  → ran inside BEFORE_CAMERA_UPDATE→AFTER_RENDER (blocks render)
+        //   between   → ran in microtasks after the frame (delays the next rAF —
+        //               the stall). Network ('net') is async/off-thread, shown here
+        //               as between (non-blocking). Both are real frame impact.
+        const relevant = STAGE_DEFS.filter(d => d.modes.includes(mode));
+        const measIn  = relevant.reduce((s, d) => s + (o.stages[d.key]?.avgMs ?? 0), 0);
+        const measBtw = relevant.reduce((s, d) => s + (o.stages[d.key]?.betweenMs ?? 0), 0);
+        const fired = st => st && ((st.avgMs ?? 0) > 0.05 || (st.betweenMs ?? 0) > 0.05 || st.calls > 0 || st.peakMs > 0.05);
 
         let rows = '';
         for (const group of GROUP_ORDER) {
             const defs = STAGE_DEFS.filter(d => d.group === group && d.modes.includes(mode) && fired(o.stages[d.key]));
             if (defs.length === 0) { continue; }
             const modeSpecific = group === '3D rendering' || group === 'DOM rendering';
-            rows += `<tr><td colspan="7" style="padding-top:7px;color:${modeSpecific ? '#5a2080' : 'rgba(0,0,0,0.4)'};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;">${group}</td></tr>`;
+            rows += `<tr><td colspan="5" style="padding-top:7px;color:${modeSpecific ? '#5a2080' : 'rgba(0,0,0,0.4)'};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;">${group}</td></tr>`;
             for (const def of defs) {
-                const st = o.stages[def.key] || { avgMs: 0, peakMs: 0, msPerCall: 0, callsPerFrame: 0, callPeakMs: 0 };
-                const share = (st.avgMs / denom) * 100;
+                const st = o.stages[def.key] || { avgMs: 0, betweenMs: 0, peakMs: 0, callsPerFrame: 0 };
                 const detail = stageDetailFor(def.key, mode);
                 const sub = detail
                     ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;line-height:1.25;">${esc(detail.name)} · <span style="color:rgba(0,0,0,0.3)">${esc(detail.ref)}</span></span>`
@@ -1762,29 +1839,30 @@
                 const peakWhen = st.peakStep && st.peakMs > 0
                     ? `<span style="display:block;color:rgba(0,0,0,0.35);font-size:8px;font-weight:400;">@ ${esc(st.peakStep)}</span>`
                     : '';
+                const inCell = (st.avgMs ?? 0) > 0.005
+                    ? `<span style="color:${msColor(st.avgMs, def.warn, def.bad)}">${fmt(st.avgMs, 2)}</span>` : '·';
+                const btwCell = (st.betweenMs ?? 0) > 0.005
+                    ? `<span style="color:rgba(0,0,0,0.45)">${fmt(st.betweenMs, 2)}</span>` : '·';
                 rows += `<tr>
                     <td style="padding-left:12px;"${detail ? ` title="${esc(detail.ref)}"` : ''}>${def.label}${sub}</td>
-                    <td style="color:${msColor(st.avgMs, def.warn, def.bad)}">${fmt(st.avgMs, 2)}</td>
+                    <td title="ran inside the render frame (blocks the cpu window)">${inCell}</td>
+                    <td title="ran between frames (delays the next rAF) — network/worker are off-thread">${btwCell}</td>
                     <td style="color:${msColor(st.peakMs, def.bad, def.bad * 3)}"${st.peakStep ? ` title="worst frame during: ${esc(st.peakStep)}"` : ''}>${fmt(st.peakMs, 1)}${peakWhen}</td>
-                    <td>${st.callPeakMs > 0.05 ? `<span style="color:${msColor(st.callPeakMs, def.bad, def.bad * 6)}">${fmt(st.callPeakMs, 1)}</span>` : '—'}</td>
-                    <td>${st.msPerCall > 0 ? fmt(st.msPerCall, 3) : '—'}</td>
-                    <td>${st.callsPerFrame > 0 ? fmt(st.callsPerFrame, 2) : '—'}</td>
-                    <td>${share >= 0.5 ? fmt(share, 0) + '%' : '·'}</td>
+                    <td>${(st.callsPerFrame ?? 0) > 0 ? fmt(st.callsPerFrame, 2) : '—'}</td>
                 </tr>`;
             }
         }
         return `<table class="rep-table"><thead><tr>
             <th>Stage / strategy</th>
-            <th title="Average ms per frame (amortised over every frame — biased by frame rate for async stages)">avg/f</th>
-            <th title="Worst single-frame total for this stage (sum of all calls in that frame — biased by clustering)">frame↑</th>
-            <th title="Worst single invocation (true peak cost of one call, unbiased by frame rate)">call↑</th>
-            <th title="ms per actual invocation (average cost when it runs)">ms/call</th>
-            <th title="Average invocations per frame (shows how often a throttled stage runs)">calls/f</th>
-            <th title="Share of total measured pipeline time (sums to 100%)">share</th>
+            <th title="Avg ms/frame that ran INSIDE the render frame — blocks the interactive cpu window">in-frame/f</th>
+            <th title="Avg ms/frame that ran BETWEEN frames (async build / streaming microtasks) — delays the next rAF. Network &amp; worker are off-thread.">between/f</th>
+            <th title="Worst single frame's total (in-frame + between) cost for this stage, and the step it hit">worst↑</th>
+            <th title="Average invocations per frame">calls/f</th>
         </tr></thead><tbody>${rows}
-            <tr class="rep-overall"><td>Σ measured / frame${o.cpuAvg ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;">interactive frame cpu/f: ${fmt(o.cpuAvg, 2)} ms (async build runs between frames)</span>` : ''}</td>
-                <td>${fmt(measured, 2)}</td>
-                <td>—</td><td>—</td><td>—</td><td>—</td><td>100%</td></tr>
+            <tr class="rep-overall"><td>Σ measured / frame${o.cpuAvg ? `<span style="display:block;color:rgba(0,0,0,0.4);font-size:8.5px;">interactive cpu/f: ${fmt(o.cpuAvg, 2)} ms · between-frame work delays the next rAF</span>` : ''}</td>
+                <td>${fmt(measIn, 2)}</td>
+                <td style="color:rgba(0,0,0,0.55)">${fmt(measBtw, 2)}</td>
+                <td>—</td><td>—</td></tr>
         </tbody></table>`;
     }
 
@@ -1814,6 +1892,7 @@
         { key: 'tilesDecoded', label: 'Tiles decoded (PBF) / frame', modes: ALL_MODES,
           hint: 'Vector tiles whose PBF was decoded that frame. When several resolve together from network, decode runs back-to-back in one microtask queue → inter-frame stall.' },
     ];
+    // Worker mode is temporarily disabled in benchmark/UI.
     function burstSignals(o, mode) {
         const defs = BURST_DEFS.filter(d => d.modes.includes(mode) && o.counts?.[d.key]);
         const batchMax = _reportState.batchMaxByMode[mode] || 0;
@@ -2202,33 +2281,42 @@
 
     // Per-frame profiler delta (ms + calls per prof key, + burst counts), filled
     // in afterRender.
-    let _lastProfMs       = {};
+    let _lastProfMs       = {};   // in-frame ms (blocks the render cpu window)
+    let _lastProfBetween  = {};   // between-frame ms (delays the next rAF)
     let _lastProfCalls    = {};
     let _lastProfCallPeak = {};
     let _lastProfCounts   = {};
-    const _profPrevMs     = {};
-    const _profPrevCalls  = {};
-    const _profPrevCounts = {};
+    const _profPrevMs      = {};
+    const _profPrevBetween = {};
+    const _profPrevCalls   = {};
+    const _profPrevCounts  = {};
 
     function resetProfilerBaseline() {
         LabelProfiler.reset();
-        for (const k of PROF_KEYS)  { _profPrevMs[k] = 0; _profPrevCalls[k] = 0; _lastProfMs[k] = 0; _lastProfCalls[k] = 0; _lastProfCallPeak[k] = 0; }
+        for (const k of PROF_KEYS)  { _profPrevMs[k] = 0; _profPrevBetween[k] = 0; _profPrevCalls[k] = 0; _lastProfMs[k] = 0; _lastProfBetween[k] = 0; _lastProfCalls[k] = 0; _lastProfCallPeak[k] = 0; }
         for (const k of COUNT_KEYS) { _profPrevCounts[k] = 0; _lastProfCounts[k] = 0; }
         // Flush any stale network entries from a previous run
         _netQueue.length = 0;
         _lastNetFrame = { ms: 0, calls: 0, peak: 0, bytes: 0 };
+        _longTaskMs = 0;
+        LabelProfiler.inFrame = false;
     }
 
-    // Sample monotonic profiler counters into this-frame deltas.
+    // Sample monotonic profiler counters into this-frame deltas. Each prof key
+    // splits into in-frame ms (ran inside BEFORE_CAMERA_UPDATE→AFTER_RENDER) and
+    // between-frame ms (async build/streaming microtasks that delay the next rAF).
     function sampleProfilerDelta() {
-        const dMs = {}, dCalls = {}, dCounts = {}, dCallPeak = {};
+        const dMs = {}, dBetween = {}, dCalls = {}, dCounts = {}, dCallPeak = {};
         for (const k of PROF_KEYS) {
-            const m = LabelProfiler.ms[k] || 0;
-            const c = LabelProfiler.calls[k] || 0;
-            dMs[k] = m - (_profPrevMs[k] || 0);
-            dCalls[k] = c - (_profPrevCalls[k] || 0);
-            _profPrevMs[k] = m;
-            _profPrevCalls[k] = c;
+            const m  = LabelProfiler.ms[k] || 0;
+            const mb = LabelProfiler.msBetween[k] || 0;
+            const c  = (LabelProfiler.calls[k] || 0) + (LabelProfiler.callsBetween[k] || 0);
+            dMs[k]      = m  - (_profPrevMs[k] || 0);
+            dBetween[k] = mb - (_profPrevBetween[k] || 0);
+            dCalls[k]   = c  - (_profPrevCalls[k] || 0);
+            _profPrevMs[k]      = m;
+            _profPrevBetween[k] = mb;
+            _profPrevCalls[k]   = c;
             // callPeak tracks the worst single begin/end pair since last read.
             // Read and reset each frame so we can track the step-level maximum.
             dCallPeak[k] = LabelProfiler.callPeak[k] || 0;
@@ -2240,6 +2328,7 @@
             _profPrevCounts[k] = v;
         }
         _lastProfMs = dMs;
+        _lastProfBetween = dBetween;
         _lastProfCalls = dCalls;
         _lastProfCallPeak = dCallPeak;
         _lastProfCounts = dCounts;
@@ -2314,6 +2403,9 @@
 
         const tEnd  = performance.now();
         stage.cpu   = _cpuFrameStart > 0 ? tEnd - _cpuFrameStart : 0;
+        // Close the interactive frame window: work after this point (tile build,
+        // label add, streaming microtasks) is attributed as between-frame.
+        LabelProfiler.inFrame = false;
 
         // Pull this frame's label sub-stage costs from the library profiler
         // (includes 'webgl', timed inside c3DEngine.renderView).
@@ -2443,6 +2535,7 @@
 
         v.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_CAMERA_UPDATE, () => {
             _cpuFrameStart = performance.now();
+            LabelProfiler.inFrame = true;   // open interactive frame window
             stage.tiles = 0;   // accumulates across geometry layers this frame
             _camT0      = _cpuFrameStart;
         });
@@ -2522,20 +2615,20 @@
         syncFpsLockButtons();
     });
 
-    const elBtnInstanced = document.getElementById('btn-mode-instanced');
-    const elBtnDomPerf   = document.getElementById('btn-mode-dom-perf');
-    const elBtnNone      = document.getElementById('btn-mode-none');
-    const elBtnExport    = document.getElementById('btn-export');
+    const elBtnInstanced      = document.getElementById('btn-mode-instanced');
+    const elBtnDomPerf         = document.getElementById('btn-mode-dom-perf');
+    const elBtnNone            = document.getElementById('btn-mode-none');
+    const elBtnExport          = document.getElementById('btn-export');
 
     const MODE_LABELS = {
-        'instanced': '3D Labels',
-        'dom-perf':  'DOM Labels',
-        none:        'No labels (baseline)',
+        'instanced':       '3D Labels',
+        'dom-perf':        'DOM Labels',
+        none:              'No labels (baseline)',
     };
     const ALL_MODE_BTNS = {
-        'instanced': elBtnInstanced,
-        'dom-perf':  elBtnDomPerf,
-        none:        elBtnNone,
+        'instanced':       elBtnInstanced,
+        'dom-perf':        elBtnDomPerf,
+        none:              elBtnNone,
     };
 
     function syncModeButtons() {
@@ -2557,9 +2650,9 @@
         });
     }
 
-    elBtnInstanced.addEventListener('click', () => setLabelMode('instanced'));
-    elBtnDomPerf.addEventListener('click',   () => setLabelMode('dom-perf'));
-    elBtnNone.addEventListener('click',      () => setLabelMode('none'));
+    elBtnInstanced.addEventListener('click',      () => setLabelMode('instanced'));
+    elBtnDomPerf.addEventListener('click',        () => setLabelMode('dom-perf'));
+    elBtnNone.addEventListener('click',           () => setLabelMode('none'));
 
     // ── Dataset selector ─────────────────────────────────────────────────────
     const elBtnDsIgn = document.getElementById('btn-ds-ign');

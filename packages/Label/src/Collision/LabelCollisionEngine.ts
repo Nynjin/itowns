@@ -15,7 +15,10 @@ import { LabelProfiler } from '../Profiler';
  */
 export class LabelCollisionEngine {
     private _labelsById      = new Map<string, Label>();
-    private _candidates: Label[] = [];
+    private _labelsList:      Label[] = [];
+    /** label.id → index in _labelsList for O(1) swap-remove */
+    private _labelIndexMap   = new Map<string, number>();
+    private _candidates:      Label[] = [];
 
     private readonly _renderer:       WebGLRenderer;
     private readonly _downscaleShift: number;
@@ -43,23 +46,39 @@ export class LabelCollisionEngine {
      * @param labels - labels to register
      */
     addLabels(labels: Label[]) {
-        for (const label of labels) this._labelsById.set(label.id, label);
+        for (const label of labels) {
+            if (this._labelsById.has(label.id)) continue;
+            this._labelsById.set(label.id, label);
+            this._labelIndexMap.set(label.id, this._labelsList.length);
+            this._labelsList.push(label);
+        }
     }
 
     /**
      * Remove labels from the collision set by ID.
-     * @param ids - label IDs to remove
+     * @param ids - label IDs to unregister
      */
     removeLabels(ids: string[]) {
         if (ids.length === 0) return;
-        const idSet = new Set(ids);
-        for (const id of idSet) this._labelsById.delete(id);
-        this._candidates = this._candidates.filter(l => !idSet.has(l.id));
+        for (const id of ids) {
+            const idx = this._labelIndexMap.get(id);
+            if (idx === undefined) continue;
+            this._labelsById.delete(id);
+            this._labelIndexMap.delete(id);
+            const last = this._labelsList[this._labelsList.length - 1];
+            this._labelsList[idx] = last;
+            this._labelsList.pop();
+            if (idx < this._labelsList.length) {
+                this._labelIndexMap.set(last.id, idx); // update moved label's index
+            }
+        }
     }
 
     /** Remove all labels from the collision set. */
     clear() {
         this._labelsById.clear();
+        this._labelsList.length = 0;
+        this._labelIndexMap.clear();
         this._candidates = [];
     }
 
@@ -100,7 +119,7 @@ export class LabelCollisionEngine {
         this._candidates.length = 0;
         const { x: cx, y: cy, z: cz } = camera.position;
 
-        for (const label of this._labelsById.values()) {
+        for (const label of this._labelsList) {
             if (!label.groupVisible) {
                 if (label.shouldRender) { label.shouldRender = false; changed = true; }
                 label.isCandidate = false;

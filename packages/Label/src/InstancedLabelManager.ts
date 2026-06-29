@@ -1,32 +1,23 @@
 import { Camera, Matrix4, PerspectiveCamera, WebGLRenderer, Scene } from 'three';
-import { fontKeyOf, fontKeyString } from './Shaping/FontKey';
 import layoutText from './Shaping/TextLayout';
-import { LabelFontGroup, DirtyLevel } from './LabelFontGroup';
-import { Label } from './Label';
-import { LabelMeshGroup } from './Rendering/LabelMeshGroup';
-import type { LabelMesh } from './Rendering/LabelMeshGroup';
+import { LabelAtlasManager, DirtyLevel } from './LabelAtlasManager';
+import { Label, LabelBounds } from './Label';
+import type { GlyphInstance } from './Shaping/GlyphRun';
+import { LabelBatch } from './Rendering/LabelBatch';
+import type { LabelMesh } from './Rendering/LabelBatch';
 import { LabelCollisionEngine } from './Collision/LabelCollisionEngine';
 import { LabelManagerConfig, DefaultLabelConfig } from './Types/LabelConfig';
 import { computePxPerUnit } from './Utils';
 import { LabelProfiler } from './Profiler';
 
-interface LabelGroup {
-    fontGroup: LabelFontGroup;
-    meshGroup: LabelMeshGroup;
-}
-
-export interface LabelMeshPair {
-    fill: LabelMesh;
-    halo: LabelMesh;
-}
 
 export class InstancedLabelManager {
     readonly config: LabelManagerConfig;
-    private _lastUpdateTime = 0;
-    private _lastCullTime = 0;
+    private _lastUpdateCheck = 0;
+    private _lastCullCheck = 0;
     private _lastFrameTime = 0;
     private _hasPendingWork = false;
-    
+
     // ── VP-matrix tracking for stationary / fast-move skip ─────────────────
     /** VP matrix at the time of the last collision evaluation. */
     private readonly _lastEvalVP   = new Matrix4();
@@ -41,17 +32,24 @@ export class InstancedLabelManager {
     private _resizeObserver: ResizeObserver | null = null;
 
     private readonly _renderer: WebGLRenderer;
-    private readonly _groups      = new Map<string, LabelGroup>();
+    private _atlas: LabelAtlasManager | null = null;
+    private _batch: LabelBatch | null = null;
     private readonly _labelsById  = new Map<string, Label>();
-    readonly meshes: LabelMeshPair[] = [];
+    readonly meshes: LabelMesh[] = [];
     collision: LabelCollisionEngine;
 
     private readonly _toAddBuffer: Label[] = [];
     private readonly _toRemoveBuffer: string[] = [];
     private readonly _toLayoutBuffer: Label[] = [];
     private readonly _toStyleBuffer: Label[] = [];
-    private readonly _toRegroupBuffer: Label[] = [];
-    private readonly _processedLabels: Label[] = [];
+
+    /**
+     * Caches layout results (glyphs + bounds) keyed by the set of label properties
+     * that determine the layout. Labels sharing a key reuse the same glyphs array
+     * reference — safe because glyphs are never mutated after layout.
+     * Cleared whenever the SDF atlas grows (glyph metrics change).
+     */
+    private readonly _layoutCache = new Map<string, { glyphs: GlyphInstance[]; bounds: LabelBounds }>();
 
     constructor(renderer: WebGLRenderer, options?: Partial<LabelManagerConfig>) {
         this.config = { ...DefaultLabelConfig, ...options };
@@ -72,7 +70,7 @@ export class InstancedLabelManager {
 
     attachTo(scene: Scene) {
         this._scene = scene;
-        for (const pair of this.meshes) scene.add(pair.fill, pair.halo);
+        for (const mesh of this.meshes) scene.add(mesh);
     }
 
     // ─── Labels in / out ──────────────────────────────────────────────────────
@@ -82,29 +80,21 @@ export class InstancedLabelManager {
 
     addLabels(labels: Label[]) {
         const _p = LabelProfiler.begin();
-        const byKey = this._groupByFontKey(labels);
-        for (const [key, bucket] of byKey) {
-            this._getOrCreate(key, bucket[0]).fontGroup.addLabels(bucket);
-        }
+        this._getOrCreate().atlas.addLabels(labels);
         for (const l of labels) this._labelsById.set(l.id, l);
         LabelProfiler.end('register', _p);
     }
 
     removeLabels(labels: Label[]) {
         const _p = LabelProfiler.begin();
-        const byKey = this._groupByFontKey(labels);
-        for (const [key, bucket] of byKey) {
-            this._groups.get(key)?.fontGroup.removeLabels(bucket);
-        }
+        this._atlas?.removeLabels(labels);
         for (const l of labels) this._labelsById.delete(l.id);
         LabelProfiler.end('delete', _p);
     }
 
     updatePxPerUnit(pxPerUnit: number) {
         this.config.pxPerUnit = pxPerUnit;
-        for (const group of this._groups.values()) {
-            group.meshGroup.updatePxPerUnit(pxPerUnit);
-        }
+        this._batch?.updatePxPerUnit(pxPerUnit);
     }
 
     // ─── Per-frame work ───────────────────────────────────────────────────────
@@ -115,23 +105,23 @@ export class InstancedLabelManager {
         const frameDelta = now - this._lastFrameTime;
         this._lastFrameTime = now;
 
+        // ── Sync: timer starts a batch, frame budget limits per-frame cost ──
         let anySynced = false;
-        const dueForUpdate = this._hasPendingWork || now - this._lastUpdateTime >= this.config.updateRate * 1000;
-        if (dueForUpdate) {
-            this._hasPendingWork = false;
-            for (const group of this._groups.values()) {
-                if (this._isDirty(group)) {
-                    this._syncGroup(group);
-                    anySynced = true;
-                }
+        const dueForUpdate = now - this._lastUpdateCheck >= this.config.updateRate * 1000;
+        if (dueForUpdate || this._hasPendingWork) {
+            if (this._atlas && this._batch && this._atlas.dirty.size > 0) {
+                this._syncGroup(this._atlas, this._batch);
+                anySynced = true;
             }
-            if (anySynced && !this._hasPendingWork) {
-                this._lastUpdateTime = now;
-                this._lastCullTime = 0;
+            // Timer only resets when the batch is fully drained.
+            if (!this._hasPendingWork) {
+                this._lastUpdateCheck = now;
             }
-            else if (anySynced) {
-                this._lastCullTime = 0;
-            }
+        }
+
+        // ── PBO upload: push dirty DataTexture rows to GPU asynchronously ──
+        if (this._batch) {
+            this._batch.uploadDirty(this._renderer);
         }
 
         // ── VP-matrix checks ─────────────────────────────────────────────────
@@ -155,13 +145,12 @@ export class InstancedLabelManager {
         this._lastFrameVP.copy(this._curVP);
 
         let collisionRan = false;
-        const dueForCollision = now - this._lastCullTime >= this.config.cullingRate * 1000;
+        const dueForCollision = now - this._lastCullCheck >= this.config.cullingRate * 1000;
         
-        // Force evaluation if labels were added/modified (anySynced) OR if it's 
-        // time and the camera is moving normally.
-        if (anySynced || (dueForCollision && !isStationary && !isFastMove)) {
+        // Allows evaluation to run if any labels were added/removed or re-shaped, even if the camera is stationary.
+        if (dueForCollision && !isFastMove && (!isStationary || anySynced)) {
             collisionRan = this.collision.evaluate(camera);
-            this._lastCullTime = now;
+            this._lastCullCheck = now;
             this._lastEvalVP.copy(this._curVP);
         }
 
@@ -180,10 +169,11 @@ export class InstancedLabelManager {
         const farCullChanged = this._applyFarCull(camera);
         LabelProfiler.end('farcull', _p);
 
-        if (collisionRan || fadesChanged || farCullChanged || anySynced) {
+        if (collisionRan || fadesChanged || farCullChanged
+            || (anySynced && (this._toRemoveBuffer.length > 0 || this._toStyleBuffer.length > 0 || this._toLayoutBuffer.length > 0))) {
             _p = LabelProfiler.begin();
-            for (const group of this._groups.values()) {
-                group.meshGroup.cull(group.fontGroup.labels);
+            if (this._atlas && this._batch) {
+                this._batch.cull(this._atlas.labels);
             }
             LabelProfiler.end('cull', _p);
         }
@@ -193,36 +183,19 @@ export class InstancedLabelManager {
         this._resizeObserver?.disconnect();
         this._resizeObserver = null;
         if (this._scene) {
-            for (const pair of this.meshes) this._scene.remove(pair.fill, pair.halo);
+            for (const mesh of this.meshes) this._scene.remove(mesh);
             this._scene = null;
         }
-        for (const group of this._groups.values()) {
-            group.fontGroup.dispose();
-            group.meshGroup.dispose();
-        }
-        this._groups.clear();
+        this._atlas?.dispose();
+        this._batch?.dispose();
+        this._atlas = null;
+        this._batch = null;
         this.meshes.length = 0;
         this._labelsById.clear();
         this.collision.dispose();
     }
 
     // ─── Internals ────────────────────────────────────────────────────────────
-
-    private _groupByFontKey(labels: Label[]): Map<string, Label[]> {
-        const byKey = new Map<string, Label[]>();
-        for (const label of labels) {
-            const key = fontKeyString(fontKeyOf(label));
-            if (!key) continue;
-            let bucket = byKey.get(key);
-            if (!bucket) { bucket = []; byKey.set(key, bucket); }
-            bucket.push(label);
-        }
-        return byKey;
-    }
-
-    private _isDirty(group: LabelGroup): boolean {
-        return group.fontGroup.dirty.size > 0;
-    }
 
     /**
      * Per-frame far-plane cull — runs unconditionally every frame, bypassing
@@ -266,26 +239,36 @@ export class InstancedLabelManager {
         return changed;
     }
 
-    private _getOrCreate(key: string, sample: Label): LabelGroup {
-        const existing = this._groups.get(key);
-        if (existing) return existing;
-
-        const meshGroup = new LabelMeshGroup(this.config);
-        const fontGroup = new LabelFontGroup(fontKeyOf(sample), this.config);
-        const group: LabelGroup = { fontGroup, meshGroup };
-
-        this._groups.set(key, group);
-        this.meshes.push({ fill: meshGroup.fillMesh, halo: meshGroup.haloMesh });
-        this._scene?.add(meshGroup.fillMesh, meshGroup.haloMesh);
-        return group;
+    /**
+     * Apply layout to a label, using the cache to skip recomputation for labels
+     * that share the same text, font, and layout properties.
+     * The glyphs array is shared by reference across cache-hit labels — safe
+     * because glyphs are never mutated after layout.
+     */
+    private _layoutFromCache(label: Label, glyphs: Map<string, import('./Shaping/GlyphRun').GlyphInfo>): void {
+        const p = label.padding;
+        const o = label.offset;
+        const key = `${label.getDisplayText()}|${label.fontKeyString}|${label.fontSize}|${label.maxWidth}|${label.letterSpacing}|${label.lineHeight}|${label.textAlign}|${label.anchorX}|${label.anchorY}|${o.x},${o.y}|${p.top},${p.right},${p.bottom},${p.left}`;
+        const cached = this._layoutCache.get(key);
+        if (cached) {
+            label.glyphs = cached.glyphs;
+            label.bounds = cached.bounds;
+        } else {
+            layoutText(label, glyphs, this.config.baseFontSize);
+            this._layoutCache.set(key, { glyphs: label.glyphs, bounds: label.bounds });
+        }
     }
 
-    private _syncGroup(group: LabelGroup) {
-        const { fontGroup, meshGroup } = group;
-        // Atlas: rasterize any newly-seen glyphs (TinySDF) into the SDF atlas and
-        // flag a full-atlas GPU re-upload. Heavy for large/growing character sets
-        // (worldwide names, CJK fonts) — and previously untimed. This is the
-        // prime suspect for the periodic stall frames during zoom/pan.
+    private _getOrCreate(): { atlas: LabelAtlasManager; batch: LabelBatch } {
+        if (this._atlas && this._batch) return { atlas: this._atlas, batch: this._batch };
+        this._batch = new LabelBatch(this.config);
+        this._atlas = new LabelAtlasManager(this.config);
+        this.meshes.push(this._batch.mesh);
+        this._scene?.add(this._batch.mesh);
+        return { atlas: this._atlas, batch: this._batch };
+    }
+
+    private _syncGroup(fontGroup: LabelAtlasManager, meshGroup: LabelBatch) {
         const _pAtlas = LabelProfiler.begin();
         const { atlas, dirty, resized } = fontGroup.getAtlas();
         LabelProfiler.end('atlas', _pAtlas);
@@ -296,14 +279,10 @@ export class InstancedLabelManager {
         this._toRemoveBuffer.length = 0;
         this._toLayoutBuffer.length = 0;
         this._toStyleBuffer.length = 0;
-        this._toRegroupBuffer.length = 0;
-        this._processedLabels.length = 0;
 
         let layoutCount = 0;
+        this._hasPendingWork = false;
 
-        // Layout: layoutText() turns each dirty label's text into positioned
-        // glyph quads (the CPU-heavy text-layout step; analog of the browser
-        // reflow DOM labels pay in initDimensions()).
         const _pShape = LabelProfiler.begin();
         for (const [label, level] of dirtyMap) {
             switch (level) {
@@ -312,35 +291,25 @@ export class InstancedLabelManager {
                         this._hasPendingWork = true;
                         continue;
                     }
-                    this._toAddBuffer.push(layoutText(label, atlas.glyphs, this.config.baseFontSize));
-                    this._processedLabels.push(label);
+                    this._layoutFromCache(label, atlas.glyphs);
+                    this._toAddBuffer.push(label);
                     layoutCount++;
                     break;
                 case DirtyLevel.Dispose:
                     this._toRemoveBuffer.push(label.id);
-                    this._processedLabels.push(label);
-                    break;
-                case DirtyLevel.ChangeGroup:
-                    this._toRemoveBuffer.push(label.id);
-                    this._toRegroupBuffer.push(label);
-                    this._processedLabels.push(label);
                     break;
                 case DirtyLevel.LayoutUpdate:
                     if (budget > 0 && layoutCount >= budget) {
                         this._hasPendingWork = true;
                         continue;
                     }
-                    // Re-shape of an already-built label (e.g. a zoom-dependent
-                    // text-field switching {name_en}→{name}) — a burst of these
-                    // explains shaping spikes at zoom thresholds.
                     LabelProfiler.count('reshape', 1);
-                    this._toLayoutBuffer.push(layoutText(label, atlas.glyphs, this.config.baseFontSize));
-                    this._processedLabels.push(label);
+                    this._layoutFromCache(label, atlas.glyphs);
+                    this._toLayoutBuffer.push(label);
                     layoutCount++;
                     break;
                 case DirtyLevel.StyleUpdate:
                     this._toStyleBuffer.push(label);
-                    this._processedLabels.push(label);
                     break;
                 default:
                     break;
@@ -364,28 +333,40 @@ export class InstancedLabelManager {
         );
 
         if (resized) {
-            // The glyph atlas grew: every label in the group is re-laid-out and
-            // re-emitted (O(group size)) — a classic single-frame spike. Count the
-            // event and how many labels it touched.
+            // The glyph atlas grew: glyph metrics changed — cached layouts are stale.
+            this._layoutCache.clear();
+            // Re-lay-out and re-emit every label in the group (O(group size) spike).
             LabelProfiler.count('atlasResize', 1);
             LabelProfiler.count('atlasReemit', fontGroup.labels.size);
-            const alreadyRelaidOut = new Set([
-                ...this._toAddBuffer.map(l => l.id),
-                ...this._toLayoutBuffer.map(l => l.id),
-            ]);
+            const alreadyRelaidOut = new Set<string>();
+            for (const l of this._toAddBuffer) alreadyRelaidOut.add(l.id);
+            for (const l of this._toLayoutBuffer) alreadyRelaidOut.add(l.id);
             for (const label of fontGroup.labels) {
                 if (!alreadyRelaidOut.has(label.id)) {
-                    layoutText(label, atlas.glyphs, this.config.baseFontSize);
+                    this._layoutFromCache(label, atlas.glyphs);
                 }
                 meshGroup.reemitGlyphs(label);
             }
         }
         LabelProfiler.end('position', _pUpload);
 
-        fontGroup.flushDirtyFor(this._processedLabels);
-
-        if (this._toRegroupBuffer.length > 0) {
-            this.addLabels(this._toRegroupBuffer);
+        // Flush only the labels we actually processed this frame.
+        if (this._hasPendingWork) {
+            // Budget hit: flush only processed entries, leave the rest dirty.
+            for (const l of this._toAddBuffer) fontGroup.dirty.delete(l);
+            for (const id of this._toRemoveBuffer) {
+                // Dispose entries are keyed by label reference, find & delete.
+                for (const [label, level] of fontGroup.dirty) {
+                    if (level === DirtyLevel.Dispose && label.id === id) {
+                        fontGroup.dirty.delete(label);
+                        break;
+                    }
+                }
+            }
+            for (const l of this._toLayoutBuffer) fontGroup.dirty.delete(l);
+            for (const l of this._toStyleBuffer) fontGroup.dirty.delete(l);
+        } else {
+            fontGroup.flushDirty();
         }
     }
 }

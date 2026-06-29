@@ -4,6 +4,7 @@ import {
     Mesh,
     PlaneGeometry,
     ShaderMaterial,
+    WebGLRenderer,
 } from 'three';
 import { SDFAtlas } from '../Shaping/SDFAtlas';
 import {
@@ -120,12 +121,19 @@ function fillGlyphTexels(labelIdx: number, glyphs: GlyphInstance[], out: Float32
     }
 }
 
-export type LabelMesh = Mesh<InstancedBufferGeometry, ShaderMaterial>;
+/**
+ * A single instanced mesh that renders all label glyphs in two material passes:
+ *   - material[0]: halo pass (drawn first, renderOrder 0 relative to fill)
+ *   - material[1]: fill pass
+ *
+ * Using one `Mesh` with two geometry groups avoids the overhead of a second
+ * scene object while still issuing two draw calls with distinct shader variants.
+ */
+export type LabelMesh = Mesh<InstancedBufferGeometry, ShaderMaterial[]>;
 
-export class LabelMeshGroup {
+export class LabelBatch {
     readonly geom: InstancedBufferGeometry = new InstancedBufferGeometry();
-    readonly fillMesh: LabelMesh = new Mesh(this.geom);
-    readonly haloMesh: LabelMesh = new Mesh(this.geom);
+    readonly mesh: LabelMesh = new Mesh(this.geom);
 
     private _glyphIndex: Int32Array = new Int32Array(1000000);
     private _occlusionFade: Float32Array = new Float32Array(1000000);
@@ -158,79 +166,99 @@ export class LabelMeshGroup {
         this.geom.index = base.index;
         this.geom.attributes.position = base.attributes.position;
         this.geom.attributes.uv = base.attributes.uv;
+        const indexCount = (this.geom.index as NonNullable<typeof this.geom.index>).count;
         base.dispose();
 
-        this.fillMesh.frustumCulled = false;
-        this.haloMesh.frustumCulled = false;
-        this.fillMesh.renderOrder = 1;
-        this.haloMesh.renderOrder = 0;
-        this.fillMesh.matrixAutoUpdate = false;
-        this.haloMesh.matrixAutoUpdate = false;
+        // Two groups over the same index range: material[0]=halo, material[1]=fill.
+        // Three.js issues one draw call per group, so the geometry is drawn twice
+        // without needing a second Mesh in the scene.
+        // Use the exact index count (not Infinity) — Three.js line 1213 bails when
+        // drawCount === Infinity, which would silently skip one of the passes.
+        this.geom.addGroup(0, indexCount, 0);
+        this.geom.addGroup(0, indexCount, 1);
+
+        this.mesh.frustumCulled = false;
+        this.mesh.renderOrder = 1;
+        this.mesh.matrixAutoUpdate = false;
         // Layer 31: instanced label meshes are placed on this layer only.
         // The camera default mask (layer 0) naturally excludes them from
         // the EffectComposer's RenderPass, preventing AGX tone-mapping from
         // washing them out. c3DEngine renders them directly after the composer.
-        this.fillMesh.layers.set(31);
-        this.haloMesh.layers.set(31);
+        this.mesh.layers.set(31);
 
         this.geom.setAttribute('glyphIndex', this._glyphIndexAttr);
         this.geom.setAttribute('occlusionFade', this._occlusionFadeAttr);
     }
 
+    // ── Material accessors ────────────────────────────────────────────────────
+
+    private get _haloMat(): ShaderMaterial | undefined { return this.mesh.material?.[0]; }
+    private get _fillMat(): ShaderMaterial | undefined { return this.mesh.material?.[1]; }
+
+    // ── Internal sync ─────────────────────────────────────────────────────────
+
     private _syncUniforms() {
-        if (!this.fillMesh.material?.uniforms) return;
+        const fill = this._fillMat;
+        const halo = this._haloMat;
+        if (!fill?.uniforms || !halo?.uniforms) return;
 
         updateFillUniforms(
-            this.fillMesh.material,
+            fill,
             this._labelDataBuffer.texture,
             this._glyphDataBuffer.texture,
             this._globeAlignment,
         );
         updateHaloUniforms(
-            this.haloMesh.material,
+            halo,
             this._labelDataBuffer.texture,
             this._glyphDataBuffer.texture,
             this._globeAlignment,
         );
-        this.fillMesh.material.uniformsNeedUpdate = true;
-        this.haloMesh.material.uniformsNeedUpdate = true;
+        fill.uniformsNeedUpdate = true;
+        halo.uniformsNeedUpdate = true;
     }
 
     syncAtlas(atlas: SDFAtlas) {
-        if (!this.fillMesh.material?.uniforms) {
-            this.fillMesh.material = createFillMaterial(
-                atlas,
-                this._labelDataBuffer.texture,
-                this._glyphDataBuffer.texture,
-                this._config.baseFontSize,
-                this._config.pxPerUnit,
-            );
-            this.haloMesh.material = createHaloMaterial(
-                atlas,
-                this._labelDataBuffer.texture,
-                this._glyphDataBuffer.texture,
-                this._config.baseFontSize,
-                this._config.pxPerUnit,
-            );
-            this.fillMesh.material.uniforms.uGlobeAlignment.value = this._globeAlignment ? 1 : 0;
-            this.haloMesh.material.uniforms.uGlobeAlignment.value = this._globeAlignment ? 1 : 0;
-            this.fillMesh.material.uniformsNeedUpdate = true;
-            this.haloMesh.material.uniformsNeedUpdate = true;
+        const fill = this._fillMat;
+        const halo = this._haloMat;
+        if (!fill?.uniforms || !halo?.uniforms) {
+            this.mesh.material = [
+                createHaloMaterial(
+                    atlas,
+                    this._labelDataBuffer.texture,
+                    this._glyphDataBuffer.texture,
+                    this._config.baseFontSize,
+                    this._config.pxPerUnit,
+                ),
+                createFillMaterial(
+                    atlas,
+                    this._labelDataBuffer.texture,
+                    this._glyphDataBuffer.texture,
+                    this._config.baseFontSize,
+                    this._config.pxPerUnit,
+                ),
+            ];
+            this.mesh.material[0].uniforms.uGlobeAlignment.value = this._globeAlignment ? 1 : 0;
+            this.mesh.material[1].uniforms.uGlobeAlignment.value = this._globeAlignment ? 1 : 0;
+            this.mesh.material[0].uniformsNeedUpdate = true;
+            this.mesh.material[1].uniformsNeedUpdate = true;
         }
         else {
-            updateFillAtlas(this.fillMesh.material, atlas);
-            updateHaloAtlas(this.haloMesh.material, atlas);
+            updateHaloAtlas(halo, atlas);
+            updateFillAtlas(fill, atlas);
             this._syncUniforms();
         }
     }
 
     /** Update pxPerUnit uniform without re-layout. */
     updatePxPerUnit(pxPerUnit: number) {
-        if (!this.fillMesh.material?.uniforms) return;
-        updateFillPxPerUnit(this.fillMesh.material, pxPerUnit);
-        updateHaloPxPerUnit(this.haloMesh.material, pxPerUnit);
-        this.fillMesh.material.uniformsNeedUpdate = true;
-        this.haloMesh.material.uniformsNeedUpdate = true;
+        const fill = this._fillMat;
+        const halo = this._haloMat;
+        if (!fill?.uniforms || !halo?.uniforms) return;
+        updateFillPxPerUnit(fill, pxPerUnit);
+        updateHaloPxPerUnit(halo, pxPerUnit);
+        fill.uniformsNeedUpdate = true;
+        halo.uniformsNeedUpdate = true;
     }
 
     update(
@@ -243,10 +271,8 @@ export class LabelMeshGroup {
     ) {
         this._globeAlignment = globeAlignment ?? this._globeAlignment;
 
-        for (const id of toRemove) {
-            this._labelDataBuffer.removeKey(id);
-            this._glyphDataBuffer.removeKey(id);
-        }
+        this._labelDataBuffer.removeKeys(toRemove);
+        this._glyphDataBuffer.removeKeys(toRemove);
         for (const l of toAdd) {
             this._writeLabel(l, false);
             this._writeGlyphs(l);
@@ -302,6 +328,8 @@ export class LabelMeshGroup {
             key: label.id,
             flatItems: this._glyphTexelScratch.subarray(0, need),
         });
+        // Cache glyph texel indices directly on the label for O(1) lookup in cull().
+        label._cachedGlyphIndices = this._glyphDataBuffer.getTexelIndicesOf(label.id) ?? null;
     }
 
     reemitGlyphs(label: Label) {
@@ -318,7 +346,7 @@ export class LabelMeshGroup {
                 continue;
             }
 
-            const glyphIndices = this._glyphDataBuffer.getTexelIndicesOf(label.id);
+            const glyphIndices = label._cachedGlyphIndices;
             if (!glyphIndices) {
                 label.isRendered = false;
                 continue;
@@ -348,15 +376,25 @@ export class LabelMeshGroup {
         this._occlusionFadeAttr.addUpdateRange(0, uploadCount);
         this._occlusionFadeAttr.needsUpdate = true;
 
-        this.fillMesh.visible = pos > 0;
-        this.haloMesh.visible = hasHalo;
+        this.mesh.visible = pos > 0;
+        // Skip the halo draw call entirely when no visible label has a halo.
+        if (this._haloMat) this._haloMat.visible = hasHalo;
+    }
+
+    /**
+     * Upload dirty DataTexture rows to GPU via PBO.
+     * Call once per frame before render.
+     */
+    uploadDirty(renderer: WebGLRenderer): void {
+        this._labelDataBuffer.uploadDirty(renderer);
+        this._glyphDataBuffer.uploadDirty(renderer);
     }
 
     dispose() {
         this.geom.dispose();
         this._labelDataBuffer.dispose();
         this._glyphDataBuffer.dispose();
-        this.fillMesh.material.dispose();
-        this.haloMesh.material.dispose();
+        this._fillMat?.dispose();
+        this._haloMat?.dispose();
     }
 }

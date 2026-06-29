@@ -1,5 +1,3 @@
-import { Label } from '../Label';
-
 export interface FontKey {
     font: string;
     weight: string;
@@ -76,16 +74,15 @@ export function parseFontString(fontString: string): FontKey {
     };
 }
 
-export function fontKeyOf(label: Label): FontKey {
-    const parsed = parseFontString(label.font);
-    return {
-        font: parsed.font,
-        // Explicit label properties override what was parsed from the font string
-        weight: label.fontWeight !== 'normal' ? label.fontWeight : parsed.weight,
-        style: label.fontStyle !== 'normal' ? label.fontStyle : parsed.style,
-    };
+/** Stable string key for a FontKey — used for Map lookups and inter-thread messages. */
+export function fontKeyStr(fontKey: FontKey): string {
+    return `${fontKey.font}|${fontKey.weight}|${fontKey.style}`;
 }
 
-export function fontKeyString(key: FontKey): string {
-    return `${key.font}|${key.weight}|${key.style}`;
+/**
+ * Compound atlas glyph key: identifies a (fontVariant, character) pair uniquely.
+ * NUL separators prevent collisions between font names / weights that contain `|`.
+ */
+export function glyphKey(fontKey: FontKey, char: string): string {
+    return `${fontKey.font}\x00${fontKey.weight}\x00${fontKey.style}\x00${char}`;
 }
