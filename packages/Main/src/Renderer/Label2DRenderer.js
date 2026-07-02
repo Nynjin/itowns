@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { LabelProfiler } from '@itowns/labels';
-import GlobeLayer from 'Core/Prefab/Globe/GlobeLayer';
 
 function isIntersectedOrOverlaped(a, b) {
     return !(a.left > b.right || a.right < b.left
@@ -133,7 +132,10 @@ class Label2DRenderer {
     }
 
     render(scene, camera) {
-        const labelLayers = this.infoTileLayer && this.infoTileLayer.layer.attachedLayers.filter(l => l.isLabelLayer && l.visible && !l.useInstancedLabels);
+        if (!this.infoTileLayer) { return; }
+        // The tiled geometry layer this renderer is bound to (owns pointCulling).
+        const tileLayer = this.infoTileLayer.layer;
+        const labelLayers = tileLayer.attachedLayers.filter(l => l.isLabelLayer && l.visible && !l.useInstancedLabels);
         if (labelLayers.length == 0) { return; }
         this.grid.reset();
 

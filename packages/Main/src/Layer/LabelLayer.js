@@ -323,6 +323,7 @@ class LabelLayer extends GeometryLayer {
         const {
             domElement,
             performance = true,
+            forceLabelCount = 0,
             instanced = false,
             async: useAsync = false,
             forceClampToTerrain = false,
@@ -347,6 +348,14 @@ class LabelLayer extends GeometryLayer {
         this.buildExtent = true;
         this.crs = config.source.crs;
         this.performance = performance;
+        // Forced label count, applied PER TILE at the source in convert() (0 =
+        // off): each tile builds at most N labels (first-N in feature order, no
+        // sort), before the per-feature style/geometry work. This mirrors
+        // MapLibre's per-tile worker cap (SymbolBucket.populate early-break) so
+        // both engines build and process a matched ~N-per-tile label workload —
+        // the fair basis for the label-rendering benchmark. Scene total is
+        // N × visible tiles, by design (MapLibre caps per tile too, not globally).
+        this.forceLabelCount = forceLabelCount;
         this.forceClampToTerrain = forceClampToTerrain;
         this.margin = margin;
         this.defaultFonts = Array.isArray(defaultFonts) && defaultFonts.length
@@ -390,6 +399,14 @@ class LabelLayer extends GeometryLayer {
         context.setZoom(extentOrTile.zoom);
 
         data.features.forEach((f) => {
+            // Per-tile forced label cap (0 = off): once this tile has produced N
+            // labels, stop — before the per-feature style/geometry/Label work runs
+            // on the rest. This mirrors MapLibre's worker-side SymbolBucket.populate
+            // early-break (per tile/bucket), so both engines build ~N labels per
+            // tile and the label pipeline processes a matched workload. First-N in
+            // feature order, no sort — same as MapLibre.
+            if (this.forceLabelCount > 0 && labels.length >= this.forceLabelCount) { return; }
+
             if (f.style.text) {
                 if (Object.keys(f.style.text).length === 0) {
                     return;
@@ -447,6 +464,10 @@ class LabelLayer extends GeometryLayer {
                 // It needs more work for LINE and POLYGON as we currently only use the first point of the entity
 
                 g.indices.forEach((i) => {
+                    // Strict per-tile cap: a single feature can emit several labels
+                    // (multi-point geometry), so re-check the budget before each.
+                    if (this.forceLabelCount > 0 && labels.length >= this.forceLabelCount) { return; }
+
                     coord.setFromArray(f.vertices, g.size * i.offset);
                     // Transform coordinate to data.crs projection
                     coord.applyMatrix4(data.matrixWorld);
@@ -626,6 +647,9 @@ class LabelLayer extends GeometryLayer {
             // resolved tiles spreads across frames instead of stalling one, then
             // request a redraw so the deferred labels appear.
             return enqueueBudgeted(() => {
+                // NOTE: the forced label count is applied earlier, per tile, in
+                // convert() (first-N features), so `result` already holds ≤ N
+                // labels for this tile. Nothing to cap here.
                 result.forEach((labels) => {
                     // Clean if there isnt' parent
                     if (!node.parent) {
@@ -684,12 +708,11 @@ class LabelLayer extends GeometryLayer {
                         });
                     }
 
-                    // Screen-grid pre-cull: with performance mode, thin overlapping
-                    // labels per tile for both DOM and instanced modes (instanced uses
-                    // synthesized bounds — see ensureInstancedLabelOffset). The
-                    // collision engine then runs its own occlusion pass on the
-                    // already-thinned instanced pool.
-                    if (this.performance) {
+                    // With a forced label count, the scene-wide budget is enforced
+                    // by admission above (labels past N are never added), so there's
+                    // nothing to cull here. Otherwise fall back to screen-grid
+                    // overlap thinning in perf mode.
+                    if (this.forceLabelCount <= 0 && this.performance) {
                         this.#removeCulledLabels(labelsNode);
                     }
                 }

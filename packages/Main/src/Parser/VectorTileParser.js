@@ -5,7 +5,7 @@ import { FeatureCollection, FEATURE_TYPES } from 'Core/Feature';
 import { globalExtentTMS } from 'Core/Tile/TileGrid';
 import { deprecatedParsingOptionsToNewOne } from 'Core/Deprecated/Undeprecator';
 import { LabelProfiler } from '@itowns/labels';
-import { enqueueBudgeted } from 'Core/Scheduler/FrameBudget';
+import { enqueueChunked } from 'Core/Scheduler/FrameBudget';
 
 const worldDimension3857 = globalExtentTMS.get('EPSG:3857').planarDimensions();
 const globalExtent = new Vector3(worldDimension3857.x, worldDimension3857.y, 1);
@@ -278,36 +278,107 @@ function decodeInWorker(buffer, wantedLayers) {
     return promise;
 }
 
+/** Features built per resumable chunk — small enough that one chunk ≪ a frame. */
+const BUILD_FEATURES_PER_CHUNK = 128;
+
 /**
- * Build Features from worker-decoded geometry commands.
+ * Resumable builder over worker-decoded geometry commands. Returns a function
+ * that processes up to `maxFeatures` features per call and returns true once all
+ * features across all layers have been built. State (layer/feature cursor) is
+ * kept in the closure so the build can be split across FrameBudget slices.
  * The decoded format per VT feature: { type, properties, cmds: Int32Array }
+ *
+ * @param {object} decodedLayers - Worker output, keyed by source-layer name.
+ * @param {object} options - Parsing options (in/out/extent).
+ * @param {FeatureCollection} collection - Target collection to fill.
+ * @returns {(maxFeatures: number) => boolean} Chunk step; true when done.
  */
-function buildFeaturesFromDecoded(decodedLayers, options, collection) {
+function makeFeatureBuilder(decodedLayers, options, collection) {
     const z = options.extent.zoom;
+    const layerNames = Object.keys(decodedLayers).filter(n => options.in.layers[n]);
+    let li = 0;
+    let fi = 0;
 
-    for (const vtLayerName of Object.keys(decodedLayers)) {
-        const layerDefs = options.in.layers[vtLayerName];
-        if (!layerDefs) { continue; }
-
-        const { features } = decodedLayers[vtLayerName];
-
-        for (const df of features) {
-            // Apply style-layer filter matching (fast, pre-compiled functions)
-            const matched = layerDefs.filter(
-                l => l.filterExpression.filter({ zoom: z }, df),
-            );
-            if (matched.length === 0) { continue; }
-
-            // Replay flat cmds directly into each matching layer's Feature
-            for (const layer of matched) {
-                const feature = collection.requestFeatureById(layer.id, df.type - 1);
-                feature.id = layer.id;
-                feature.order = layer.order;
-                feature.style = options.in.styles[feature.id];
-                replayGeometryFromCommands(df.cmds, df.properties, feature);
+    return function buildChunk(maxFeatures) {
+        let processed = 0;
+        while (li < layerNames.length) {
+            const layerDefs = options.in.layers[layerNames[li]];
+            const { features } = decodedLayers[layerNames[li]];
+            while (fi < features.length) {
+                const df = features[fi++];
+                const matched = layerDefs.filter(
+                    l => l.filterExpression.filter({ zoom: z }, df),
+                );
+                for (const layer of matched) {
+                    const feature = collection.requestFeatureById(layer.id, df.type - 1);
+                    feature.id = layer.id;
+                    feature.order = layer.order;
+                    feature.style = options.in.styles[feature.id];
+                    replayGeometryFromCommands(df.cmds, df.properties, feature);
+                }
+                if (++processed >= maxFeatures) { return false; }
             }
+            fi = 0;
+            li++;
         }
-    }
+        return true;
+    };
+}
+
+/**
+ * Build a resumable FrameBudget step that turns worker output into a
+ * FeatureCollection across slices. Each call advances one chunk and is timed as
+ * 'build'; the collection is finalized and returned once all features are built.
+ *
+ * @param {object} decodedLayers - Worker output.
+ * @param {object} options - Parsing options.
+ * @returns {() => { done: boolean, value?: FeatureCollection }} Step function.
+ */
+function makeBuildStep(decodedLayers, options) {
+    let collection = null;
+    let buildChunk = null;
+
+    return function step() {
+        const _p = LabelProfiler.begin();
+        if (!collection) {
+            options.out = options.out || {};
+            const vtLayerNames = Object.keys(decodedLayers);
+            collection = new FeatureCollection(options.out);
+            if (vtLayerNames.length === 0) {
+                LabelProfiler.end('build', _p);
+                return { done: true, value: collection };
+            }
+
+            // x,y,z tile coordinates
+            const x = options.extent.col;
+            const z = options.extent.zoom;
+            const y = options.in.isInverted ? options.extent.row : (1 << z) - options.extent.row - 1;
+
+            // Use the first decoded layer's extent for scale/position
+            const firstLayer = decodedLayers[vtLayerNames[0]];
+            const tileExtent = firstLayer.extent;
+            const size = tileExtent * 2 ** z;
+            const center = -0.5 * size;
+
+            collection.scale.set(globalExtent.x / size, -globalExtent.y / size, 1);
+            collection.position.set(tileExtent * x + center, tileExtent * y + center, 0).multiply(collection.scale);
+            collection.updateMatrixWorld();
+
+            buildChunk = makeFeatureBuilder(decodedLayers, options, collection);
+        }
+
+        const done = buildChunk(BUILD_FEATURES_PER_CHUNK);
+        LabelProfiler.end('build', _p);
+        if (!done) { return { done: false }; }
+
+        collection.removeEmptyFeature();
+        collection.features.sort((a, b) => a.order - b.order);
+        collection.updateExtent();
+        collection.extent = options.extent;
+        collection.isInverted = options.in.isInverted;
+        LabelProfiler.count('tilesDecoded', 1);
+        return { done: true, value: collection };
+    };
 }
 
 /**
@@ -500,49 +571,25 @@ function readPBFWorker(file, options) {
     }
 
     // The worker only did the PBF varint parse. Building Features (filter
-    // matching + geometry construction) is main-thread work; defer it to a
-    // budgeted slice (FrameBudget) so a burst of tiles resolving together
-    // spreads across frames instead of stalling one. Timed as 'build'.
-    return workerResult.then(decodedLayers => enqueueBudgeted(
-        () => {
-            const _pBuild = LabelProfiler.begin();
-            const vtLayerNames = Object.keys(decodedLayers);
-            const collection = new FeatureCollection(options.out);
-            if (vtLayerNames.length === 0) {
-                LabelProfiler.end('build', _pBuild);
-                return collection;
-            }
-
-            // x,y,z tile coordinates
-            const x = options.extent.col;
-            const z = options.extent.zoom;
-            const y = options.in.isInverted ? options.extent.row : (1 << z) - options.extent.row - 1;
-
-            // Use the first decoded layer's extent for scale/position
-            const firstLayer = decodedLayers[vtLayerNames[0]];
-            const tileExtent = firstLayer.extent;
-            const size = tileExtent * 2 ** z;
-            const center = -0.5 * size;
-
-            collection.scale.set(globalExtent.x / size, -globalExtent.y / size, 1);
-            collection.position.set(tileExtent * x + center, tileExtent * y + center, 0).multiply(collection.scale);
-            collection.updateMatrixWorld();
-
-            // Build Features from decoded data (filter matching + construction)
-            buildFeaturesFromDecoded(decodedLayers, options, collection);
-
-            collection.removeEmptyFeature();
-            collection.features.sort((a, b) => a.order - b.order);
-            collection.updateExtent();
-            collection.extent = options.extent;
-            collection.isInverted = options.in.isInverted;
-            LabelProfiler.end('build', _pBuild);
-            LabelProfiler.count('tilesDecoded', 1);
-            return collection;
-        },
+    // matching + geometry construction) is main-thread work; defer it to
+    // FrameBudget as a *resumable* job so even one huge tile is split across
+    // slices instead of stalling a frame. Timed as 'build'.
+    return workerResult.then(decodedLayers => enqueueChunked(
+        makeBuildStep(decodedLayers, options),
         // Skip the build if the source was disposed while this tile was queued.
         () => !(options.in._featuresCaches && options.in._featuresCaches[options.out.crs]),
-    ));
+    )).then((result) => {
+        // FrameBudget resolves with null when a job is cancelled (tile disposed
+        // while queued). Return an empty FeatureCollection so callers never
+        // receive null — LabelLayer.convert and Layer.getData don't guard for it.
+        if (result == null) {
+            const empty = new FeatureCollection(options.out);
+            empty.extent = options.extent;
+            empty.isInverted = options.in.isInverted;
+            return empty;
+        }
+        return result;
+    });
 }
 
 /**

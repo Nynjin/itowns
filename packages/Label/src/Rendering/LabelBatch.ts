@@ -4,7 +4,6 @@ import {
     Mesh,
     PlaneGeometry,
     ShaderMaterial,
-    WebGLRenderer,
 } from 'three';
 import { SDFAtlas } from '../Shaping/SDFAtlas';
 import {
@@ -382,12 +381,12 @@ export class LabelBatch {
     }
 
     /**
-     * Upload dirty DataTexture rows to GPU via PBO.
+     * Flush dirty DataTexture rows via three's managed partial-upload path.
      * Call once per frame before render.
      */
-    uploadDirty(renderer: WebGLRenderer): void {
-        this._labelDataBuffer.uploadDirty(renderer);
-        this._glyphDataBuffer.uploadDirty(renderer);
+    uploadDirty(): void {
+        this._labelDataBuffer.uploadDirty();
+        this._glyphDataBuffer.uploadDirty();
     }
 
     dispose() {

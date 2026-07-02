@@ -119,9 +119,9 @@ export class InstancedLabelManager {
             }
         }
 
-        // ── PBO upload: push dirty DataTexture rows to GPU asynchronously ──
+        // ── Flush dirty DataTexture rows (three managed partial upload) ──
         if (this._batch) {
-            this._batch.uploadDirty(this._renderer);
+            this._batch.uploadDirty();
         }
 
         // ── VP-matrix checks ─────────────────────────────────────────────────
@@ -169,8 +169,12 @@ export class InstancedLabelManager {
         const farCullChanged = this._applyFarCull(camera);
         LabelProfiler.end('farcull', _p);
 
-        if (collisionRan || fadesChanged || farCullChanged
-            || (anySynced && (this._toRemoveBuffer.length > 0 || this._toStyleBuffer.length > 0 || this._toLayoutBuffer.length > 0))) {
+        // cull() rebuilds the instance buffer. It MUST run whenever _syncGroup ran
+        // this frame, because LabelBatch.update() resets geom.instanceCount = 0 —
+        // skipping the cull would leave instanceCount at 0 and blank every label
+        // for that frame (the flicker seen when layoutBudgetPerTick is low and
+        // _syncGroup runs across many consecutive frames).
+        if (collisionRan || fadesChanged || farCullChanged || anySynced) {
             _p = LabelProfiler.begin();
             if (this._atlas && this._batch) {
                 this._batch.cull(this._atlas.labels);
@@ -274,6 +278,7 @@ export class InstancedLabelManager {
         LabelProfiler.end('atlas', _pAtlas);
         const dirtyMap = fontGroup.dirty;
         const budget = this.config.layoutBudgetPerTick;
+        const timeBudget = this.config.layoutTimeBudgetMs;
 
         this._toAddBuffer.length = 0;
         this._toRemoveBuffer.length = 0;
@@ -284,10 +289,20 @@ export class InstancedLabelManager {
         this._hasPendingWork = false;
 
         const _pShape = LabelProfiler.begin();
+        // Budget layoutText() by count AND wall-clock time. The time cap bounds
+        // the per-frame cost regardless of per-label shaping cost (CJK ≫ Latin),
+        // but at least one label is always processed (layoutCount > 0 guard) so
+        // we never deadlock. Cheap entries (Dispose/StyleUpdate) are not budgeted.
+        // NB: use an independent timestamp, not _pShape — LabelProfiler.begin()
+        // returns 0 when the profiler is disabled (production).
+        const shapeStart = performance.now();
+        const layoutBudgetHit = () =>
+            (budget > 0 && layoutCount >= budget) ||
+            (timeBudget > 0 && layoutCount > 0 && performance.now() - shapeStart >= timeBudget);
         for (const [label, level] of dirtyMap) {
             switch (level) {
                 case DirtyLevel.Add:
-                    if (budget > 0 && layoutCount >= budget) {
+                    if (layoutBudgetHit()) {
                         this._hasPendingWork = true;
                         continue;
                     }
@@ -299,7 +314,7 @@ export class InstancedLabelManager {
                     this._toRemoveBuffer.push(label.id);
                     break;
                 case DirtyLevel.LayoutUpdate:
-                    if (budget > 0 && layoutCount >= budget) {
+                    if (layoutBudgetHit()) {
                         this._hasPendingWork = true;
                         continue;
                     }

@@ -177,7 +177,10 @@ class GlobeLayer extends TiledGeometryLayer {
 
         if (this._useFarCulling) {
             // Project the vector camera -> sphere center onto the camera axis.
-            this._cameraToPoint.subVectors(point, camera.camera3D.position);
+            // camera may be the iTowns wrapper (has .camera3D) or a raw THREE camera
+        // (e.g. when called from Label2DRenderer which receives view.camera3D).
+        const camPos = camera.camera3D ? camera.camera3D.position : camera.position;
+        this._cameraToPoint.subVectors(point, camPos);
             const projectedDistance = this._cameraToPoint.dot(this._cameraForward);
 
             // Cull if distance to point is larger than the horizon distance.

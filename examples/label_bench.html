@@ -9,7 +9,8 @@
     {
         "imports": {
             "itowns": "../dist/itowns.js",
-            "three": "https://unpkg.com/three@0.182.0/build/three.module.js"
+            "three": "https://unpkg.com/three@0.182.0/build/three.module.js",
+            "@itowns/bench": "../packages/Bench/lib/Main.js"
         }
     }
     </script>
@@ -441,9 +442,21 @@
                 <button class="btn dataset-btn" id="btn-ds-ofm"
                     title="CARTO Positron (OSM-based) — worldwide, proper zoom-level filtering, no API key, good label density">CARTO</button>
                 <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
-                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">PREFILT</span>
-                <button class="btn toggle-btn on" id="btn-cap-500"
-                    title="Toggles the per-tile screen-grid pre-filter (performance flag) for BOTH 3D and DOM. On = thinned per tile; off = full label pool. Rebuilds the scene.">Screen-grid filter</button>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">FORCE N</span>
+                <input class="btn" id="inp-force-n" type="number" min="0" step="10" value="0"
+                    style="width:64px;text-align:right;"
+                    title="Force label count N per tile (0 = off / full pool). Every engine — 3D, DOM and MapLibre — keeps the same top-N labels per tile, so all modes process an identical label budget regardless of dataset density. Press Enter / blur to apply (rebuilds the scene)." />
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">GEOM</span>
+                <button class="btn toggle-btn on" id="btn-elev"
+                    title="Toggle terrain elevation layers (IGN MNT + WORLD DTM). Off = flat globe. Rebuilds the scene.">Elevation</button>
+                <button class="btn toggle-btn on" id="btn-bati"
+                    title="Toggle extruded 3D buildings (VTBuilding FeatureGeometryLayer). Rebuilds the scene.">Buildings</button>
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;">BASELINE</span>
+                <button class="btn" id="btn-maplibre"
+                    style="background:rgba(20,120,60,0.12);border-color:rgba(20,140,70,0.35);color:#0a7a3a;"
+                    title="Instrumented MapLibre GL run (local maplibre-gl, no CDN): driven through the SAME 12-step camera plan as iTowns, probed for the same per-stage schema (workerWait, candidate, occlusion, gpu…), exported into one unified JSON alongside the iTowns results.">▶ MapLibre (instrumented)</button>
             </div>
         </div>
 
@@ -505,6 +518,7 @@
     import * as THREE from 'three';
     import * as itowns from 'itowns';
     import Stats from '../node_modules/three/examples/jsm/libs/stats.module.js';
+    import { MapLibreProbe, driveToCamera as mlDriveToCamera } from '@itowns/bench';
 
     const BASE_TITLE = 'iTowns - Label Benchmark';
     function enforceTitleLock() {
@@ -544,6 +558,7 @@
     // ── Scene factory ────────────────────────────────────────────────────────
 
     async function setupScene() {
+        nextCacheBust(); // fresh nonce → all tile URLs are cold
         const viewerDiv = document.getElementById('viewerDiv');
 
         // [BUG FIX] Fetch the map imagery configuration completely before doing anything.
@@ -576,8 +591,14 @@
         // synchronously here. This prevents the LAYERS_INITIALIZED event from firing
         // instantly before the scene really starts pulling down tiles (which was causing 
         // the camera to race ahead in 'none' mode).
-        osmData.source = new itowns.TMSSource(osmData.source);
-        view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
+        // OSM raster imagery basemap — skip it to match MapLibre (vector-only, no
+        // raster ortho). See `useImagery` note above.
+        if (useImagery) {
+            // Use the same OSM tile URL as MapLibre, with cache-bust.
+            osmData.source.url = bustUrl(ML_RASTER_TILES);
+            osmData.source = new itowns.TMSSource(osmData.source);
+            view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
+        }
 
         // 1. Await the elevation configurations BEFORE continuing
         async function addElevationLayerFromConfig(url) {
@@ -587,71 +608,76 @@
             return view.addLayer(new itowns.ElevationLayer(config.id, config));
         }
 
-        await addElevationLayerFromConfig('./layers/JSONLayers/IGN_MNT_HIGHRES.json');
-        await addElevationLayerFromConfig('./layers/JSONLayers/WORLD_DTM.json');
+        if (useElevation) {
+            await addElevationLayerFromConfig('./layers/JSONLayers/IGN_MNT_HIGHRES.json');
+            await addElevationLayerFromConfig('./layers/JSONLayers/WORLD_DTM.json');
+        }
 
-        const buildingsSource = new itowns.VectorTilesSource({
-            style: "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json",
-            // FIX 1: Simplify the filter. Just look for layers with 'bati' in the name.
-            zoom: { max: 16 },
-            filter: (layer) => {
-                return layer['source-layer']?.includes('bati');
-            },
-        });
-
-        var buildingsLayer = new itowns.FeatureGeometryLayer('VTBuilding', {
-            source: buildingsSource,
-            zoom: { min: 14 }, // FIX 2: Lowered slightly so they pop in sooner
-            accurate: false,
-            style: {
-                fill: {
-                    // FIX 3: Force a visible color so they don't blend into the terrain
-                    color: '#e0e4e8', 
-                    // FIX 4: Check for z_min (common in IGN data) as well as alti_sol
-                    base_altitude: (p) => p.z_min ?? p.alti_sol ?? 0,
-                    extrusion_height: (p) => p.hauteur ?? 15,
-                }
-            },
-        });
-
-        await view.addLayer(buildingsLayer);
-
-        if (labelMode !== 'none') {
-            // The screen-grid filter toggles `performance` for BOTH modes, so DOM
-            // and 3D are always compared on equal footing (both filtered, or both
-            // full-pool).
-            const addLabelLayer = {
-                'instanced':       { performance: useScreenGridFilter, instanced: true,  async: false },
-                'dom-perf':        { performance: useScreenGridFilter, instanced: false, async: false },
-            }[labelMode] ?? { performance: useScreenGridFilter, instanced: true, async: false };
-
-            let mapSource;
-            if (datasetMode === 'openfreemap') {
-                // CARTO Positron — OSM-based, worldwide, no API key, standard Mapbox GL v1 JSON,
-                // proper minzoom/maxzoom per layer (unlike IGN which has broken zoom filtering)
-                mapSource = new itowns.VectorTilesSource({
-                    style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
-                });
-            } else {
-                // IGN Plan v2 with noisy layer filtering
-                mapSource = new itowns.VectorTilesSource({
-                    style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
-                    filter: (layer) =>
-                        !layer['source-layer'].includes('bati_surf') &&
-                        !layer['source-layer'].includes('oro_')      &&
-                        !layer['source-layer'].includes('routier_ponc') &&
-                        !layer['source-layer'].includes('parcellaire') &&
-                        !layer['source-layer'].includes('fond'),
-                });
-            }
-
-            view.addLayer(new itowns.FeatureGeometryLayer('MVT', {
-                source: mapSource,
-                addLabelLayer,
-                style: {
-                    fill: { base_altitude: () => 0.1 },
+        if (useBuildings) {
+            const buildingsSource = new itowns.VectorTilesSource({
+                style: "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json",
+                // FIX 1: Simplify the filter. Just look for layers with 'bati' in the name.
+                zoom: { max: 16 },
+                filter: (layer) => {
+                    return layer['source-layer']?.includes('bati');
                 },
-            }));
+            });
+
+            const buildingsLayer = new itowns.FeatureGeometryLayer('VTBuilding', {
+                source: buildingsSource,
+                zoom: { min: 14 }, // FIX 2: Lowered slightly so they pop in sooner
+                accurate: false,
+                style: {
+                    fill: {
+                        // FIX 3: Force a visible color so they don't blend into the terrain
+                        color: '#e0e4e8',
+                        // FIX 4: Check for z_min (common in IGN data) as well as alti_sol
+                        base_altitude: (p) => p.z_min ?? p.alti_sol ?? 0,
+                        extrusion_height: (p) => p.hauteur ?? 15,
+                    }
+                },
+            });
+
+            await view.addLayer(buildingsLayer);
+        }
+
+        {
+            // In `none` mode: skip the MVT layer entirely so the baseline is pure
+            // raster (no vector fetch, no PBF decode, no geometry build). This
+            // mirrors MapLibre's baseline (layers:[], no vector source activity).
+            // The label cost delta (none → labeled) then captures the FULL pipeline
+            // cost of adding vector labels from scratch — fair for both engines.
+            if (labelMode !== 'none') {
+                let mapSource;
+                if (datasetMode === 'openfreemap') {
+                    mapSource = new itowns.VectorTilesSource({
+                        style: bustUrl('https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'),
+                    });
+                } else {
+                    mapSource = new itowns.VectorTilesSource({
+                        style: bustUrl('https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json'),
+                        filter: (layer) =>
+                            !layer['source-layer'].includes('bati_surf') &&
+                            !layer['source-layer'].includes('oro_')      &&
+                            !layer['source-layer'].includes('routier_ponc') &&
+                            !layer['source-layer'].includes('parcellaire') &&
+                            !layer['source-layer'].includes('fond'),
+                    });
+                }
+
+                const mvtConfig = {
+                    source: mapSource,
+                    style: {
+                        fill: { base_altitude: () => 0.1 },
+                    },
+                    addLabelLayer: {
+                        'instanced':       { performance: true, forceLabelCount: _forcedLabelCount, instanced: true,  async: false },
+                        'dom-perf':        { performance: true, forceLabelCount: _forcedLabelCount, instanced: false, async: false },
+                    }[labelMode] ?? { performance: true, forceLabelCount: _forcedLabelCount, instanced: true, async: false },
+                };
+
+                view.addLayer(new itowns.FeatureGeometryLayer('MVT', mvtConfig));
+            }
         }
 
         return new Promise((resolve) => {
@@ -866,6 +892,9 @@
                 ? view.instancedLabelManagerAsync
                 : view.instancedLabelManager;
             if (!mgr) return { total: 0, isCandidate: 0, shouldRender: 0, isRendered: 0, groups: 0 };
+            // Count ALL loaded instanced labels (manager registry = every loaded
+            // tile, on- and off-screen). This is the population the strict
+            // forced-count admission cap bounds, so under forceN it reads ~N.
             let total = 0, isCandidate = 0, shouldRender = 0, isRendered = 0;
             for (const label of mgr._labelsById.values()) {
                 total++;
@@ -1136,6 +1165,14 @@
         return ms;
     }
 
+    // Used JS heap in MB (Chromium-only performance.memory; 0 elsewhere). Whole-
+    // page heap, so during a mode it reflects that engine's live allocation. Note:
+    // this is JS heap, NOT GPU VRAM — there is no web API for VRAM.
+    function jsHeapMB() {
+        const m = performance.memory;
+        return m ? m.usedJSHeapSize / 1048576 : 0;
+    }
+
     // Per-frame drain: consume all entries that arrived since last frame.
     // Returns { ms, calls, peak, bytes } for this frame.
     let _lastNetFrame = { ms: 0, calls: 0, peak: 0, bytes: 0 };
@@ -1197,6 +1234,15 @@
     ];
     const PROF_KEYS = STAGE_DEFS.filter(s => s.src === 'prof').map(s => s.key);
 
+    // MapLibre is a first-class comparison mode. Its probe populates this subset
+    // of the shared stage taxonomy (see packages/Bench/src/mlProbe.ts), so mark
+    // those stages as applicable to the 'maplibre' mode → the report's pipeline
+    // breakdown renders the same rows for it as for the iTowns modes.
+    const MAPLIBRE_STAGES = new Set(['net', 'workerWait', 'register', 'layout', 'geomBuild', 'atlas', 'webgl', 'gpu', 'candidate', 'priority', 'occlusion']);
+    STAGE_DEFS.forEach((d) => {
+        if (MAPLIBRE_STAGES.has(d.key)) { d.modes = [...d.modes, 'maplibre', 'maplibre-none']; }
+    });
+
     // Worker mode is temporarily disabled in benchmark/UI.
 
     // Per-stage, per-method detail: the concrete strategy each pipeline uses for
@@ -1204,8 +1250,14 @@
     // the breakdown for the table's own mode (so DOM rows describe DOM, etc.).
     //   { <stageKey>: { <mode>: { name, ref } } }   ('all' = same for every mode)
     const STAGE_DETAIL = {
-        net:       { all: { name: 'network RTT (Resource Timing API: responseEnd − requestStart) — async, does NOT block the frame', ref: 'PerformanceObserver → PerformanceResourceTiming' } },
-        workerWait: { all: { name: 'PBF varint parse in a Web Worker — off the main thread (post → result wall time, non-blocking)', ref: 'VectorTileParser.decodeInWorker → VTDecodeWorker' } },
+        net:       {
+            all: { name: 'network RTT (Resource Timing API: responseEnd − requestStart) — async, does NOT block the frame', ref: 'PerformanceObserver → PerformanceResourceTiming' },
+            maplibre: { name: 'vector-tile / glyph / sprite fetch RTT (Resource Timing) — async, off-thread', ref: 'PerformanceObserver → PerformanceResourceTiming (CARTO Positron PBF)' },
+        },
+        workerWait: {
+            all: { name: 'PBF varint parse in a Web Worker — off the main thread (post → result wall time, non-blocking)', ref: 'VectorTileParser.decodeInWorker → VTDecodeWorker' },
+            maplibre: { name: 'full worker round-trip per tile (PBF decode + SymbolBucket.populate + performSymbolLayout) — off-thread wall time', ref: 'Actor.sendAsync("LT"/"RT") → worker_source (mlProbe wrapActors)' },
+        },
         build:     { all: { name: 'main-thread Feature build from worker output (filter match + geometry replay), deferred via FrameBudget', ref: 'VectorTileParser.readPBFWorker → buildFeaturesFromDecoded (Core/Scheduler/FrameBudget)' } },
         cam:       { all: { name: 'camera.update()', ref: 'MainLoop.step → Camera.update' } },
         tiles:     { all: { name: 'tile-tree traversal + command scheduling', ref: 'MainLoop._update → LabelLayer.update' } },
@@ -1213,30 +1265,42 @@
             instanced: { name: 'CPU cost to submit the draw (label meshes on layer 31)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
             'dom-perf': { name: 'CPU cost to submit the draw (tiles only; labels are DOM)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
             none:      { name: 'CPU cost to submit the draw (no labels)', ref: 'c3DEngine.renderView → WebGLRenderer.render' },
+            maplibre: { name: 'CPU cost to submit the symbol/fill draw calls (per-layer drawElements)', ref: 'gl.drawElements / drawArrays (mlProbe wrapGL)' },
         },
-        gpu:       { all: { name: 'actual GPU execution of the render (async timer query, incl. buffer/texture uploads)', ref: 'c3DEngine GPU timer → EXT_disjoint_timer_query' } },
-        geomBuild: { all: { name: 'Feature2Mesh: features → THREE meshes (Earcut / extrude / buffers)', ref: 'Converter/Feature2Mesh.convert' } },
+        gpu:       {
+            all: { name: 'actual GPU execution of the render (async timer query, incl. buffer/texture uploads)', ref: 'c3DEngine GPU timer → EXT_disjoint_timer_query' },
+            maplibre: { name: 'actual GPU execution of MapLibre\'s render pass (async timer query bracketing map._render)', ref: 'EXT_disjoint_timer_query_webgl2 (mlProbe wrapRender)' },
+        },
+        geomBuild: {
+            all: { name: 'Feature2Mesh: features → THREE meshes (Earcut / extrude / buffers)', ref: 'Converter/Feature2Mesh.convert' },
+            maplibre: { name: 'symbol vertex/index buffer upload to the GPU (quad + collision geometry)', ref: 'gl.bufferData / bufferSubData (mlProbe wrapGL)' },
+        },
         parse:     { all: { name: 'vector features → Label objects', ref: 'LabelLayer.convert' } },
         register:  {
             instanced: { name: 'add to font group + build InstancedLabel', ref: 'InstancedLabelManager.addLabels' },
             'dom-perf': { name: 'append <div> to the DOM tree', ref: 'LabelLayer LabelsNode.addLabel' },
+            maplibre: { name: 'symbol feature creation in the worker (filter + token resolve + shaping setup), i.e. populate − sort', ref: 'SymbolBucket.populate (worker, __bench.create − sort)' },
         },
         layout:    {
             instanced: { name: 'layoutText() — shape glyph quads', ref: 'Shaping/TextLayout → InstancedLabelManager._syncGroup' },
             'dom-perf': { name: 'getBoundingClientRect() — browser reflow', ref: 'Core/Label.initDimensions' },
+            maplibre: { name: 'glyph shaping + symbol layout in the worker (quad + collision-box generation)', ref: 'performSymbolLayout (worker, __bench.layout)' },
         },
         thin:      { all: { name: 'per-tile screen-grid pre-filter', ref: 'LabelLayer.#removeCulledLabels → ScreenGrid.insert' } },
         candidate: {
             instanced: { name: 'visibility/opacity filter + distance·size score', ref: 'LabelCollisionEngine.evaluate (phase 1)' },
             'dom-perf': { name: 'frustum + globe-horizon culling', ref: 'Label2DRenderer.culling' },
+            maplibre: { name: 'main-thread placement pass — build bucket parts + run the collision index', ref: 'Style._updatePlacement → Placement.placeLayerBucketPart (mlProbe wrapPlacement)' },
         },
         priority:  {
             instanced: { name: 'scatter into depth buckets by score', ref: 'LabelCollisionEngine.evaluate (phase 2)' },
             'dom-perf': { name: 'sort grid.visible by label order', ref: 'Label2DRenderer.render (grid.visible.sort)' },
+            maplibre: { name: 'symbol priority sort by symbol-sort-key (worker)', ref: 'SymbolBucket.populate sort (worker, __bench.sort)' },
         },
         occlusion: {
             instanced: { name: 'hierarchical occupancy bitmap', ref: 'LabelCollisionEngine.evaluate (phase 3) → HierarchicalBitmap' },
             'dom-perf': { name: 'screen-grid AABB overlap test', ref: 'Label2DRenderer.render → ScreenGrid.insert' },
+            maplibre: { name: 'apply placement result + cross-tile fade/opacity update', ref: 'Placement.updateLayerOpacities (mlProbe wrapPlacement)' },
         },
         position:  {
             instanced: { name: 'write GPU data textures', ref: 'LabelBatch.update' },
@@ -1246,7 +1310,10 @@
             instanced: { name: 'remove from font group + GPU slot', ref: 'InstancedLabelManager.removeLabels' },
             'dom-perf': { name: 'removeChild from the DOM', ref: 'LabelLayer LabelsNode.removeLabel' },
         },
-        atlas:     { instanced: { name: 'rasterize new glyphs (TinySDF) + flag full-atlas GPU re-upload', ref: 'LabelAtlasManager.getAtlas → SDFAtlas.setChars' } },
+        atlas:     {
+            instanced: { name: 'rasterize new glyphs (TinySDF) + flag full-atlas GPU re-upload', ref: 'LabelAtlasManager.getAtlas → SDFAtlas.setChars' },
+            maplibre: { name: 'SDF glyph atlas texture upload to the GPU (MapLibre also uses signed-distance-field glyphs)', ref: 'gl.texImage2D / texSubImage2D — GlyphManager/GlyphAtlas (mlProbe wrapGL)' },
+        },
         cull:      { instanced: { name: 'compact GPU instance buffers', ref: 'LabelBatch.cull' } },
         fades:     { instanced: { name: 'advance occlusion fade tweens', ref: 'InstancedLabelManager._advanceFades' } },
         farcull:   { instanced: { name: 'far-distance cull', ref: 'InstancedLabelManager._applyFarCull' } },
@@ -1290,6 +1357,7 @@
                 counts,
                 net: { ..._lastNetFrame },
                 blockedMs: drainLongTaskQueue(),
+                memMB: jsHeapMB(),
             });
         }
 
@@ -1404,6 +1472,8 @@
                 trisAvg: Math.round(avg('tris')),
                 trisPeak: peak('tris'),
                 tilesLoadedAvg: Math.round(avg('tilesLoaded')),
+                memAvg: avg('memMB'),
+                memPeak: peak('memMB'),
                 stages,
                 counts,
             };
@@ -1663,6 +1733,22 @@
         const sign = pct >= 0 ? '+' : '';
         return `<span style="color:${pct >= 0 ? '#1a7a4a' : '#b02020'}">${sign}${pct.toFixed(0)}%</span>`;
     }
+    // Within-engine label cost (mode vs its OWN no-label baseline): blue = faster
+    // (good / cheap labels), purple = slower (bad / expensive labels).
+    function deltaSelf(modeFps, baseFps) {
+        if (baseFps == null || modeFps == null) return '—';
+        const pct = (modeFps / baseFps - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        return `<span style="color:${pct >= 0 ? '#1565c0' : '#7b1fa2'};font-weight:600;">${sign}${pct.toFixed(0)}%</span>`;
+    }
+    // Cross-engine (mode vs the iTowns no-label baseline): green = faster than
+    // iTowns (good), red = slower than iTowns (bad).
+    function deltaVsItowns(modeFps, baseFps) {
+        if (baseFps == null || modeFps == null) return '—';
+        const pct = (modeFps / baseFps - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        return `<span style="color:${pct >= 0 ? '#1a7a4a' : '#b02020'};font-weight:600;">${sign}${pct.toFixed(0)}%</span>`;
+    }
 
     // ── Consolidated report ───────────────────────────────────────────────────
     // Single source of truth for both single-mode and full (multi-mode) runs.
@@ -1769,6 +1855,8 @@
             callsPeak: Math.max(...sums.map(x => x.callsPeak ?? 0)),
             trisAvg: Math.round(wAvg('trisAvg')),
             trisPeak: Math.max(...sums.map(x => x.trisPeak ?? 0)),
+            memAvg: wAvg('memAvg'),
+            memPeak: Math.max(...sums.map(x => x.memPeak ?? 0)),
             stages,
             counts,
         };
@@ -1964,14 +2052,15 @@
         let html = '';
 
         // ── Section 1: Overview (one row per mode) ────────────────────────────
-        html += `<div class="rep-section-title">Overview — frame-weighted averages across all steps</div>`;
+        html += `<div class="rep-section-title">Overview — frame-weighted averages across all steps. NOTE: iTowns is vsync-capped at the display refresh (~100 fps), so its FPS/ms hide true cost — read <b>cpu/f</b> and <b>lbl/f</b> (label pipeline CPU) for the fair comparison, not fps.</div>`;
         html += `<table class="rep-table"><thead><tr>
                 <th title="Label mode">Mode</th>
                 <th title="Average FPS">fps</th>
                 <th title="5th-percentile FPS (sustained floor)">p5</th>
                 <th title="1st-percentile FPS (worst hitches)">p1</th>
                 <th title="FPS standard deviation — lower is smoother">σ</th>
-                <th title="FPS delta vs No-labels baseline">Δ%</th>
+                <th title="Within-engine label cost: FPS vs this engine's OWN no-label baseline (iTowns modes vs None, MapLibre vs MapLibre-no-labels). Blue = faster/cheaper, purple = slower/costlier.">Δ self</th>
+                <th title="Cross-engine: FPS vs the iTowns No-labels baseline. Green = faster than iTowns, red = slower. Shown for MapLibre rows.">Δ iT</th>
                 <th title="Average frame time">ms/f</th>
                 <th title="Worst frame time (ms)">wf</th>
                 <th title="Total CPU-active JS time per frame (render loop only)">cpu/f</th>
@@ -1981,19 +2070,31 @@
                 <th class="grp" title="Total labels in manager (avg)">lbls</th>
                 <th title="Rendered (visible) labels (avg)">rend</th>
                 <th title="WebGL draw calls (avg)">calls</th>
+                <th class="grp" title="Used JS heap (MB) — avg / peak over the run. Chromium only (performance.memory). This is JS heap, not GPU VRAM.">mem MB</th>
                 <th class="grp" title="Time to first rendered label">1st lbl</th>
                 <th title="Scene-ready milestone">scene</th>
             </tr></thead><tbody>`;
+        const mlBaseFps = overallOf(_reportState.modeResults['maplibre-none'])?.fpsAvg ?? null;
+        const isMl = m => m === 'maplibre' || m === 'maplibre-none';
         for (const mode of modes) {
             const o = overallOf(_reportState.modeResults[mode]);
             if (!o) { continue; }
             const cs = _reportState.coldStartByMode[mode] || {};
             const isBase = mode === 'none';
+            const isOwnBase = mode === 'none' || mode === 'maplibre-none';
+            // Δ self (blue/purple): within-engine label cost. Only distinct from
+            // Δ iT for MapLibre (vs its own no-label baseline); for iTowns label
+            // modes "self" == "vs iTowns None", so it's left blank to avoid dupes.
+            const dSelf = mode === 'maplibre' ? deltaSelf(o.fpsAvg, mlBaseFps) : '—';
+            // Δ iTowns (green/red): every label mode vs the iTowns None baseline —
+            // 3D, DOM, and both MapLibre rows.
+            const dIt = isBase ? '—' : deltaVsItowns(o.fpsAvg, baseFps);
             html += `<tr>
-                <td style="color:${isBase ? 'rgba(0,0,0,0.45)' : '#1a2030'};font-weight:600;">${MODE_SHORT[mode]}${isBase ? ' <span style="opacity:0.5;font-weight:400;font-size:9px">(base)</span>' : ''}</td>
+                <td style="color:${isBase ? 'rgba(0,0,0,0.45)' : '#1a2030'};font-weight:600;">${MODE_SHORT[mode]}${isOwnBase ? ' <span style="opacity:0.5;font-weight:400;font-size:9px">(base)</span>' : ''}</td>
                 ${fpsCell(o.fpsAvg)}${fpsCell(o.fpsP5)}${fpsCell(o.fpsP1)}
                 <td>${fmt(o.fpsSigma, 1)}</td>
-                <td>${isBase ? '—' : deltaPct(o.fpsAvg, baseFps)}</td>
+                <td>${dSelf}</td>
+                <td>${dIt}</td>
                 <td>${fmt(o.msAvg, 1)}</td>
                 <td style="color:${o.msWorst > 100 ? '#b02020' : o.msWorst > 50 ? '#8a5800' : '#555'}">${fmt(o.msWorst, 0)}</td>
                 <td style="color:${msColor(o.cpuAvg, 10, 20)}">${fmt(o.cpuAvg, 1)}</td>
@@ -2003,11 +2104,43 @@
                 <td class="grp">${o.lblAvg.toLocaleString()}</td>
                 <td>${o.rendAvg.toLocaleString()}</td>
                 <td>${o.callsAvg}</td>
+                <td class="grp" title="avg / peak">${o.memAvg ? `${fmt(o.memAvg, 0)} / ${fmt(o.memPeak, 0)}` : '—'}</td>
                 <td class="grp" style="color:#1a7a4a">${renderTimingLabel(cs.firstLabel)}</td>
                 <td>${renderTimingLabel(cs.sceneReady)}</td>
             </tr>`;
         }
         html += `</tbody></table>`;
+
+        // ── Section 1b: Label weight per step (THE headline the benchmark is for)
+        // Main-thread label-pipeline CPU ms/frame per step, per engine, with the
+        // heaviest flagged — so you can read step-by-step who is slower/heavier at
+        // the LABEL work specifically. Vsync-independent, so it's fair whether or
+        // not iTowns is capped. This is the "weight of iTowns vs MapLibre label".
+        const labelModes = modes.filter(m => m !== 'none' && m !== 'maplibre-none');
+        if (labelModes.length) {
+            html += `<div class="rep-section-title">Label weight per step — label-pipeline CPU ms/frame (lower = lighter/better). <b>Green bold = lightest</b> (the winner that step); the "lightest" column names it. This is the vsync-independent "who's cheapest at labels".</div>`;
+            html += `<table class="rep-table"><thead><tr><th>Step</th>`;
+            for (const m of labelModes) { html += `<th title="${MODE_LABELS[m] || m}">${MODE_SHORT[m]}</th>`; }
+            html += `<th class="grp">lightest</th></tr></thead><tbody>`;
+            const stepCount = _reportState.modeResults[labelModes[0]].length;
+            for (let i = 0; i < stepCount; i++) {
+                const nm = (_reportState.modeResults[labelModes[0]][i]?.step?.name || `Step ${i + 1}`).replace(/^\d+\.\s*/, '');
+                const vals = labelModes.map(m => {
+                    const s = _reportState.modeResults[m]?.[i]?.summary;
+                    return s ? labelCpuOf(s) : null;
+                });
+                const valid = vals.filter(v => v != null && v > 0);
+                const min = valid.length ? Math.min(...valid) : null;
+                const lightestIdx = min != null ? vals.findIndex(v => v != null && v === min) : -1;
+                html += `<tr><td>${nm}</td>`;
+                vals.forEach((v, j) => {
+                    const isMin = j === lightestIdx;
+                    html += `<td style="color:${isMin ? '#1a7a4a' : msColor(v ?? 0, 4, 10)};${isMin ? 'font-weight:700;' : ''}">${v == null ? '—' : fmt(v, 2)}</td>`;
+                });
+                html += `<td class="grp" style="font-weight:600;color:#1a7a4a">${lightestIdx >= 0 ? MODE_SHORT[labelModes[lightestIdx]] : '—'}</td></tr>`;
+            }
+            html += `</tbody></table>`;
+        }
 
         // ── Section 2: per-mode pipeline breakdown (stages as rows) ───────────
         for (const mode of modes) {
@@ -2239,7 +2372,10 @@
         const payload = {
             mode,
             dataset: datasetMode,
-            screenGridFilter: useScreenGridFilter,
+            forcedLabelCount: _forcedLabelCount,
+            elevation: useElevation,
+            buildings: useBuildings,
+            imagery: useImagery,
             coldStart: { ...coldStart },
             batchMax: _reportState.batchMaxByMode[mode] || 0,
             atlasTexels: _reportState.atlasTexelsByMode[mode] || 0,
@@ -2342,11 +2478,25 @@
     let _smCpu = 0, _smTiles = 0, _smBuild = 0, _smShape = 0, _smCollide = 0, _smRender = 0;
 
     // ── Dataset / pre-filter state ───────────────────────────────────────────
-    let datasetMode = 'ign';            // 'ign' | 'openfreemap'
-    // When true, the instanced label layer runs the same per-tile screen-grid
-    // thinning that DOM mode uses (performance:true). DOM always uses it; this
-    // toggles it for 3D so you can compare thinned vs full-pool behaviour.
-    let useScreenGridFilter = true;
+    let datasetMode = 'openfreemap';    // 'ign' | 'openfreemap' — CARTO Positron
+                                        // so iTowns renders the SAME vector data
+                                        // MapLibre does (fair cross-engine base).
+    // Forced label count N per tile (0 = off / full pool). Replaces the old
+    // screen-grid pre-filter: when > 0 every engine (3D, DOM, MapLibre) keeps the
+    // same top-N labels per tile, so all modes process an identical label budget.
+    let _forcedLabelCount = 0;
+    // OFF by default for cross-engine parity: MapLibre/Positron on a globe has no
+    // terrain and no 3D buildings, so these are iTowns-only overhead. Flip them on
+    // only for iTowns-specific benchmarking (they cancel in the label delta, but
+    // keep them off to compare absolute base cost against MapLibre fairly).
+    let useElevation = false;    // terrain elevation layers
+    let useBuildings = false;    // extruded 3D buildings (VTBuilding)
+    // OSM RASTER basemap (PNG tiles) — the visible "world map" (roads/places/land
+    // baked into the raster). ON for BOTH engines: iTowns adds it as a ColorLayer,
+    // and MapLibre draws the SAME raster tiles (see mlStyleFor → injectRasterSource)
+    // with only Positron's symbol layers on top. Identical basemap pixels + identical
+    // fetch/upload overhead on both — a real full map, not a blank globe or flat color.
+    let useImagery = true;
 
     function placementMoved(p) {
         const q = _lastPlacement;
@@ -2385,6 +2535,16 @@
 
         _rigCam.matrixWorld.decompose(cam.position, cam.quaternion, cam.scale);
         cam.updateMatrixWorld(true);
+
+        // Scripted placement bypasses GlobeControls, so the VIEW_EVENTS.CAMERA_MOVED
+        // that normally triggers GlobeView's near/far + horizon recompute never
+        // fires. Without this the far plane and horizon distance stay frozen at the
+        // initial altitude — the globe gets clipped (vanishes toward the bottom)
+        // and tiles get horizon-culled (blue-only pan). Recompute it here so the
+        // auto-cam path matches manual control.
+        if (typeof v.updateAltitudeAndClipping === 'function') {
+            v.updateAltitudeAndClipping();
+        }
     }
 
     function beforeRender() {
@@ -2624,6 +2784,8 @@
         'instanced':       '3D Labels',
         'dom-perf':        'DOM Labels',
         none:              'No labels (baseline)',
+        maplibre:          'MapLibre GL (labels)',
+        'maplibre-none':   'MapLibre GL (no labels)',
     };
     const ALL_MODE_BTNS = {
         'instanced':       elBtnInstanced,
@@ -2657,7 +2819,9 @@
     // ── Dataset selector ─────────────────────────────────────────────────────
     const elBtnDsIgn = document.getElementById('btn-ds-ign');
     const elBtnDsOfm = document.getElementById('btn-ds-ofm');
-    const elBtnCap500 = document.getElementById('btn-cap-500');
+    const elInpForceN = document.getElementById('inp-force-n');
+    const elBtnElev = document.getElementById('btn-elev');
+    const elBtnBati = document.getElementById('btn-bati');
 
     function syncDatasetButtons() {
         elBtnDsIgn.classList.toggle('on', datasetMode === 'ign');
@@ -2679,26 +2843,57 @@
     elBtnDsIgn.addEventListener('click', () => setDataset('ign'));
     elBtnDsOfm.addEventListener('click', () => setDataset('openfreemap'));
 
-    // Toggle the per-tile screen-grid thinning for 3D mode. Same pre-filter DOM
-    // uses; needs a scene rebuild because it changes the label layer config.
-    elBtnCap500.addEventListener('click', () => {
-        if (runner.running) return;
-        useScreenGridFilter = !useScreenGridFilter;
-        elBtnCap500.classList.toggle('on', useScreenGridFilter);
+    // Apply a new forced label count N. 0 = off (full pool). Rebuilds the scene
+    // because it changes the iTowns label layer config; MapLibre picks up the new
+    // N on its next run (injected into its worker before the pass).
+    function applyForceN() {
+        if (runner.running) { return; }
+        const n = Math.max(0, Math.floor(Number(elInpForceN.value) || 0));
+        if (n === _forcedLabelCount) { return; }
+        _forcedLabelCount = n;
+        elInpForceN.value = String(n);
         elStatus.textContent = 'LOADING';
         setupScene().then(() => {
             elStepName.textContent = 'Ready';
-            elStepDesc.textContent = `Screen-grid filter ${useScreenGridFilter ? 'ON' : 'OFF'} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
+            elStepDesc.textContent = `Force label count ${n > 0 ? `= ${n}/tile` : 'OFF (full pool)'} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
             elStatus.textContent   = 'READY';
         });
-    });
+    }
+    elInpForceN.addEventListener('change', applyForceN);
+    elInpForceN.addEventListener('keydown', (e) => { if (e.key === 'Enter') { elInpForceN.blur(); } });
+
+    // Toggle terrain elevation / extruded buildings — both rebuild the scene so
+    // their geometry cost (or absence) is reflected in the next run.
+    function makeGeomToggle(btn, label, get, set) {
+        btn.addEventListener('click', () => {
+            if (runner.running) return;
+            set(!get());
+            btn.classList.toggle('on', get());
+            elStatus.textContent = 'LOADING';
+            setupScene().then(() => {
+                elStepName.textContent = 'Ready';
+                elStepDesc.textContent = `${label} ${get() ? 'ON' : 'OFF'} — loaded in ${(sceneLoadMs / 1000).toFixed(2)} s`;
+                elStatus.textContent   = 'READY';
+            });
+        });
+    }
+    makeGeomToggle(elBtnElev, 'Elevation', () => useElevation, v => { useElevation = v; });
+    makeGeomToggle(elBtnBati, 'Buildings', () => useBuildings, v => { useBuildings = v; });
+
+    // Initialise every toggle's highlight from the config variables above, so the
+    // UI can never desync from the actual datasetMode/useElevation/useBuildings/N
+    // (the HTML markup's default `on` classes reflect the old defaults).
+    syncDatasetButtons();
+    elBtnElev.classList.toggle('on', useElevation);
+    elBtnBati.classList.toggle('on', useBuildings);
+    if (elInpForceN) { elInpForceN.value = String(_forcedLabelCount); }
 
     const elBtnFullBench = document.getElementById('btn-full-bench');
 
     window.addEventListener('resize', () => { if (elReport.classList.contains('visible')) sizeReport(); });
 
-    const FULL_MODES = ['none', 'instanced', 'dom-perf'];
-    const MODE_SHORT = { none: 'None', instanced: '3D', 'dom-perf': 'DOM' };
+    const FULL_MODES = ['none', 'instanced', 'dom-perf', 'maplibre-none', 'maplibre'];
+    const MODE_SHORT = { none: 'None', instanced: '3D', 'dom-perf': 'DOM', maplibre: 'ML', 'maplibre-none': 'ML base' };
 
     function runBenchmarkPromise(stepPlan = ALL_STEP_INDEXES) {
         return new Promise(resolve => runner.start(resolve, stepPlan));
@@ -2719,6 +2914,7 @@
         showReport();
 
         const modeResults = {};
+        _mlPair = null; // fresh MapLibre shared-map pair for this run
 
         for (const mode of FULL_MODES) {
             if (_fullBenchAborted) break;
@@ -2732,6 +2928,24 @@
 
             await countdown();
             if (_fullBenchAborted) break;
+
+            // MapLibre is a first-class comparison mode but runs its OWN engine
+            // (overlay map + probe), not the iTowns view — so it skips setupScene.
+            if (mode === 'maplibre' || mode === 'maplibre-none') {
+                const withLabels = mode === 'maplibre';
+                elStepName.textContent = `MapLibre GL — ${withLabels ? 'with labels' : 'no labels (baseline)'}`;
+                elStepDesc.textContent = 'Driving maplibre-gl through the same 12-step camera plan (shared warm map)';
+                try {
+                    modeResults[mode] = await runMaplibreForFull(mode);
+                    if (_fullBenchAborted) break;
+                    publishResults(mode, [...modeResults[mode]], progress);
+                    _reportState.coldStartByMode[mode] = {}; // no iTowns cold-start milestones
+                } catch (err) {
+                    console.error('[Full bench] MapLibre mode failed:', err);
+                    elStepDesc.textContent = `MapLibre mode failed: ${err && err.message ? err.message : err}`;
+                }
+                continue;
+            }
 
             elStepName.textContent = `Recreating scene — ${MODE_LABELS[mode]}`;
             elStepDesc.textContent = 'Disposing previous view and rebuilding from scratch';
@@ -2759,7 +2973,9 @@
             const fullPayload = {
                 type: 'full',
                 dataset: datasetMode,
-                screenGridFilter: useScreenGridFilter,
+                forcedLabelCount: _forcedLabelCount,
+                elevation: useElevation,
+                buildings: useBuildings,
                 coldStartByMode: { ..._reportState.coldStartByMode },
                 batchMaxByMode: { ..._reportState.batchMaxByMode },
                 atlasTexelsByMode: { ..._reportState.atlasTexelsByMode },
@@ -2783,8 +2999,448 @@
     elBtnFullBench.addEventListener('click', runFullBenchmark);
     elBtnStop.addEventListener('click', () => { _fullBenchAborted = true; });
 
+    // ───────────────────────────────────────────────────────────────────────
+    // MapLibre GL baseline (standalone reference point)
+    //
+    // Loads maplibre-gl from CDN, renders the SAME CARTO Positron style that
+    // the iTowns CARTO dataset mode uses, and replays one scripted camera path
+    // twice on it: once with the full style (symbol/label layers present) and
+    // once with every `symbol` layer stripped (no text/icons, identical basemap
+    // geometry). The fps delta between the two passes is MapLibre's *own* cost
+    // of drawing labels — a reference baseline to compare against the % drop
+    // your iTowns instanced/DOM label pipelines add on the same data.
+    //
+    // Deliberately isolated from the 12-step iTowns runner: it overlays its own
+    // map, owns its own measurement, and never touches `view`.
+    // ───────────────────────────────────────────────────────────────────────
+    const ML_STYLE_URL = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
+    // Shared raster tile URL: OpenStreetMap standard tiles. Used by both iTowns
+    // and MapLibre so they render identical basemap imagery. This server accepts
+    // query params, allowing cache-bust per mode for fully cold fetches.
+    const ML_RASTER_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+    // ── Cache-bust nonce ─────────────────────────────────────────────────────
+    // Incremented before EVERY mode run (iTowns or MapLibre) and appended as a
+    // query param to tile URLs. Forces cold network fetches so no mode benefits
+    // from another mode's HTTP cache. Both engines pay identical network RTT.
+    let _cacheBustNonce = 0;
+    function nextCacheBust() { return ++_cacheBustNonce; }
+    function bustUrl(url) { return `${url}${url.includes('?') ? '&' : '?'}_cb=${_cacheBustNonce}`; }
+    // Local, version-pinned maplibre-gl (UMD) — replaces the CDN. We use the CSP
+    // build so the WORKER is a real external file (maplibre-gl-csp-worker-dev.js)
+    // that patch-package can patch for the forced-label-count cap; the default
+    // build inlines the worker as a string, which can't be patched cleanly. The
+    // unminified "-dev" variants keep symbol names so the probe can wrap them.
+    const ML_LOCAL_JS  = '../node_modules/maplibre-gl/dist/maplibre-gl-csp-dev.js';
+    const ML_WORKER_JS = '../node_modules/maplibre-gl/dist/maplibre-gl-csp-worker-dev.js';
+    const ML_LOCAL_CSS = '../node_modules/maplibre-gl/dist/maplibre-gl.css';
+    const ML_CENTER    = [2.3488, 48.8534]; // Paris — same area as the iTowns scene
+    // Drive MapLibre through the EXACT same STEPS plan as iTowns, in real time
+    // (no compression) so the two engines' per-step results line up 1:1.
+    const ML_TIME_SCALE = 1.0;
+
+    // Camera mapping {range,tilt,heading} → {zoom,pitch,bearing} (incl. horizon
+    // fix) is imported from @itowns/bench as `mlDriveToCamera`.
+
+    let _maplibrePromise = null;
+    function ensureMaplibreLoaded() {
+        if (window.maplibregl) { return Promise.resolve(); }
+        if (_maplibrePromise) { return _maplibrePromise; }
+        _maplibrePromise = new Promise((resolve, reject) => {
+            const css = document.createElement('link');
+            css.rel = 'stylesheet';
+            css.href = ML_LOCAL_CSS;
+            document.head.appendChild(css);
+            const s = document.createElement('script');
+            s.src = ML_LOCAL_JS;
+            s.onload = () => {
+                // CSP build: point the worker at the external (patched) worker file
+                // so the forced-label-count cap in SymbolBucket.populate is active.
+                try { window.maplibregl.setWorkerUrl(ML_WORKER_JS); } catch (e) { /* ignore */ }
+                resolve();
+            };
+            s.onerror = () => reject(new Error('Failed to load local maplibre-gl (run npm install)'));
+            document.head.appendChild(s);
+        });
+        return _maplibrePromise;
+    }
+
+    function mlOnce(map, ev) { return new Promise(r => map.once(ev, r)); }
+
+    // Inject the forced label count N into every MapLibre worker. The patched
+    // SymbolBucket.populate reads self.__FORCED_N and caps candidates PER TILE
+    // (per symbol bucket), first-N in feature order — matching the iTowns
+    // per-tile cap in LabelLayer.convert(). Both engines therefore build ~N
+    // labels per tile; the scene total is N × loaded tiles on both sides.
+    // Done via importScriptInWorkers (a tiny blob script in each worker).
+    // 0 = stock behaviour. Must run before tiles are processed.
+    function mlInjectForcedN(map, n) {
+        try {
+            const code = `self.__FORCED_N=${(n | 0)};`;
+            const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+            const p = window.maplibregl.importScriptInWorkers(url);
+            return Promise.resolve(p).finally(() => URL.revokeObjectURL(url));
+        } catch (e) { return Promise.resolve(); }
+    }
+
+    // Metadata for every symbol (label) layer in the current style, used to count
+    // the label CANDIDATE pool (querySourceFeatures) and PLACED labels
+    // (queryRenderedFeatures) separately — they are NOT the same number: collision
+    // discards most candidates, so rendered << candidates.
+    function mlSymbolLayerMeta(map) {
+        try {
+            return map.getStyle().layers
+                .filter(l => l.type === 'symbol' && l.source)
+                .map(l => ({ id: l.id, source: l.source, sourceLayer: l['source-layer'], filter: l.filter }));
+        } catch { return []; }
+    }
+    const _mlFeatKey = f => (f.id != null
+        ? `${f.id}`
+        : (f.properties && (f.properties.name ?? f.properties.name_en ?? f.properties.osm_id)) ?? null);
+
+    // Labels MapLibre actually placed/drew this frame (collision survivors, in
+    // viewport). De-duplicated by feature key so a multi-part label counts once.
+    function mlCountRendered(map, symbolIds) {
+        if (!symbolIds.length) { return 0; }
+        try {
+            const seen = new Set();
+            let anon = 0;
+            for (const f of map.queryRenderedFeatures({ layers: symbolIds })) {
+                const k = _mlFeatKey(f); if (k === null) { anon++; } else { seen.add(k); }
+            }
+            return seen.size + anon;
+        } catch { return 0; }
+    }
+    // Label CANDIDATES available to collision: every symbol feature in the loaded
+    // source tiles (per layer filter), across the whole loaded set — the pool
+    // MapLibre's placement chooses from. Superset of rendered.
+    function mlCountCandidates(map, layers) {
+        if (!layers.length) { return 0; }
+        const seen = new Set();
+        let anon = 0;
+        for (const L of layers) {
+            if (!L.sourceLayer) { continue; }
+            try {
+                const params = { sourceLayer: L.sourceLayer, validate: false };
+                if (L.filter) { params.filter = L.filter; }
+                for (const f of map.querySourceFeatures(L.source, params)) {
+                    const k = _mlFeatKey(f); if (k === null) { anon++; } else { seen.add(k); }
+                }
+            } catch { /* ignore */ }
+        }
+        return seen.size + anon;
+    }
+
+    // Push one MapLibre frame into a FrameStatsCollector in the SAME record
+    // shape the iTowns runner produces, so collector.summarize() yields an
+    // identical per-step summary object (fps*, stages{}, counts{}, …).
+    //   candidates → lblAvg  (total labels considered)
+    //   rendered   → rendAvg (labels actually drawn after collision)
+    function mlPushFrame(collector, dt, snap, candidates, rendered) {
+        const frameMs = (dt > 0 && dt < 2000) ? dt : 16;
+        collector._frames.push({
+            frameMs,
+            // total = candidate pool across loaded tiles (per-tile capped to N in
+            // the worker, so ≈ N × loaded tiles, matching iTowns). rendered =
+            // collision survivors actually drawn.
+            total: candidates, isCandidate: candidates,
+            shouldRender: rendered, isRendered: rendered, groups: 0,
+            drawCalls: snap.drawCalls,
+            tris: snap.tris,
+            tilesLoaded: 0,
+            cpuMs: snap.cpuMs,
+            cam: 0, tiles: 0,
+            prof: snap.prof,
+            profBetween: snap.profBetween,
+            profCalls: snap.profCalls,
+            profCallPeak: snap.profCallPeak,
+            counts: snap.counts,
+            net: { ...drainNetQueue() },
+            blockedMs: drainLongTaskQueue(),
+            memMB: jsHeapMB(),
+        });
+    }
+
+    // Drive MapLibre through the full STEPS plan once (real time, same as iTowns)
+    // while the probe accumulates per-frame stage costs. Returns one
+    // FrameStatsCollector per step. `measure=false` → warmup pass. `withLabels`
+    // controls whether label counts are sampled (a stripped style has none).
+    //
+    // The per-frame queryRenderedFeatures/querySourceFeatures calls are OUR
+    // measurement overhead, not MapLibre's render cost — so we time them and
+    // subtract that wall time from the next frame's dt, otherwise they'd inflate
+    // MapLibre's frame time and unfairly slow it vs iTowns.
+    function mlRunInstrumented(map, probe, measure, onStep, withLabels, timeScale = ML_TIME_SCALE) {
+        const symbolLayers = mlSymbolLayerMeta(map);
+        const symbolIds = symbolLayers.map(l => l.id);
+        const collectors = STEPS.map(() => new FrameStatsCollector());
+        // Sampling the label candidate/rendered counts means querying MapLibre's
+        // tile/render caches, which is OUR overhead, not its frame cost. Sampling
+        // every frame would either pollute frame time (if counted) or fabricate
+        // sub-vsync frames (if subtracted → fps above the display refresh rate).
+        // So we throttle the query to ~every 250 ms and carry the last values
+        // forward — frame time stays the honest, un-doctored rAF interval.
+        const COUNT_SAMPLE_MS = 250;
+        let lastSample = -1e9; let lastCand = 0; let lastRend = 0;
+        return new Promise((resolve) => {
+            let si = 0; let stepStart = null; let last = 0;
+            function frame(now) {
+                if (stepStart === null) {
+                    stepStart = now; last = now;
+                    if (onStep) { onStep(STEPS[0], 0); }
+                    if (measure) { probe.beginFrame(); }
+                    map.jumpTo(mlDriveToCamera(STEPS[0].drive(0), map));
+                    requestAnimationFrame(frame); return;
+                }
+                const dt = now - last; // true rAF interval — never doctored
+                last = now;
+                if (measure) {
+                    const snap = probe.drainFrame();
+                    if (withLabels && now - lastSample >= COUNT_SAMPLE_MS) {
+                        lastRend = mlCountRendered(map, symbolIds);
+                        lastCand = mlCountCandidates(map, symbolLayers);
+                        lastSample = now;
+                    }
+                    mlPushFrame(collectors[si], dt, snap, withLabels ? lastCand : 0, withLabels ? lastRend : 0);
+                }
+                const step = STEPS[si];
+                const dur  = step.duration * timeScale;
+                if (now - stepStart >= dur) {
+                    si++;
+                    stepStart = now;
+                    if (si >= STEPS.length) { resolve(collectors); return; }
+                    if (onStep) { onStep(STEPS[si], si); }
+                }
+                if (measure) { probe.beginFrame(); }
+                const t = Math.min(1, (now - stepStart) / (STEPS[si].duration * timeScale));
+                map.jumpTo(mlDriveToCamera(STEPS[si].drive(t), map));
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        });
+    }
+
+    let _mlBusy = false;
+    const elBtnMaplibre = document.getElementById('btn-maplibre');
+
+    function mlBuildOverlay() {
+        const wrap = document.createElement('div');
+        wrap.id = 'ml-overlay';
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:9000;background:#0b1a12;';
+        const mapDiv = document.createElement('div');
+        mapDiv.style.cssText = 'position:absolute;inset:0;';
+        wrap.appendChild(mapDiv);
+
+        const card = document.createElement('div');
+        card.style.cssText = 'position:absolute;top:14px;left:14px;z-index:9001;min-width:360px;'
+            + 'max-height:calc(100vh - 28px);overflow:auto;'
+            + 'background:rgba(10,20,14,0.92);color:#dff;border:1px solid rgba(40,200,120,0.4);'
+            + 'border-radius:8px;padding:12px 14px;font:12px/1.5 ui-monospace,Menlo,monospace;'
+            + 'box-shadow:0 8px 30px rgba(0,0,0,0.5);';
+        card.innerHTML = '<div style="font-weight:700;color:#4fe0a0;margin-bottom:6px;">'
+            + 'MapLibre GL baseline — CARTO Positron</div>'
+            + '<div id="ml-card-body" style="white-space:pre;">initialising…</div>';
+        wrap.appendChild(card);
+
+        const close = document.createElement('button');
+        close.textContent = '✕ Close';
+        close.style.cssText = 'position:absolute;top:14px;right:14px;z-index:9001;cursor:pointer;'
+            + 'background:rgba(10,20,14,0.92);color:#dff;border:1px solid rgba(40,200,120,0.4);'
+            + 'border-radius:6px;padding:6px 12px;font:12px ui-monospace,monospace;';
+        wrap.appendChild(close);
+
+        document.body.appendChild(wrap);
+        return { wrap, mapDiv, body: card.querySelector('#ml-card-body'), close };
+    }
+
+    // Core MapLibre run: load lib, build overlay, create map, attach the probe,
+    // warm the caches, then drive ONE instrumented pass through the same STEPS
+    // plan as iTowns. Returns the per-step collectors plus the overlay/map/probe
+    // handles so the caller decides whether to keep the overlay (standalone) or
+    // tear it down (full benchmark). Used by BOTH entry points so the measurement
+    // path can never diverge between "MapLibre button" and "Full benchmark".
+    // Collectors → report shape: [{ step: STEP, summary }] — identical to what the
+    // iTowns BenchmarkRunner produces, so publishResults()/renderReport() treat
+    // MapLibre exactly like any other mode (report table + pipeline + PDF).
+    function mlStepResults(collectors) {
+        return collectors.map((c, i) => ({ step: STEPS[i], summary: c.summarize() || {} }));
+    }
+
+    // Run BOTH MapLibre passes on ONE shared map so they share the exact same warm
+    // Inject the shared OSM raster basemap (the SAME tiles iTowns loads as its
+    // ColorLayer) at the bottom of a MapLibre style, so both engines render the
+    // identical "world map" raster with identical fetch/upload overhead.
+    function injectRasterSource(style) {
+        const s = { ...style, sources: { ...style.sources } };
+        s.sources['shared-raster'] = {
+            type: 'raster',
+            tiles: [bustUrl(ML_RASTER_TILES)],
+            tileSize: 256,
+            attribution: '&copy; OpenStreetMap',
+        };
+        s.layers = [
+            { id: 'shared-raster-layer', type: 'raster', source: 'shared-raster' },
+            ...s.layers,
+        ];
+        return s;
+    }
+
+    // Build the MapLibre style for a mode, on a GLOBE. BOTH engines share the same
+    // OSM raster basemap (roads/places/land come from the raster). MapLibre draws
+    // the raster + ONLY Positron's symbol (label) layers on top — the raster
+    // already provides fills/roads, so re-drawing Positron's vector fills would
+    // double them and add geometry iTowns doesn't. Baseline = raster only (no
+    // labels), so (labeled − baseline) isolates label cost, mirroring iTowns'
+    // none→labeled delta on the same basemap.
+    async function mlStyleFor(withLabels) {
+        const carto = await (await fetch(bustUrl(ML_STYLE_URL))).json();
+        if (!withLabels) {
+            // Baseline: pure raster, zero vector sources → no PBF fetch/decode at all.
+            return injectRasterSource({ version: 8, sources: {}, layers: [], projection: { type: 'globe' } });
+        }
+        // Bust vector tile source URLs so this run starts cold.
+        const bustedSources = { ...carto.sources };
+        for (const [key, src] of Object.entries(bustedSources)) {
+            if (src.tiles) {
+                bustedSources[key] = { ...src, tiles: src.tiles.map(u => bustUrl(u)) };
+            }
+            if (src.url) {
+                bustedSources[key] = { ...bustedSources[key], url: bustUrl(src.url) };
+            }
+        }
+        // Keep ONLY POINT-placed symbol layers. iTowns' 3D/DOM labels are point
+        // labels (viewport-aligned, no along-line placement), so MapLibre must not
+        // run its extra line/road-label placement (symbol-placement: line) — that
+        // would be work iTowns never does, biasing MapLibre.
+        const symbolLayers = carto.layers.filter(l => l.type === 'symbol'
+            && (l.layout?.['symbol-placement'] ?? 'point') === 'point');
+        return injectRasterSource({ ...carto, sources: bustedSources, layers: symbolLayers, projection: { type: 'globe' } });
+    }
+
+    // Run ONE MapLibre mode on its OWN fresh map — the direct analogue of iTowns
+    // building a fresh GlobeView per mode. No shared map, no setStyle strip. Warmed
+    // ONLY at the start position (like iTowns' setupScene, which waits for the
+    // initial layers then measures COLD as tiles stream in during the run) — NOT a
+    // full pre-warm of the whole path, which would over-cache MapLibre vs iTowns.
+    async function mlRunMode(withLabels, forcedN, body) {
+        nextCacheBust(); // fresh nonce → all tile URLs are cold
+        const ui = mlBuildOverlay();
+        const style = await mlStyleFor(withLabels);
+        body(`creating map (CARTO Positron globe, ${withLabels ? 'labels' : 'no labels'})…`);
+        const map = new window.maplibregl.Map({
+            container: ui.mapDiv,
+            style,
+            center: ML_CENTER,
+            zoom: 11, bearing: 0, pitch: 0,
+            maxPitch: 85,        // globe (like iTowns) frames the horizon at the
+                                 // same nadir angle, so pitch = tilt 1:1 up to 85°.
+            attributionControl: false,
+            fadeDuration: 300,   // keep MapLibre's real label fade (matches the
+                                 // iTowns 300 ms fade) — do NOT disable it.
+        });
+        let probe = null;
+        ui.close.addEventListener('click', () => {
+            try { if (probe) { probe.detach(); } } catch { /* ignore */ }
+            try { if (map) { map.remove(); } } catch { /* ignore */ }
+            ui.wrap.remove();
+        });
+
+        await mlOnce(map, 'load');
+        try { map.setProjection({ type: 'globe' }); } catch { /* older builds */ }
+        await mlOnce(map, 'idle');
+        probe = new MapLibreProbe(map);
+        probe.attach();
+        await mlInjectForcedN(map, forcedN);
+
+        // Measure COLD, like a real user opening the app: no whole-path pre-warm.
+        // Each mode fetches its tiles fresh (per-mode cache-bust below makes the
+        // network cold-and-fair regardless of run order), so label-creation peaks
+        // and streaming instabilities are visible — the point of the benchmark.
+        const tag = withLabels ? 'with labels' : 'no labels';
+        map.jumpTo(mlDriveToCamera(STEPS[0].drive(0), map));
+        await mlOnce(map, 'idle');
+        // Discard the initial-load backlog so it doesn't dump into the first frame.
+        probe.resetPending(); drainNetQueue(); drainLongTaskQueue();
+        const coll = await mlRunInstrumented(map, probe, true,
+            (step, i) => body(`measuring — ${tag}\n  step ${i + 1}/${STEPS.length}: ${step.name}`),
+            withLabels);
+
+        try { probe.detach(); } catch { /* ignore */ }
+        try { map.remove(); } catch { /* ignore */ }
+        ui.wrap.remove();
+        return mlStepResults(coll);
+    }
+
+    // Both MapLibre modes, each on its own fresh globe map. Every tile URL
+    // (raster + vector) is cache-busted per mode → fully cold network each time.
+    async function mlRunPair(setBody) {
+        await ensureMaplibreLoaded();
+        const body = setBody || (() => {});
+        const mlNone = await mlRunMode(false, 0, body);
+        const maplibre = await mlRunMode(true, _forcedLabelCount, body);
+        return { maplibre, 'maplibre-none': mlNone };
+    }
+
+    // Cached MapLibre pair for the full benchmark (so the two modes share one run).
+    let _mlPair = null;
+
+    // Standalone button: run the shared-map pair and publish both modes.
+    async function runMaplibreStandalone() {
+        if (_mlBusy || runner.running) { return; }
+        _mlBusy = true;
+        elBtnMaplibre.disabled = true;
+        elStatus.textContent = 'MAPLIBRE…';
+        let pair = null;
+        try {
+            pair = await mlRunPair();
+            publishResults('maplibre-none', pair['maplibre-none'], 'MapLibre GL — no labels');
+            _reportState.coldStartByMode['maplibre-none'] = {};
+            publishResults('maplibre', pair.maplibre, 'MapLibre GL — with labels');
+            _reportState.coldStartByMode.maplibre = {};
+
+            const toSteps = res => res.map(({ step, summary }) => ({ step: step.id, name: step.name, desc: step.desc, ...summary }));
+            enableExport({
+                type: 'maplibre-only',
+                dataset: datasetMode,
+                forcedLabelCount: _forcedLabelCount,
+                engine: 'maplibre-gl',
+                version: (window.maplibregl?.getVersion && window.maplibregl.getVersion()) || '5.x',
+                modes: { 'maplibre-none': toSteps(pair['maplibre-none']), maplibre: toSteps(pair.maplibre) },
+            });
+
+            elStepDesc.textContent = 'MapLibre — both modes complete (fresh globe map each). '
+                + 'Added as “MapLibre” + “MapLibre (no labels)” (table + pipeline + PDF + JSON).';
+        } catch (err) {
+            console.error('[MapLibre bench]', err);
+            elStepDesc.textContent = `MapLibre error: ${err && err.message ? err.message : err}`;
+        } finally {
+            _mlBusy = false;
+            elBtnMaplibre.disabled = false;
+            elStatus.textContent = 'READY';
+        }
+    }
+
+    // Full-benchmark entry: run the shared-map pair ONCE (on the first MapLibre mode
+    // reached) and serve each mode's results from the cache. Overlay torn down after
+    // the second mode so the combined report stays visible.
+    async function runMaplibreForFull(mode) {
+        if (!_mlPair) {
+            _mlPair = await mlRunPair(txt => { elStepDesc.textContent = txt; });
+        }
+        const stepResults = _mlPair[mode];
+        // Each mode's map was already torn down inside mlRunMode; just clear the
+        // cache once both modes have been served.
+        if (mode === 'maplibre') { _mlPair = null; }
+        return stepResults;
+    }
+
+    elBtnMaplibre.addEventListener('click', runMaplibreStandalone);
+
     let _exportPayload = null;
 
+    // MapLibre is a first-class mode, so the full-run payload already unifies it
+    // under modes.maplibre — the export is a simple pass-through of whatever
+    // payload the runner produced (full multi-mode, single-mode, or maplibre-only).
     function enableExport(payload) {
         _exportPayload = payload;
         elBtnExport.disabled = false;
@@ -2825,11 +3481,11 @@
         .meta { font-size: 10px; color: rgba(0,0,0,0.45); margin-bottom: 14px; }
         .rep-section-title { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(0,0,0,0.45); margin: 14px 0 5px; }
         .rep-mode-title { font-size: 11px; font-weight: 600; color: #1a3060; margin: 14px 0 4px; page-break-after: avoid; }
-        .rep-table { width: 100%; border-collapse: collapse; font-size: 10px; white-space: nowrap; margin-bottom: 6px; page-break-inside: auto; }
+        .rep-table { width: 100%; border-collapse: collapse; font-size: 8px; white-space: nowrap; margin-bottom: 6px; page-break-inside: auto; table-layout: auto; }
         .rep-table tr { page-break-inside: avoid; }
-        .rep-table th { color: rgba(0,0,0,0.45); text-align: right; padding: 3px 6px; border-bottom: 1px solid rgba(0,0,0,0.25); font-weight: 400; }
+        .rep-table th { color: rgba(0,0,0,0.45); text-align: right; padding: 2px 3px; border-bottom: 1px solid rgba(0,0,0,0.25); font-weight: 400; }
         .rep-table th:first-child, .rep-table td:first-child { text-align: left; }
-        .rep-table td { padding: 3px 6px; text-align: right; border-bottom: 1px solid rgba(0,0,0,0.08); }
+        .rep-table td { padding: 2px 3px; text-align: right; border-bottom: 1px solid rgba(0,0,0,0.08); }
         .rep-table td:first-child { color: rgba(0,0,0,0.65); }
         .rep-table tr.rep-overall td { font-weight: 600; border-top: 1px solid rgba(0,0,0,0.3); }
         .grp { border-left: 1px solid rgba(0,0,0,0.12); }
@@ -2839,7 +3495,9 @@
         if (!elReportBody.innerHTML.trim()) { return; }
         const meta = [
             `Dataset: ${datasetMode === 'ign' ? 'IGN Plan v2' : 'CARTO Positron'}`,
-            `Screen-grid filter: ${useScreenGridFilter ? 'on' : 'off'}`,
+            `Force label count: ${_forcedLabelCount > 0 ? `${_forcedLabelCount}/tile` : 'off'}`,
+            `Elevation: ${useElevation ? 'on' : 'off'}`,
+            `Buildings: ${useBuildings ? 'on' : 'off'}`,
             new Date().toLocaleString(),
         ].join('  ·  ');
         const w = window.open('', '_blank');

@@ -1,0 +1,96 @@
+diff --git a/node_modules/maplibre-gl/dist/maplibre-gl-csp-worker-dev.js b/node_modules/maplibre-gl/dist/maplibre-gl-csp-worker-dev.js
+index 26422ec..c029ed1 100644
+--- a/node_modules/maplibre-gl/dist/maplibre-gl-csp-worker-dev.js
++++ b/node_modules/maplibre-gl/dist/maplibre-gl-csp-worker-dev.js
+@@ -35363,6 +35363,14 @@ class SymbolBucket {
+         }
+     }
+     populate(features, options, canonical) {
++        // [itowns-bench patch] time symbol feature creation (filter + token
++        // resolve + shaping setup) into a worker-global accumulator → `register`.
++        const __cg = (typeof self !== 'undefined') ? (self.__BENCH || (self.__BENCH = { create: 0, sort: 0, layout: 0 })) : { create: 0 };
++        const __ct = (typeof performance !== 'undefined') ? performance.now() : 0;
++        try { return this.__populateImpl(features, options, canonical); }
++        finally { __cg.create = (__cg.create || 0) + ((typeof performance !== 'undefined') ? performance.now() : 0) - __ct; }
++    }
++    __populateImpl(features, options, canonical) {
+         var _a;
+         const layer = this.layers[0];
+         const layout = layer.layout;
+@@ -35387,7 +35395,15 @@ class SymbolBucket {
+         const stacks = options.glyphDependencies;
+         const availableImages = options.availableImages;
+         const globalProperties = new EvaluationParameters(this.zoom);
++        // [itowns-bench patch] Forced label count: stop accepting candidates once
++        // this tile's symbol bucket has N of them, BEFORE the expensive per-feature
++        // text shaping / glyph-dependency collection runs on the rest — so the cap
++        // genuinely reduces work. N injected per-worker via self.__FORCED_N; 0 =
++        // stock. Per bucket / tile, first-N in feature order (matches iTowns
++        // LabelLayer.convert per-tile cap).
++        const __forcedN = (typeof self !== 'undefined' && self.__FORCED_N) | 0;
+         for (const { feature, id, index, sourceLayerIndex } of features) {
++            if (__forcedN > 0 && this.features.length >= __forcedN) { break; }
+             const needGeometry = layer._featureFilter.needGeometry;
+             const evaluationFeature = toEvaluationFeature(feature, needGeometry);
+             if (!layer._featureFilter.filter(globalProperties, evaluationFeature, canonical)) {
+@@ -35469,10 +35485,14 @@ class SymbolBucket {
+             this.features = mergeLines(this.features);
+         }
+         if (this.sortFeaturesByKey) {
++            // [itowns-bench patch] time the symbol priority sort → `priority`.
++            const __sg = (typeof self !== 'undefined') ? (self.__BENCH || (self.__BENCH = { create: 0, sort: 0, layout: 0 })) : { sort: 0 };
++            const __st = (typeof performance !== 'undefined') ? performance.now() : 0;
+             this.features.sort((a, b) => {
+                 // a.sortKey is always a number when sortFeaturesByKey is true
+                 return a.sortKey - b.sortKey;
+             });
++            __sg.sort = (__sg.sort || 0) + ((typeof performance !== 'undefined') ? performance.now() : 0) - __st;
+         }
+     }
+     update(states, vtLayer, imagePositions) {
+@@ -42512,6 +42532,14 @@ function getTextVariableAnchorOffset(layer, feature, canonical) {
+ }
+ 
+ function performSymbolLayout(args) {
++    // [itowns-bench patch] time glyph shaping / symbol layout into a worker-global
++    // accumulator so the main thread can attribute it to the `layout` stage.
++    const __bg = (typeof self !== 'undefined') ? (self.__BENCH || (self.__BENCH = { create: 0, sort: 0, layout: 0 })) : { layout: 0 };
++    const __bt = (typeof performance !== 'undefined') ? performance.now() : 0;
++    try { return __performSymbolLayout_impl(args); }
++    finally { __bg.layout = (__bg.layout || 0) + ((typeof performance !== 'undefined') ? performance.now() : 0) - __bt; }
++}
++function __performSymbolLayout_impl(args) {
+     var _a;
+     var _b;
+     args.bucket.createArrays();
+@@ -43651,6 +43679,14 @@ class WorkerTile {
+     parse(data, layerIndex, availableImages, actor, subdivisionGranularity) {
+         return __awaiter(this, void 0, void 0, function* () {
+             this.status = 'parsing';
++            // [itowns-bench patch] snapshot worker sub-stage accumulators so the
++            // result can carry THIS tile's own worker CPU cost back to the main
++            // thread (create/sort/layout), used as the honest `workerWait` instead
++            // of the sendAsync round-trip (which is mostly worker-queue latency).
++            const __benchG = (typeof self !== 'undefined') ? (self.__BENCH || (self.__BENCH = { create: 0, sort: 0, layout: 0 })) : { create: 0, sort: 0, layout: 0 };
++            const __benchC0 = __benchG.create || 0;
++            const __benchS0 = __benchG.sort || 0;
++            const __benchL0 = __benchG.layout || 0;
+             this.data = data;
+             this.collisionBoxArray = new CollisionBoxArray();
+             const sourceLayerCoder = new DictionaryCoder(Object.keys(data.layers).sort());
+@@ -43764,6 +43800,15 @@ class WorkerTile {
+             }
+             this.status = 'done';
+             return {
++                // [itowns-bench patch] this tile's per-stage worker CPU cost (ms),
++                // read by the probe's actor wrap. create = feature creation (incl.
++                // sort), sort = symbol priority sort, layout = glyph shaping.
++                // workerWait := create + layout (real work, not queue latency).
++                __bench: {
++                    create: (__benchG.create || 0) - __benchC0,
++                    sort: (__benchG.sort || 0) - __benchS0,
++                    layout: (__benchG.layout || 0) - __benchL0,
++                },
+                 buckets: Object.values(buckets).filter(b => !b.isEmpty()),
+                 featureIndex,
+                 collisionBoxArray: this.collisionBoxArray,

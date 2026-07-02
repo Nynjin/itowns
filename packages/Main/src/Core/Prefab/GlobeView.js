@@ -158,6 +158,20 @@ class GlobeView extends View {
         }
     }
 
+    /** Current camera near-plane distance (read by the sky / fog code). */
+    get cameraNear() {
+        return this.camera3D.near;
+    }
+
+    /**
+     * Recompute the dynamic camera near/far planes (and horizon distance).
+     * Call when something that affects them changes outside the normal altitude
+     * update — e.g. toggling the sky strategy, which alters the far plane.
+     */
+    updateDynamicNearFar() {
+        this.updateAltitudeAndClipping();
+    }
+
     updateAltitudeAndClipping() {
         // maximum possible distance from ground to camera
         this.altitude = camToSeaLevel

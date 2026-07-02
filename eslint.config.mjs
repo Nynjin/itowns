@@ -269,4 +269,13 @@ export default defineConfig([
     examplesConfig,
     scriptsConfig,
     docsConfig,
+    // The bench MapLibre probe wraps maplibre-gl internals structurally (no
+    // public types), so `any` and loose array typing are intentional here.
+    {
+        files: ['packages/Bench/src/**/*.ts'],
+        rules: {
+            '@typescript-eslint/no-explicit-any': 'off',
+            '@typescript-eslint/array-type': 'off',
+        },
+    },
 ]);

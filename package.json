@@ -10,6 +10,7 @@
     "packages/Debug",
     "packages/Widgets",
     "packages/Label",
+    "packages/Bench",
     "examples/demo"
   ],
   "scripts": {
@@ -30,6 +31,7 @@
     "debug": "cross-env noInline=true npm start",
     "prepublishOnly": "npm run build && npm run transpile",
     "prepare": "cross-env NO_UPDATE_NOTIFIER=true node ./config/prepare.mjs",
+    "postinstall": "patch-package",
     "watch": "node ./config/concurrently.mjs watch",
     "changelog": "conventional-changelog -n ./config/conventionalChangelog/config.mjs -i changelog.md -s",
     "typecheck": "tsc -b --noEmit",
@@ -102,6 +104,7 @@
     "jiti": "^2.6.1",
     "jsdoc": "^4.0.5",
     "mocha": "^11.7.5",
+    "patch-package": "^8.0.0",
     "proj4": "^2.20.4",
     "puppeteer": "^25.1.0",
     "sinon": "^21.0.1",

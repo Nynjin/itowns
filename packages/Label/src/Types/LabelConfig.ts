@@ -62,9 +62,17 @@ export interface LabelManagerConfig {
     // Performance
     /**
      * Max labels that run layoutText() per tick (covers both Add and LayoutUpdate).
-     * 0 = unlimited.
+     * Acts as a hard cap. 0 = unlimited.
      */
     layoutBudgetPerTick: number;
+    /**
+     * Max wall-clock ms spent in layoutText() per tick. Bounds the in-frame
+     * layout cost by TIME rather than count, so expensive shaping (e.g. CJK
+     * fonts, where one label can cost 10× a Latin one) can't blow a frame. At
+     * least one label is always laid out per tick to guarantee progress.
+     * 0 = time-unlimited (fall back to the count cap only).
+     */
+    layoutTimeBudgetMs: number;
     updateRate: number;   // seconds
     cullingRate: number;  // seconds
 
@@ -103,6 +111,7 @@ export const DefaultLabelConfig: LabelManagerConfig = {
     fontSizePriorityPower: 1,
 
     layoutBudgetPerTick: 500,
+    layoutTimeBudgetMs: 4,
     updateRate: 0.5,
     cullingRate: 0.5,
 
