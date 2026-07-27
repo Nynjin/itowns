@@ -25,6 +25,14 @@ export const supportedParsers = new Map([
 
 const noCache = { get: () => {}, set: a => a, clear: () => {} };
 
+// Max parsed-FeatureCollection entries kept per CRS for a vector source.
+// This is a count cap (not time): once exceeded, the least-recently-used tile's
+// features are evicted, so revisiting it (orbit loop, zoom out) re-decodes.
+// Under heavy tile churn the distinct-tiles-per-cycle working set can exceed a
+// few hundred, so a larger cap trades memory for fewer re-decodes on revisit.
+// Override per source with `source.featuresCacheSize`.
+const DEFAULT_FEATURES_CACHE_SIZE = 1500;
+
 /**
  * This interface describes parsing options.
  * @typedef {object} ParsingOptions
@@ -107,6 +115,8 @@ class Source {
         this.isVectorSource = (source.parser || supportedParsers.get(source.format)) != undefined;
         this.networkOptions = source.networkOptions || { crossOrigin: 'anonymous' };
         this.attribution = source.attribution;
+        // Optional override for the parsed-features LRU size (vector sources only).
+        this.featuresCacheSize = source.featuresCacheSize;
         /** @type {Promise<any>} */
         this.whenReady = Promise.resolve();
         this._featuresCaches = {};
@@ -173,7 +183,9 @@ class Source {
             // Cache feature only if it's vector data, the feature are cached in source.
             // It's not necessary to cache raster in Source,
             // because it's already cached on layer.
-            this._featuresCaches[options.out.crs] = this.isVectorSource ? new LRUCache({ max: 500 }) : noCache;
+            this._featuresCaches[options.out.crs] = this.isVectorSource
+                ? new LRUCache({ max: this.featuresCacheSize || DEFAULT_FEATURES_CACHE_SIZE })
+                : noCache;
         }
     }
 

@@ -96,8 +96,7 @@ export class InstancedLabelManagerAsync {
         this._post({
             type: 'INIT',
             baseFontSize: cfg.baseFontSize, fadeDurationMs: cfg.fadeDurationMs,
-            downscale: cfg.downscale, coarseScale: cfg.coarseScale,
-            acceptableOcclusion: cfg.acceptableOcclusion, maxOcclusion: cfg.maxOcclusion,
+            downscale: cfg.downscale, pyramidLevels: cfg.pyramidLevels,
             collisionBuckets: cfg.collisionBuckets, ndcCullMargin: cfg.ndcCullMargin,
             renderPenaltyMultiplier: cfg.renderPenaltyMultiplier,
             fontSizePriorityPower: cfg.fontSizePriorityPower,

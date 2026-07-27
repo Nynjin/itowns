@@ -18,12 +18,44 @@ export interface LabelManagerConfig {
     dataTextureCapacityMultiplier: number;
     /** Maximum width (texels) for instanced data textures. */
     maxDataTextureWidth: number;
+    /**
+     * Expected peak count of simultaneously-live labels. Pre-allocates the label
+     * data texture so tile churn doesn't grow it through several resizes, each of
+     * which disposes + fully re-uploads the texture (a webgl-submit/GPU spike).
+     * Oversizing only costs VRAM.
+     */
+    initialLabelCapacity: number;
+    /**
+     * Expected peak count of simultaneously-live glyphs (≈ initialLabelCapacity ×
+     * avg glyphs/label). Pre-allocates the glyph data texture — this is the buffer
+     * that resizes most under churn since one label emits many glyphs.
+     */
+    initialGlyphCapacity: number;
 
-    // Collision grid
+    // Unloaded-label cache (see TieredLabelCache). The host groups labels (e.g.
+    // by tile) and parks a group when its owner unloads; a revisit restores it.
+    /**
+     * Max resident (hot) label sets kept GPU-warm and merely hidden. Restoring
+     * one is a visibility flip (zero upload). Small — this is the instant-revisit
+     * set. 0 sends every parked set straight to the cold tier.
+     */
+    hotLabelCacheSize: number;
+    /**
+     * Max cold label sets: GPU slots freed but label objects kept, so a restore
+     * re-uploads once (no re-shape) instead of a full rebuild. Larger than hot —
+     * cheap CPU objects, bounded GPU. 0 disables the cold tier.
+     */
+    coldLabelCacheSize: number;
+
+    // Collision occupancy (binary quadtree pyramid — see PyramidOccupancy)
     downscale: number;
-    coarseScale: number;
-    acceptableOcclusion: number;
-    maxOcclusion: number;
+    /**
+     * Depth of the binary occupancy pyramid. 1 = flat early-exit bitmap; deeper
+     * prunes large empty regions faster but adds descent overhead on tiny boxes.
+     * The sweet spot depends on `downscale` and typical label size (≈4 at full
+     * resolution, shallower when heavily downscaled).
+     */
+    pyramidLevels: number;
     /**
      * VP-matrix max-element delta (clip space, scale-invariant).
      * Skip collision evaluation when the view changed less than this since the
@@ -91,29 +123,33 @@ export const DefaultLabelConfig: LabelManagerConfig = {
     fadeDurationMs: 300,
 
     baseFontSize: 24,
-    sdfScale: 3,
-    sdfCapacityMultiplier: 1.5,
+    sdfScale: 2,
+    sdfCapacityMultiplier: 2,
 
-    dataTextureCapacityMultiplier: 1.5,
+    dataTextureCapacityMultiplier: 2,
     maxDataTextureWidth: 4096,
+    // Sized to cover the label_bench churn working set (peaks ~2.9k labels /
+    // ~23k glyphs) so a full churn pass triggers zero data-texture resizes.
+    initialLabelCapacity: 4096,
+    initialGlyphCapacity: 32768,
+    hotLabelCacheSize: 512,
+    coldLabelCacheSize: 2048,
 
     downscale: 8,
-    coarseScale: 32,
-    acceptableOcclusion: 0.1,
-    maxOcclusion: 0.2,
+    pyramidLevels: 4,
     stationaryThreshold: 0.05,
-    fastMoveFraction: 0.5,
-    collisionBuckets: 32,
+    fastMoveFraction: 10,
+    collisionBuckets: 256,
 
     ndcCullMargin: 0.2,
 
-    renderPenaltyMultiplier: 2,
+    renderPenaltyMultiplier: 8,
     fontSizePriorityPower: 1,
 
-    layoutBudgetPerTick: 500,
-    layoutTimeBudgetMs: 4,
-    updateRate: 0.5,
-    cullingRate: 0.5,
+    layoutBudgetPerTick: 0,
+    layoutTimeBudgetMs: 2,
+    updateRate: 0.2,
+    cullingRate: 0.05,
 
     autoResizePxPerUnit: true,
 };

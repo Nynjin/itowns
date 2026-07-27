@@ -145,10 +145,24 @@ export class InstancedLabelManager {
         this._lastFrameVP.copy(this._curVP);
 
         let collisionRan = false;
-        const dueForCollision = now - this._lastCullCheck >= this.config.cullingRate * 1000;
-        
+        const sinceLastEval = now - this._lastCullCheck;
+        const dueForCollision = sinceLastEval >= this.config.cullingRate * 1000;
+
+        // The isFastMove skip avoids computing a placement that's stale by the
+        // next frame — but it must only skip TRANSIENTLY. Under a sustained fast
+        // move (e.g. a long orbit/tilt churn, or any scripted fly-through) the
+        // per-frame delta stays above fastMoveFraction on every frame, which
+        // would latch the skip for the entire movement and leave freshly-loaded
+        // areas label-less until the camera finally settles (the "manager was
+        // paused, labels pop the instant the move ends" symptom). Force an
+        // evaluation once placement has been starved past a bounded staleness so
+        // labels keep appearing during long moves; a slightly-stale placement
+        // (labels fade in anyway) beats no labels at all.
+        const evalStarvation = Math.max(this.config.cullingRate * 1000 * 2, 400);
+        const starved = sinceLastEval >= evalStarvation;
+
         // Allows evaluation to run if any labels were added/removed or re-shaped, even if the camera is stationary.
-        if (dueForCollision && !isFastMove && (!isStationary || anySynced)) {
+        if (dueForCollision && (!isFastMove || starved) && (!isStationary || anySynced)) {
             collisionRan = this.collision.evaluate(camera);
             this._lastCullCheck = now;
             this._lastEvalVP.copy(this._curVP);
@@ -280,6 +294,15 @@ export class InstancedLabelManager {
         const budget = this.config.layoutBudgetPerTick;
         const timeBudget = this.config.layoutTimeBudgetMs;
 
+        // Check if the async SDF worker delivered real glyph metrics since last sync.
+        // If so, cached layouts that used placeholder advance=0 are stale and must be
+        // recomputed — otherwise characters collapse (e.g. "Villeuif" instead of "Villejuif").
+        const metricsArrived = atlas.metricsUpdated;
+        if (metricsArrived) {
+            atlas.metricsUpdated = false;
+            this._layoutCache.clear();
+        }
+
         this._toAddBuffer.length = 0;
         this._toRemoveBuffer.length = 0;
         this._toLayoutBuffer.length = 0;
@@ -353,6 +376,18 @@ export class InstancedLabelManager {
             // Re-lay-out and re-emit every label in the group (O(group size) spike).
             LabelProfiler.count('atlasResize', 1);
             LabelProfiler.count('atlasReemit', fontGroup.labels.size);
+            const alreadyRelaidOut = new Set<string>();
+            for (const l of this._toAddBuffer) alreadyRelaidOut.add(l.id);
+            for (const l of this._toLayoutBuffer) alreadyRelaidOut.add(l.id);
+            for (const label of fontGroup.labels) {
+                if (!alreadyRelaidOut.has(label.id)) {
+                    this._layoutFromCache(label, atlas.glyphs);
+                }
+                meshGroup.reemitGlyphs(label);
+            }
+        } else if (metricsArrived) {
+            // Async SDF worker delivered real metrics — re-layout all labels that
+            // may have been laid out with placeholder advance=0 glyphs.
             const alreadyRelaidOut = new Set<string>();
             for (const l of this._toAddBuffer) alreadyRelaidOut.add(l.id);
             for (const l of this._toLayoutBuffer) alreadyRelaidOut.add(l.id);

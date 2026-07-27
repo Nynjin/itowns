@@ -1,6 +1,6 @@
 import { Matrix4 } from 'three';
 import { Label } from '../Label';
-import { HierarchicalBitmap } from '../Collision/HierarchicalBitmap';
+import { PyramidOccupancy } from '../Collision/PyramidOccupancy';
 import { LabelProjector, ScreenAABB } from '../Collision/LabelProjector';
 import type { LabelManagerConfig } from '../Types/LabelConfig';
 
@@ -17,11 +17,11 @@ export class WorkerCollisionEngine {
     private readonly _candidates: Label[] = [];
 
     private readonly _downscaleShift: number;
-    private readonly _bitmap:         HierarchicalBitmap;
+    private readonly _bitmap:         PyramidOccupancy;
     private readonly _projector:      LabelProjector;
     private readonly _numBuckets:     number;
     private readonly _buckets:        Label[][];
-    private readonly _scratchAABB:    ScreenAABB = { x0: 0, y0: 0, x1: 0, y1: 0 };
+    private readonly _scratchAABB:    ScreenAABB = { x0: 0, y0: 0, x1: 0, y1: 0, fullArea: 0 };
     /** Ids whose shouldRender / isCandidate changed this pass — reused. */
     private readonly _changed         = new Set<string>();
     /** Reused matrices for the per-evaluation camera frame (setFrame copies them). */
@@ -32,7 +32,7 @@ export class WorkerCollisionEngine {
     constructor(config: LabelManagerConfig) {
         this._config         = config;
         this._downscaleShift = log2OfPow2(config.downscale);
-        this._bitmap         = new HierarchicalBitmap(config.coarseScale);
+        this._bitmap         = new PyramidOccupancy(config.pyramidLevels);
         this._projector      = new LabelProjector(config);
         this._numBuckets     = config.collisionBuckets;
         this._buckets        = Array.from({ length: this._numBuckets }, () => []);
@@ -145,17 +145,11 @@ export class WorkerCollisionEngine {
                         continue;
                     }
                     const { x0, y0, x1, y1 } = aabb;
-                    let sr: boolean;
-                    if (this._bitmap.isCoarseEmpty(x0, y0, x1, y1)) {
-                        this._bitmap.setRegion(x0, y0, x1, y1);
-                        sr = true;
-                    } else {
-                        const area  = (x1 - x0 + 1) * (y1 - y0 + 1);
-                        const occ   = this._bitmap.countFine(x0, y0, x1, y1);
-                        const thr   = label.shouldRender ? this._config.maxOcclusion : this._config.acceptableOcclusion;
-                        sr = occ / area <= thr;
-                        if (sr) this._bitmap.setRegion(x0, y0, x1, y1);
-                    }
+                    // Binary occupancy: placed iff the box is entirely free. Stability
+                    // comes from the bucket ORDER (renderPenaltyMultiplier), not overlap
+                    // leniency. See LabelCollisionEngine for the rationale.
+                    const sr = this._bitmap.isEmpty(x0, y0, x1, y1);
+                    if (sr) this._bitmap.set(x0, y0, x1, y1);
                     if (sr !== label.shouldRender) { label.shouldRender = sr; changed.add(label.id); }
                 }
                 bucket.length = 0;

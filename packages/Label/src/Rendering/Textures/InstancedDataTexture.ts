@@ -53,11 +53,22 @@ export class InstancedDataTexture {
         texelsPerItem: number,
         maxTexWidth: number,
         capacityMultiplier: number,
+        initialItemCapacity = 0,
     ) {
         this.texelsPerItem        = texelsPerItem;
         this._floatsPerItem       = texelsPerItem * FLOATS_PER_TEXEL;
         this._maxTextureWidth     = maxTexWidth;
         this._capacityMultiplier  = capacityMultiplier;
+
+        // Pre-allocate to the expected peak working set. Every _resize disposes
+        // the DataTexture and re-uploads it whole (see _regenerateTexture →
+        // _fullUploadNeeded), which lands as a webgl-submit/GPU spike in the
+        // frame it happens. Under tile churn the buffer would otherwise grow
+        // through several resizes; front-loading the allocation makes those
+        // resizes (and their full re-uploads) never happen. A 128×128 floor
+        // keeps the previous default when no capacity hint is given.
+        const floorItems = Math.floor((128 * 128) / texelsPerItem);
+        this._resize(Math.max(floorItems, initialItemCapacity));
     }
 
     // ─── Queries ───────────────────────────────────────────────────────────────

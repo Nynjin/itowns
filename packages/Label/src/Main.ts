@@ -1,4 +1,6 @@
 export * from './Label';
+export * from './LabelCache';
+export * from './TieredLabelCache';
 export * from './Profiler';
 export * from './LabelAtlasManager';
 export * from './InstancedLabelManager';

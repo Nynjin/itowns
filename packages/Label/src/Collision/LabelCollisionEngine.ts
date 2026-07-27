@@ -1,6 +1,6 @@
 import { Camera, PerspectiveCamera, Vector2, WebGLRenderer } from 'three';
 import { Label } from '../Label';
-import { HierarchicalBitmap } from './HierarchicalBitmap';
+import { PyramidOccupancy } from './PyramidOccupancy';
 import { LabelProjector, ScreenAABB } from './LabelProjector';
 import { LabelManagerConfig } from '../Types/LabelConfig';
 import { LabelProfiler } from '../Profiler';
@@ -22,11 +22,11 @@ export class LabelCollisionEngine {
 
     private readonly _renderer:       WebGLRenderer;
     private readonly _downscaleShift: number;
-    private readonly _bitmap:         HierarchicalBitmap;
+    private readonly _bitmap:         PyramidOccupancy;
     private readonly _projector:      LabelProjector;
     private readonly _numBuckets:     number;
     private readonly _buckets:        Label[][];
-    private readonly _scratchAABB:    ScreenAABB = { x0: 0, y0: 0, x1: 0, y1: 0 };
+    private readonly _scratchAABB:    ScreenAABB = { x0: 0, y0: 0, x1: 0, y1: 0, fullArea: 0 };
     private readonly _tmpVec2         = new Vector2();
     private readonly _config:         LabelManagerConfig;
 
@@ -34,7 +34,7 @@ export class LabelCollisionEngine {
         this._renderer       = renderer;
         this._config         = config;
         this._downscaleShift = log2OfPow2(config.downscale, 'downscale');
-        this._bitmap         = new HierarchicalBitmap(config.coarseScale);
+        this._bitmap         = new PyramidOccupancy(config.pyramidLevels);
         this._projector      = new LabelProjector(config);
         this._numBuckets     = config.collisionBuckets;
         this._buckets        = Array.from({ length: this._numBuckets }, () => []);
@@ -183,21 +183,13 @@ export class LabelCollisionEngine {
                 }
 
                 const { x0, y0, x1, y1 } = aabb;
-                let shouldRender: boolean;
 
-                if (this._bitmap.isCoarseEmpty(x0, y0, x1, y1)) {
-                    this._bitmap.setRegion(x0, y0, x1, y1);
-                    shouldRender = true;
-                }
-                else {
-                    const area      = (x1 - x0 + 1) * (y1 - y0 + 1);
-                    const claimed   = this._bitmap.countFine(x0, y0, x1, y1);
-                    const threshold = label.shouldRender
-                        ? this._config.maxOcclusion
-                        : this._config.acceptableOcclusion;
-                    shouldRender    = (claimed / area) <= threshold;
-                    if (shouldRender) this._bitmap.setRegion(x0, y0, x1, y1);
-                }
+                // Binary occupancy: a label is placed iff its box is entirely free.
+                // Stability comes from the depth-bucket ORDER (already-rendered labels
+                // score higher via renderPenaltyMultiplier, so they are placed first
+                // and reclaim their spot) — not from any allowed-overlap leniency.
+                const shouldRender = this._bitmap.isEmpty(x0, y0, x1, y1);
+                if (shouldRender) this._bitmap.set(x0, y0, x1, y1);
 
                 if (shouldRender !== label.shouldRender) { label.shouldRender = shouldRender; changed = true; }
             }

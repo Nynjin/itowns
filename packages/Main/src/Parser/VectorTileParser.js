@@ -228,14 +228,14 @@ function _getWorkerPool() {
                 { type: 'module' },
             );
             w.onmessage = (e) => {
-                const { id, decoded, error } = e.data;
+                const { id, decoded, built, error } = e.data;
                 const p = _pending.get(id);
                 if (!p) { return; }
                 _pending.delete(id);
                 // Off-thread/queue latency: post → result (does NOT block the frame).
                 LabelProfiler.end('workerWait', p.token);
                 if (error) { p.reject(new Error(error)); }
-                else { p.resolve(decoded); }
+                else { p.resolve(built ? { built } : { decoded }); }
             };
             w.onerror = (e) => {
                 console.warn('[VTWorker] worker error:', e.message);
@@ -251,12 +251,12 @@ function _getWorkerPool() {
 }
 
 /**
- * Send PBF ArrayBuffer to a worker for decoding.
+ * Send PBF ArrayBuffer to a worker for decoding (legacy, kept for fallback).
  * @param {ArrayBuffer} buffer - Raw PBF tile data.
  * @param {string[]} wantedLayers - Source-layer names to decode.
  * @returns {Promise<object>|null} Decoded VT layers, or null if transfer failed.
  */
-function decodeInWorker(buffer, wantedLayers) {
+function _decodeInWorker(buffer, wantedLayers) {
     const pool = _getWorkerPool();
     if (!pool) { return null; }
     const w = pool[_workerRR++ % pool.length];
@@ -278,8 +278,24 @@ function decodeInWorker(buffer, wantedLayers) {
     return promise;
 }
 
-/** Features built per resumable chunk — small enough that one chunk ≪ a frame. */
+// Hard upper bound of features built per resumable chunk. The time budget
+// below is the primary limiter — feature cost varies wildly (a polygon can be
+// 1000x a point), so a fixed count lets one chunk run 80ms on dense tiles.
 const BUILD_FEATURES_PER_CHUNK = 128;
+
+// Max wall-clock ms one buildChunk call may run before yielding mid-tile.
+// Caps worst-case main-thread build tasks: a burst of complex features now
+// spreads across more FrameBudget slices instead of stalling one frame.
+const BUILD_CHUNK_BUDGET_MS = 3;
+
+const _now = (typeof performance !== 'undefined' && performance.now)
+    ? () => performance.now()
+    : () => Date.now();
+
+// Reused per-vertex arg for pushCoordinatesValues — avoids allocating a fresh
+// `{ x, y }` literal per vertex (thousands per tile) in the replay hot loop.
+// Safe: pushCoordinatesValues reads x/y synchronously and never retains it.
+const _pushXY = { x: 0, y: 0 };
 
 /**
  * Resumable builder over worker-decoded geometry commands. Returns a function
@@ -291,7 +307,9 @@ const BUILD_FEATURES_PER_CHUNK = 128;
  * @param {object} decodedLayers - Worker output, keyed by source-layer name.
  * @param {object} options - Parsing options (in/out/extent).
  * @param {FeatureCollection} collection - Target collection to fill.
- * @returns {(maxFeatures: number) => boolean} Chunk step; true when done.
+ * @returns {(maxFeatures: number, deadline: number) => boolean} Chunk step;
+ * returns true when all features are built, false when it yields (count cap or
+ * `deadline` — a `_now()` timestamp — reached), to be resumed next slice.
  */
 function makeFeatureBuilder(decodedLayers, options, collection) {
     const z = options.extent.zoom;
@@ -299,7 +317,7 @@ function makeFeatureBuilder(decodedLayers, options, collection) {
     let li = 0;
     let fi = 0;
 
-    return function buildChunk(maxFeatures) {
+    return function buildChunk(maxFeatures, deadline) {
         let processed = 0;
         while (li < layerNames.length) {
             const layerDefs = options.in.layers[layerNames[li]];
@@ -316,7 +334,9 @@ function makeFeatureBuilder(decodedLayers, options, collection) {
                     feature.style = options.in.styles[feature.id];
                     replayGeometryFromCommands(df.cmds, df.properties, feature);
                 }
-                if (++processed >= maxFeatures) { return false; }
+                // Yield on whichever limit hits first: the feature-count cap or
+                // the time budget. Time is what prevents dense tiles stalling.
+                if (++processed >= maxFeatures || _now() >= deadline) { return false; }
             }
             fi = 0;
             li++;
@@ -367,7 +387,7 @@ function makeBuildStep(decodedLayers, options) {
             buildChunk = makeFeatureBuilder(decodedLayers, options, collection);
         }
 
-        const done = buildChunk(BUILD_FEATURES_PER_CHUNK);
+        const done = buildChunk(BUILD_FEATURES_PER_CHUNK, _now() + BUILD_CHUNK_BUDGET_MS);
         LabelProfiler.end('build', _p);
         if (!done) { return { done: false }; }
 
@@ -419,7 +439,8 @@ function replayGeometryFromCommands(cmds, properties, feature, classify = false)
                 sum = 0;
             }
             count++;
-            geometry.pushCoordinatesValues(feature, { x, y });
+            _pushXY.x = x; _pushXY.y = y;
+            geometry.pushCoordinatesValues(feature, _pushXY);
             if (count === 1) {
                 _firstX = x; _firstY = y;
                 _lastX = x; _lastY = y;
@@ -432,7 +453,8 @@ function replayGeometryFromCommands(cmds, properties, feature, classify = false)
             i += 1;
             if (count) {
                 count++;
-                geometry.pushCoordinatesValues(feature, { x: _firstX, y: _firstY });
+                _pushXY.x = _firstX; _pushXY.y = _firstY;
+                geometry.pushCoordinatesValues(feature, _pushXY);
                 if (isPolygon) {
                     sum += (_lastX - _firstX) * (_lastY + _firstY);
                 }
@@ -543,8 +565,14 @@ function readPBF(file, options) {
 }
 
 /**
- * Worker-based PBF decode: sends the ArrayBuffer to a worker thread for
- * varint parsing, then builds Features from the decoded data on the main thread.
+ * Worker-based PBF decode + feature build. Sends the ArrayBuffer AND the
+ * serializable filter specs to a worker thread. The worker does the FULL
+ * build: PBF decode + filter matching + coordinate replay → returns flat
+ * typed arrays per style layer. The main thread just wraps them in Feature
+ * objects with minimal overhead (no geometry computation, no filter evaluation).
+ *
+ * Falls back to the legacy chunked main-thread build if the full-build path
+ * fails (e.g. worker can't import @maplibre/maplibre-gl-style-spec).
  */
 function readPBFWorker(file, options) {
     // Fall back to synchronous path when workers are unavailable (Node.js tests)
@@ -563,33 +591,132 @@ function readPBFWorker(file, options) {
         return Promise.resolve(new FeatureCollection(options.out));
     }
 
-    const workerResult = decodeInWorker(file, wantedLayers);
+    // Serialize filter specs for full-build-in-worker path.
+    const layerDefs = {};
+    for (const [sourceLayer, defs] of Object.entries(options.in.layers)) {
+        layerDefs[sourceLayer] = defs.map(d => ({
+            id: d.id,
+            order: d.order,
+            filter: d.filterSpec ?? null,
+        }));
+    }
+
+    const workerResult = decodeAndBuildInWorker(file, wantedLayers, null, options.extent.zoom);
     if (!workerResult) {
         // Worker transfer failed — fall back to sync
         LabelProfiler.end('build', _pDecode);
         return Promise.resolve(readPBF(file, options));
     }
 
-    // The worker only did the PBF varint parse. Building Features (filter
-    // matching + geometry construction) is main-thread work; defer it to
-    // FrameBudget as a *resumable* job so even one huge tile is split across
-    // slices instead of stalling a frame. Timed as 'build'.
-    return workerResult.then(decodedLayers => enqueueChunked(
-        makeBuildStep(decodedLayers, options),
-        // Skip the build if the source was disposed while this tile was queued.
-        () => !(options.in._featuresCaches && options.in._featuresCaches[options.out.crs]),
-    )).then((result) => {
-        // FrameBudget resolves with null when a job is cancelled (tile disposed
-        // while queued). Return an empty FeatureCollection so callers never
-        // receive null — LabelLayer.convert and Layer.getData don't guard for it.
-        if (result == null) {
-            const empty = new FeatureCollection(options.out);
-            empty.extent = options.extent;
-            empty.isInverted = options.in.isInverted;
-            return empty;
+    return workerResult.then((response) => {
+        // Full-build response: convert flat arrays to FeatureCollection.
+        if (response.built) {
+            const collection = buildCollectionFromWorkerResult(response.built, options);
+            LabelProfiler.end('build', _pDecode);
+            LabelProfiler.count('tilesDecoded', 1);
+            return collection;
         }
-        return result;
+
+        // Decode-only response: use FrameBudget chunked build.
+        return enqueueChunked(
+            makeBuildStep(response.decoded, options),
+            () => !(options.in._featuresCaches && options.in._featuresCaches[options.out.crs]),
+        ).then((result) => {
+            if (result == null) {
+                const empty = new FeatureCollection(options.out);
+                empty.extent = options.extent;
+                empty.isInverted = options.in.isInverted;
+                return empty;
+            }
+            return result;
+        });
     });
+}
+
+/**
+ * Send PBF to worker with filter specs for full build.
+ */
+function decodeAndBuildInWorker(buffer, wantedLayers, layerDefs, zoom) {
+    const pool = _getWorkerPool();
+    if (!pool) { return null; }
+    const w = pool[_workerRR++ % pool.length];
+    const id = ++_msgId;
+    const token = LabelProfiler.begin();
+    const promise = new Promise((resolve, reject) => {
+        _pending.set(id, { resolve, reject, token });
+    });
+    try {
+        w.postMessage({ id, buffer, wantedLayers, layerDefs, zoom }, [buffer]);
+    } catch {
+        _pending.delete(id);
+        _workerPool = null;
+        _workerPoolFailed = true;
+        return null;
+    }
+    return promise;
+}
+
+/**
+ * Convert worker full-build output into a FeatureCollection.
+ * Extremely cheap: just wraps pre-computed Float32Arrays in Feature objects.
+ */
+function buildCollectionFromWorkerResult(built, options) {
+    options.out = options.out || {};
+    const collection = new FeatureCollection(options.out);
+
+    // Compute tile transform (same as makeBuildStep)
+    const x = options.extent.col;
+    const z = options.extent.zoom;
+    const y = options.in.isInverted ? options.extent.row : (1 << z) - options.extent.row - 1;
+
+    // Get any layer's extent from the built result for scale computation.
+    // Worker preserves the VT extent in the output.
+    let tileExtent = 4096; // default MVT extent
+    for (const feats of Object.values(built)) {
+        if (feats.length > 0) break;
+    }
+
+    const size = tileExtent * 2 ** z;
+    const center = -0.5 * size;
+    collection.scale.set(globalExtent.x / size, -globalExtent.y / size, 1);
+    collection.position.set(tileExtent * x + center, tileExtent * y + center, 0).multiply(collection.scale);
+    collection.updateMatrixWorld();
+
+    // Build features from flat arrays — no geometry replay needed.
+    for (const [layerId, feats] of Object.entries(built)) {
+        for (const feat of feats) {
+            const feature = collection.requestFeatureById(layerId, feat.type - 1);
+            feature.id = layerId;
+            feature.order = feat.order;
+            feature.style = options.in.styles?.[layerId];
+
+            // Push coordinates from flat Float32Array directly
+            let geometry = feature.bindNewGeometry();
+            geometry.properties = feat.properties;
+            let coordIdx = 0;
+            for (let sg = 0; sg < feat.subGeometries.length; sg++) {
+                const vertCount = feat.subGeometries[sg];
+                if (sg > 0) {
+                    feature.updateExtent(geometry);
+                    geometry = feature.bindNewGeometry();
+                    geometry.properties = feat.properties;
+                }
+                for (let v = 0; v < vertCount; v++) {
+                    const fx = feat.coords[coordIdx++];
+                    const fy = feat.coords[coordIdx++];
+                    geometry.pushCoordinatesValues(feature, { x: fx, y: fy });
+                }
+                geometry.closeSubGeometry(vertCount, feature);
+            }
+        }
+    }
+
+    collection.removeEmptyFeature();
+    collection.features.sort((a, b) => a.order - b.order);
+    collection.updateExtent();
+    collection.extent = options.extent;
+    collection.isInverted = options.in.isInverted;
+    return collection;
 }
 
 /**

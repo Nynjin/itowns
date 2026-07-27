@@ -338,6 +338,50 @@
             min-width: 170px;
         }
 
+        /* ── Param tuning report ──────────────────────────────────────────── */
+        #panel-tune-report {
+            position: fixed;
+            top: 10px; right: 10px;
+            width: 920px;
+            max-height: calc(100vh - 20px);
+            display: none;
+            flex-direction: column;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid rgba(0,0,0,0.10);
+            border-radius: 4px;
+            padding: 0;
+            overflow: hidden;
+            pointer-events: auto;
+            backdrop-filter: blur(6px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            z-index: 15;
+        }
+        #panel-tune-report.visible { display: flex; }
+        #tune-report-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.10);
+            background: rgba(255,255,255,0.55);
+            flex-shrink: 0;
+        }
+        #tune-report-header .panel-title { margin: 0; flex: 1; }
+        #tune-report-body {
+            overflow: auto;
+            padding: 10px;
+            max-height: calc(100vh - 70px);
+        }
+        .tune-param-name {
+            font-weight: 600;
+            color: #8a4000;
+            font-size: 11px;
+            margin: 12px 0 4px;
+        }
+        .tune-param-name:first-child { margin-top: 0; }
+        .tune-best { background: rgba(26,122,74,0.08) !important; }
+        .tune-worst { background: rgba(176,32,32,0.06) !important; }
+
     </style>
 </head>
 
@@ -457,6 +501,10 @@
                 <button class="btn" id="btn-maplibre"
                     style="background:rgba(20,120,60,0.12);border-color:rgba(20,140,70,0.35);color:#0a7a3a;"
                     title="Instrumented MapLibre GL run (local maplibre-gl, no CDN): driven through the SAME 12-step camera plan as iTowns, probed for the same per-stage schema (workerWait, candidate, occlusion, gpu…), exported into one unified JSON alongside the iTowns results.">▶ MapLibre (instrumented)</button>
+                <div style="width:1px;height:16px;background:rgba(0,0,0,0.10);margin:0 2px;"></div>
+                <button class="btn" id="btn-tune-params"
+                    style="background:rgba(180,80,0,0.12);border-color:rgba(200,100,0,0.35);color:#8a4000;"
+                    title="Parameter tuning: systematically vary InstancedLabelManager config parameters and measure performance impact of each. Runs a short camera path for each configuration variant.">⚙ Tune Params</button>
             </div>
         </div>
 
@@ -510,6 +558,15 @@
         backdrop-filter: blur(6px);
     ">▸ Show report</button>
 
+    <div id="panel-tune-report">
+        <div id="tune-report-header">
+            <div class="panel-title">Parameter Tuning Results</div>
+            <span id="tune-report-progress" style="font-size:9px;color:rgba(0,0,0,0.4);"></span>
+            <button class="btn" id="btn-tune-close" style="pointer-events:auto;font-size:10px;padding:3px 8px;">✕ Close</button>
+        </div>
+        <div id="tune-report-body"></div>
+    </div>
+
     <div id="countdown-overlay">
         <div id="countdown-text">3</div>
     </div>
@@ -557,8 +614,7 @@
 
     // ── Scene factory ────────────────────────────────────────────────────────
 
-    async function setupScene() {
-        nextCacheBust(); // fresh nonce → all tile URLs are cold
+    async function setupScene(labelManagerOverrides = null) {
         const viewerDiv = document.getElementById('viewerDiv');
 
         // [BUG FIX] Fetch the map imagery configuration completely before doing anything.
@@ -587,6 +643,22 @@
 
         installRenderLoop(view);
 
+        // Param tuning (hard params): replace the default sync label manager with
+        // one built from the overridden config BEFORE any layer is added.
+        // LabelsNodes capture the manager reference at creation, so the previous
+        // approach (swap AFTER setupScene) left every already-created node feeding
+        // a DISPOSED manager — its labels silently vanished, which is why `rend`
+        // sat at a low constant for every hard-param value.
+        if (labelManagerOverrides && view.instancedLabelManager) {
+            const oldMgr = view.instancedLabelManager;
+            const ILM = oldMgr.constructor;
+            for (const mesh of oldMgr.meshes) view.scene.remove(mesh);
+            oldMgr.dispose();
+            const newMgr = new ILM(view.mainLoop.gfxEngine.getRenderer(), labelManagerOverrides);
+            newMgr.attachTo(view.scene);
+            view.instancedLabelManager = newMgr;
+        }
+
         // [BUG FIX] By ensuring the configuration was fetched previously, we add layers 
         // synchronously here. This prevents the LAYERS_INITIALIZED event from firing
         // instantly before the scene really starts pulling down tiles (which was causing 
@@ -594,8 +666,6 @@
         // OSM raster imagery basemap — skip it to match MapLibre (vector-only, no
         // raster ortho). See `useImagery` note above.
         if (useImagery) {
-            // Use the same OSM tile URL as MapLibre, with cache-bust.
-            osmData.source.url = bustUrl(ML_RASTER_TILES);
             osmData.source = new itowns.TMSSource(osmData.source);
             view.addLayer(new itowns.ColorLayer(osmData.id, osmData));
         }
@@ -853,6 +923,12 @@
 
     const ALL_STEP_INDEXES = STEPS.map((_, i) => i);
 
+    // Global multiplier on step durations (1 = full length). The param-tuning
+    // sweep sets 0.5 so each eval drives the same camera path in half the time —
+    // per-eval metrics stay comparable to each other (all evals use the same
+    // scale) while the whole sweep takes half as long. Full benchmarks use 1.
+    let _stepTimeScale = 1;
+
     const lerp = (a, b, t) => a + (b - a) * t;
     const easeInOut = (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
     const easeLinear = (t) => t;
@@ -1104,6 +1180,52 @@
 
     // ── Windowed FPS ──────────────────────────────────────────────────────────
     const STATS_BUCKET_MS = 250;
+    // ── Visual clutter sampler (tune metric) ──────────────────────────────────
+    // Measures ACTUAL on-screen label overlap, independently of the collision
+    // engine's own bookkeeping — so it catches the transient clutter the engine
+    // cannot see: stale placements while the camera outruns cullingRate, or
+    // collision skipped entirely during fast moves. Projects every rendered
+    // label to a screen AABB and returns overlapping pairs per rendered label
+    // (0 = clean, higher = visually cluttered). Sampled every ~30 frames during
+    // tune runs (~0.5 ms per sample at a few hundred labels — negligible bias).
+    const _clutterVec = new THREE.Vector3();
+    const _clutterSize = new THREE.Vector2();
+    let _clutterAccum = null;   // { sum, n, peak, frames } while a tune eval runs
+
+    function sampleClutterRatio() {
+        if (!view) return null;
+        if (labelMode !== 'instanced' && labelMode !== 'instanced-async') return null;
+        const mgr = labelMode === 'instanced-async'
+            ? view.instancedLabelManagerAsync : view.instancedLabelManager;
+        if (!mgr || !mgr._labelsById) return null;
+        const cam = view.camera3D;
+        const size = view.mainLoop.gfxEngine.getRenderer().getSize(_clutterSize);
+        const rects = [];
+        for (const label of mgr._labelsById.values()) {
+            if (!label.isRendered || !label.bounds) continue;
+            _clutterVec.copy(label.position).project(cam);
+            if (_clutterVec.z > 1
+                || _clutterVec.x < -1.2 || _clutterVec.x > 1.2
+                || _clutterVec.y < -1.2 || _clutterVec.y > 1.2) continue;
+            const x = (_clutterVec.x * 0.5 + 0.5) * size.x;
+            const y = (0.5 - _clutterVec.y * 0.5) * size.y;
+            const s = (label.fontSize || mgr.config.baseFontSize) / mgr.config.baseFontSize;
+            const hw = (label.bounds.width  * s) / 2;
+            const hh = (label.bounds.height * s) / 2;
+            rects.push([x - hw, y - hh, x + hw, y + hh]);
+        }
+        if (rects.length < 2) return 0;
+        let overlapping = 0;
+        for (let i = 0; i < rects.length; i++) {
+            const a = rects[i];
+            for (let j = i + 1; j < rects.length; j++) {
+                const b = rects[j];
+                if (a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) overlapping++;
+            }
+        }
+        return overlapping / rects.length;
+    }
+
     function fpsBuckets(durationsMs, bucketMs) {
         const out = [];
         let acc = 0, count = 0;
@@ -2214,7 +2336,12 @@
     }
 
     // Record a mode's results into the report and refresh it.
+    // When true, suppresses publishResults (the main benchmark report) so it
+    // doesn't overwrite the tuning panel during param-tuning runs.
+    let _suppressPublish = false;
+
     function publishResults(mode, stepResults, progress) {
+        if (_suppressPublish) return;
         _reportState.modeResults[mode] = stepResults;
         _reportState.coldStartByMode[mode] = { ...coldStart };
         // Run-level gauges (reset at runner.start): biggest single convert()
@@ -2252,6 +2379,8 @@
         elStepSelect.disabled = disabled;
         Object.values(ALL_MODE_BTNS).forEach((b) => { if (b) b.disabled = disabled; });
         Object.values(fpsLockBtns).forEach((b) => { if (b) b.disabled = disabled; });
+        const btnTune = document.getElementById('btn-tune-params');
+        if (btnTune) btnTune.disabled = disabled;
     }
 
     async function countdown() {
@@ -2600,11 +2729,20 @@
 
         if (runner.running && runner.stepIdx >= 0) {
             const step = STEPS[runner.stepIdx];
-            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
+            const t    = Math.min(1, (now - runner.stepStartTime) / (step.duration * _stepTimeScale));
             const r = view.mainLoop.gfxEngine.getRenderer();
             _frameDrawCalls += r.info.render.calls;
             _frameTris       = r.info.render.triangles;
             runner.record(frameMs);
+            // Tune-only: sample visual overlap sparsely during timed steps.
+            if (_clutterAccum && (++_clutterAccum.frames % 30 === 0)) {
+                const c = sampleClutterRatio();
+                if (c != null) {
+                    _clutterAccum.sum += c;
+                    _clutterAccum.n++;
+                    if (c > _clutterAccum.peak) _clutterAccum.peak = c;
+                }
+            }
             if (t >= 1) runner.finishStep();
         }
 
@@ -2638,7 +2776,7 @@
         // skipped so they can't perturb the numbers being measured.
         if (runner.running && runner.stepIdx >= 0) {
             const step = STEPS[runner.stepIdx];
-            const t    = Math.min(1, (now - runner.stepStartTime) / step.duration);
+            const t    = Math.min(1, (now - runner.stepStartTime) / (step.duration * _stepTimeScale));
             updateStepPanel(step, t, runner.planIdx, runner.planLen);
             return;
         }
@@ -2669,18 +2807,28 @@
         if (!runner.running) return;
         const drive = () => {
             if (!view || !runner.running) return;
-            let moved = false;
             if (runner.stepIdx >= 0) {
                 const step = STEPS[runner.stepIdx];
-                const t    = Math.min(1, (performance.now() - runner.stepStartTime) / step.duration);
+                const t    = Math.min(1, (performance.now() - runner.stepStartTime) / (step.duration * _stepTimeScale));
                 const placement = step.drive(t);
                 if (placementMoved(placement)) {
-                    applyPlacement(view, placement);   
+                    applyPlacement(view, placement);
                     _lastPlacement = placement;
-                    moved = true;
                 }
             }
-            view.notifyChange(moved ? view.camera.camera3D : undefined, true);
+            // Always supply the camera as the change source — NOT just on frames
+            // where the placement changed. MainLoop.filterChangeSources only does a
+            // full geometry-layer update (re-subdivide, and crucially INTEGRATE
+            // async-arrived tiles → create their labels) when the camera or the
+            // layer itself is a change source; a frame with `undefined` source
+            // renders but skips the tile layer entirely (srcs.size === 0). Passing
+            // `undefined` on hold/settle frames meant tiles requested a few frames
+            // earlier arrived but were never integrated during the bench, so no new
+            // labels appeared until a manual interaction re-supplied the camera —
+            // the "manager frozen during bench, BAM on click" symptom. GlobeControls
+            // passes the camera every frame; matching that here makes scripted
+            // playback behave like real interaction.
+            view.notifyChange(view.camera3D, true);
         };
         if (FPS_LOCK > 0) {
             setTimeout(drive, Math.max(0, (1000 / FPS_LOCK) - frameMs));
@@ -2892,7 +3040,15 @@
 
     window.addEventListener('resize', () => { if (elReport.classList.contains('visible')) sizeReport(); });
 
-    const FULL_MODES = ['none', 'instanced', 'dom-perf', 'maplibre-none', 'maplibre'];
+    // ── Modes the full benchmark runs — the single toggle point. ─────────────
+    // Comment a line out to skip that mode; uncomment to include it.
+    const FULL_MODES = [
+        'none',            // baseline: tiles, no labels
+        'instanced',       // 3D instanced labels
+        // 'dom-perf',        // DOM labels
+        // 'maplibre-none',   // MapLibre baseline (no labels)
+        'maplibre',        // MapLibre with labels
+    ];
     const MODE_SHORT = { none: 'None', instanced: '3D', 'dom-perf': 'DOM', maplibre: 'ML', 'maplibre-none': 'ML base' };
 
     function runBenchmarkPromise(stepPlan = ALL_STEP_INDEXES) {
@@ -3014,10 +3170,10 @@
     // map, owns its own measurement, and never touches `view`.
     // ───────────────────────────────────────────────────────────────────────
     const ML_STYLE_URL = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
-    // Shared raster tile URL: OpenStreetMap standard tiles. Used by both iTowns
-    // and MapLibre so they render identical basemap imagery. This server accepts
-    // query params, allowing cache-bust per mode for fully cold fetches.
-    const ML_RASTER_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    // Shared raster tile URL: same basemap used by iTowns (Klokantech Basic from
+    // OPENSM.json). NOT cache-busted — the raster imagery is identical across all
+    // modes so sharing the browser cache is fair and avoids rate-limit issues.
+    const ML_RASTER_TILES = 'https://maps.pole-emploi.fr/styles/klokantech-basic/{z}/{x}/{y}.png';
 
     // ── Cache-bust nonce ─────────────────────────────────────────────────────
     // Incremented before EVERY mode run (iTowns or MapLibre) and appended as a
@@ -3274,7 +3430,7 @@
         const s = { ...style, sources: { ...style.sources } };
         s.sources['shared-raster'] = {
             type: 'raster',
-            tiles: [bustUrl(ML_RASTER_TILES)],
+            tiles: [ML_RASTER_TILES],
             tileSize: 256,
             attribution: '&copy; OpenStreetMap',
         };
@@ -3511,6 +3667,846 @@
         // Give the new doc a tick to lay out before invoking print.
         setTimeout(() => w.print(), 250);
     });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Parameter Tuning Benchmark
+    // ═══════════════════════════════════════════════════════════════════════
+    // Systematically varies InstancedLabelManager config parameters and
+    // measures the performance impact of each. For each parameter, runs a
+    // short representative camera path (zoom in + idle at street + pan) and
+    // compares the frame-time / label-CPU cost against a baseline config.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const TUNE_STEPS = [2, 9, 11]; // idle_street (density), orbit+tilt churn (stress), extreme zoom (streaming)
+
+    // Parameters to tune and their test values.
+    // "soft" = can be mutated on config object at runtime
+    // "hard" = requires scene rebuild (collision engine depends on them structurally)
+    const TUNE_PARAMS = [
+        // ── Performance / throughput ──────────────────────────────────────
+        { key: 'layoutBudgetPerTick', label: 'Layout budget / tick', type: 'soft',
+          values: [0, 50, 200, 500],
+          desc: 'Max labels laid out per tick (0 = unlimited). Higher = faster initial build, but heavier frames.' },
+        { key: 'layoutTimeBudgetMs', label: 'Layout time budget (ms)', type: 'soft',
+          values: [0, 2, 8, 16],
+          desc: 'Wall-clock cap on layout per tick (0 = unlimited). Bounds per-frame cost regardless of per-label complexity.' },
+        { key: 'updateRate', label: 'Update rate (s)', type: 'soft',
+          values: [0.05, 0.2, 1.0, 2.0],
+          desc: 'Seconds between sync batches. Lower = faster label appearance, more per-frame work.' },
+        { key: 'cullingRate', label: 'Culling rate (s)', type: 'soft',
+          values: [0.05, 0.2, 0.5, 1.5],
+          desc: 'Seconds between collision evaluations. Lower = more responsive visibility, costlier.' },
+
+        // ── Collision tuning ──────────────────────────────────────────────
+        { key: 'collisionBuckets', label: 'Collision buckets', type: 'hard',
+          values: [8, 16, 32, 64],
+          desc: 'Number of depth-priority buckets. More = finer priority sort, O(buckets) traversal. (128 dropped: traversal cost only grows past 64.)' },
+        { key: 'downscale', label: 'Downscale (bitmap)', type: 'hard',
+          values: [4, 8, 16, 32],
+          desc: 'Viewport → bitmap downscale factor. Higher = smaller/faster bitmap, coarser collision.' },
+        { key: 'coarseScale', label: 'Coarse scale (bitmap)', type: 'hard',
+          values: [8, 16, 32, 64],
+          desc: 'Hierarchical bitmap coarse tile size. Bigger = faster isEmpty tests, less fine-grained.' },
+        // Visual-quality knobs (label density / overlap tolerance) — excluded
+        // from the PERF sweep: they change what the map looks like, not what it
+        // costs. Tune them by eye, not by benchmark.
+        // { key: 'acceptableOcclusion', label: 'Acceptable occlusion', type: 'soft',
+        //   values: [0.0, 0.1, 0.2, 0.5],
+        //   desc: 'Max overlap for a NEW label to be accepted. Higher = denser labels, more overlap.' },
+        // { key: 'maxOcclusion', label: 'Max occlusion (keep)', type: 'soft',
+        //   values: [0.0, 0.1, 0.3, 0.5],
+        //   desc: 'Max overlap for an EXISTING label to stay. Higher = labels stick longer once placed.' },
+
+        // ── Movement detection ────────────────────────────────────────────
+        { key: 'stationaryThreshold', label: 'Stationary threshold', type: 'soft',
+          values: [0.01, 0.05, 0.1, 0.2],
+          desc: 'VP matrix diff below which camera is "stationary" (skip collision). Lower = more sensitive.' },
+        { key: 'fastMoveFraction', label: 'Fast-move fraction', type: 'soft',
+          values: [0.05, 0.2, 0.4, 0.8],
+          desc: 'Frame-to-frame VP diff above which collision is skipped. Lower = skip earlier.' },
+
+        // ── Scoring / sorting — visual (label stability / priority), not perf ─
+        // { key: 'renderPenaltyMultiplier', label: 'Render penalty multiplier', type: 'soft',
+        //   values: [1, 4, 8, 16],
+        //   desc: 'Penalty applied to non-rendered labels in bucket sort. Higher = harder to re-show hidden labels.' },
+        // { key: 'fontSizePriorityPower', label: 'Font-size priority power', type: 'soft',
+        //   values: [0, 1, 2, 4],
+        //   desc: 'Exponent on size-factor in score. Higher = big labels get much higher priority.' },
+
+        // ── NDC margin — visual (edge pop-in tolerance), not perf ─────────
+        // { key: 'ndcCullMargin', label: 'NDC cull margin', type: 'soft',
+        //   values: [0.0, 0.2, 0.4, 0.8],
+        //   desc: 'Extra margin beyond NDC [-1,1] before culling. Bigger = fewer pop-ins at edges, more candidates.' },
+
+        // ── SDF / atlas ───────────────────────────────────────────────────
+        { key: 'sdfScale', label: 'SDF scale', type: 'hard',
+          values: [1, 2, 3, 4],
+          desc: 'SDF oversampling multiplier. Higher = sharper at large sizes, bigger atlas texture.' },
+        { key: 'baseFontSize', label: 'Base font size (px)', type: 'hard',
+          values: [16, 24, 32, 48],
+          desc: 'Font size for glyph rasterization. Bigger = sharper but larger atlas.' },
+
+        // ── Fade ──────────────────────────────────────────────────────────
+        { key: 'fadeDurationMs', label: 'Fade duration (ms)', type: 'soft',
+          values: [0, 150, 300, 1000],
+          desc: 'Label fade-in/out animation time. 0 = instant. Higher = smoother but more tick work.' },
+
+        // ── Caches ────────────────────────────────────────────────────────
+        { key: 'hotLabelCacheSize', label: 'Hot label cache size', type: 'soft',
+          values: [0, 64, 256, 512],
+          desc: 'Recently-unloaded labels kept for fast re-add. Higher = faster tile re-visits, more memory.' },
+        { key: 'coldLabelCacheSize', label: 'Cold label cache size', type: 'soft',
+          values: [0, 128, 512, 1024],
+          desc: 'Older unloaded labels in secondary cache. Higher = longer cache reach, more memory.' },
+    ];
+
+    const elBtnTuneParams   = document.getElementById('btn-tune-params');
+    const elTuneReport      = document.getElementById('panel-tune-report');
+    const elTuneReportBody  = document.getElementById('tune-report-body');
+    const elTuneReportProg  = document.getElementById('tune-report-progress');
+    const elBtnTuneClose    = document.getElementById('btn-tune-close');
+
+    let _tuneAborted = false;
+
+    // The baseline config (what View.js normally uses for the sync manager)
+    const BASELINE_CONFIG = {
+        pxPerUnit: 1024,
+        globeAlignment: false,
+        fadeDurationMs: 300,
+        baseFontSize: 24,
+        sdfScale: 1,
+        sdfCapacityMultiplier: 2,
+        dataTextureCapacityMultiplier: 2,
+        maxDataTextureWidth: 4096,
+        fontSizePriorityPower: 1,
+        downscale: 8,
+        coarseScale: 16,
+        acceptableOcclusion: 0.1,
+        maxOcclusion: 0.2,
+        stationaryThreshold: 0.05,
+        fastMoveFraction: 0.2,
+        collisionBuckets: 32,
+        ndcCullMargin: 0.2,
+        renderPenaltyMultiplier: 8,
+        layoutBudgetPerTick: 0,
+        layoutTimeBudgetMs: 0,
+        updateRate: 1,
+        cullingRate: 0.5,
+        autoResizePxPerUnit: true,
+        initialLabelCapacity: 0,
+        initialGlyphCapacity: 0,
+        hotLabelCacheSize: 0,
+        coldLabelCacheSize: 0,
+    };
+
+    // Apply a config override to the live label manager. For "soft" params this
+    // just mutates the config object; the collision engine reads it live.
+    function applyTuneConfig(overrides) {
+        if (!view || !view.instancedLabelManager) return;
+        const mgr = view.instancedLabelManager;
+        for (const [k, v] of Object.entries(overrides)) {
+            mgr.config[k] = v;
+        }
+    }
+
+    // Reset config to baseline values
+    function resetTuneConfig() {
+        applyTuneConfig(BASELINE_CONFIG);
+    }
+
+    // ── Quality metrics (measured OUTSIDE the timed loop — zero bias) ─────────
+    //
+    // Stability: lightweight per-frame counter that tracks shouldRender flips.
+    // Cost: one Set comparison per label per frame (~microseconds for 1k labels).
+    // Runs during the benchmark but its cost is negligible vs 16ms frame budget.
+    //
+    // Clutter/Overlap: full screen-space AABB overlap test on rendered labels.
+    // Runs ONCE after the timed run completes — never during measurement frames.
+    // Projects ~500 labels, does O(n²) AABB tests (~250k comparisons, <5ms).
+
+
+
+
+
+    // ── Statistical analysis (computed from Phase 1 data) ───────────────────
+    // No hardcoded correlation pairs. Instead, after Phase 1 sweeps complete,
+    // we compute:
+    // 1. Per-param sensitivity: how much each param moves each metric (normalized effect size)
+    // 2. Correlation matrix: which params have similar/opposite effects on the same metrics
+    // 3. Top correlated pairs: auto-selected for Phase 2 grid search
+
+    const TUNE_METRICS = ['fpsAvg', 'fpsP5', 'msWorst', 'rendAvg', 'clutter'];
+    const METRIC_LABELS = { fpsAvg: 'FPS', fpsP5: 'p5', msWorst: 'worst', rendAvg: 'rendered', clutter: 'clutter' };
+    const METRIC_INVERT = { fpsAvg: false, fpsP5: false, msWorst: true, rendAvg: false, clutter: true };
+
+    // Weights for picking the "best" value per param (single source of truth for
+    // both scoring tables). Scores min-max-normalize each metric across a param's
+    // values, which erases magnitude — so avg FPS gets LOW weight: iTowns is
+    // vsync-capped (~100 fps), so it barely moves, and normalization would blow a
+    // trivial 1-fps wiggle up to a full [0,1] and let it outvote a large yield
+    // change. The real signal: yield (rendered labels = informative map), visual
+    // clutter (screen-measured overlap — punishes configs whose stale collision
+    // lets labels pile up during motion), and worst-frame/p5 (jank). Sum = 1.
+    const TUNE_WEIGHTS = { rendAvg: 0.35, msWorst: 0.20, fpsP5: 0.20, clutter: 0.15, fpsAvg: 0.10 };
+
+    /**
+     * Compute per-param sensitivity: for each param, how much does varying it
+     * affect each metric? Returns normalized effect sizes [-1, 1] where:
+     * - +1 = increasing the param strongly improves the metric
+     * - -1 = increasing the param strongly worsens the metric
+     * Uses Spearman rank correlation between param value rank and metric value.
+     */
+    function computeSensitivity(allResults) {
+        const sensitivity = {}; // { paramKey: { metric: rho } }
+
+        for (const { param, runs } of allResults) {
+            if (runs.length < 3) continue; // need at least 3 points for meaningful correlation
+            sensitivity[param.key] = {};
+
+            // Rank the param values (ascending)
+            const valueRanks = rankArray(runs.map(r => r.value));
+
+            for (const metric of TUNE_METRICS) {
+                const metricVals = runs.map(r => r[metric] || 0);
+                const metricRanks = rankArray(metricVals);
+                // Spearman rho
+                const rho = spearmanRho(valueRanks, metricRanks);
+                // Flip sign for inverted metrics so positive always means "good"
+                sensitivity[param.key][metric] = METRIC_INVERT[metric] ? -rho : rho;
+            }
+        }
+        return sensitivity;
+    }
+
+    function rankArray(arr) {
+        const sorted = arr.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+        const ranks = new Array(arr.length);
+        for (let i = 0; i < sorted.length; i++) {
+            // Handle ties with average rank
+            let j = i;
+            while (j < sorted.length - 1 && sorted[j + 1].v === sorted[j].v) j++;
+            const avgRank = (i + j) / 2;
+            for (let k = i; k <= j; k++) ranks[sorted[k].i] = avgRank;
+            i = j;
+        }
+        return ranks;
+    }
+
+    function spearmanRho(ranks1, ranks2) {
+        const n = ranks1.length;
+        if (n < 3) return 0;
+        let sumD2 = 0;
+        for (let i = 0; i < n; i++) {
+            const d = ranks1[i] - ranks2[i];
+            sumD2 += d * d;
+        }
+        return 1 - (6 * sumD2) / (n * (n * n - 1));
+    }
+
+    /**
+     * Compute pairwise correlation between params: how similar are their
+     * sensitivity profiles? Params that affect the SAME metrics in the SAME
+     * direction are strongly correlated (should be tested together).
+     * Returns sorted list of { keys, similarity } pairs.
+     */
+    function computeParamCorrelations(sensitivity) {
+        const keys = Object.keys(sensitivity);
+        const pairs = [];
+
+        for (let i = 0; i < keys.length; i++) {
+            for (let j = i + 1; j < keys.length; j++) {
+                const a = sensitivity[keys[i]];
+                const b = sensitivity[keys[j]];
+                // Cosine similarity of sensitivity vectors
+                let dot = 0, magA = 0, magB = 0;
+                for (const m of TUNE_METRICS) {
+                    dot += (a[m] || 0) * (b[m] || 0);
+                    magA += (a[m] || 0) ** 2;
+                    magB += (b[m] || 0) ** 2;
+                }
+                magA = Math.sqrt(magA);
+                magB = Math.sqrt(magB);
+                const similarity = (magA > 0 && magB > 0) ? dot / (magA * magB) : 0;
+                // Also compute "impact" — both params must actually MOVE metrics
+                const impact = magA * magB;
+                pairs.push({ keys: [keys[i], keys[j]], similarity, impact });
+            }
+        }
+
+        // Sort by |similarity| × impact — strongest interacting pairs first
+        pairs.sort((a, b) => Math.abs(b.similarity) * b.impact - Math.abs(a.similarity) * a.impact);
+        return pairs;
+    }
+
+    /**
+     * Render the sensitivity matrix and correlation analysis into the report.
+     */
+    function renderAnalysis(allResults, sensitivity, paramCorrelations) {
+        let html = '';
+
+        // ── Sensitivity matrix (param × metric) ──────────────────────────────
+        html += `<div class="tune-param-name" style="margin-top:18px;color:#4030a0;">Sensitivity matrix</div>`;
+        html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:4px;">
+            Spearman ρ between param value and metric. Green = increasing param improves metric. Red = worsens it. Bold = strong effect (|ρ| > 0.7).
+        </div>`;
+        html += `<table class="rep-table"><thead><tr><th style="text-align:left;">Param</th>`;
+        for (const m of TUNE_METRICS) html += `<th title="${m}">${METRIC_LABELS[m]}</th>`;
+        html += `<th title="Root-mean-square of all sensitivities — overall impact magnitude">|impact|</th>`;
+        html += `</tr></thead><tbody>`;
+
+        const paramsByImpact = Object.entries(sensitivity)
+            .map(([key, sens]) => {
+                const impact = Math.sqrt(TUNE_METRICS.reduce((s, m) => s + (sens[m] || 0) ** 2, 0));
+                return { key, sens, impact };
+            })
+            .sort((a, b) => b.impact - a.impact);
+
+        for (const { key, sens, impact } of paramsByImpact) {
+            const paramDef = TUNE_PARAMS.find(p => p.key === key);
+            html += `<tr><td style="text-align:left;" title="${paramDef?.desc || ''}">${paramDef?.label || key}</td>`;
+            for (const m of TUNE_METRICS) {
+                const v = sens[m] || 0;
+                const color = v > 0.3 ? '#1a7a4a' : v < -0.3 ? '#b02020' : 'rgba(0,0,0,0.35)';
+                const bold = Math.abs(v) > 0.7 ? 'font-weight:700;' : '';
+                html += `<td style="color:${color};${bold}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}%</td>`;
+            }
+            html += `<td style="font-weight:600;">${(impact * 100).toFixed(0)}%</td>`;
+            html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+
+        // ── Top correlated pairs ─────────────────────────────────────────────
+        html += `<div class="tune-param-name" style="margin-top:14px;color:#4030a0;">Deduced correlations (top pairs by interaction strength)</div>`;
+        html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:4px;">
+            Pairs of params with similar sensitivity profiles (cosine similarity × impact magnitude). High = they affect the same metrics — testing them together reveals interactions.
+        </div>`;
+        html += `<table class="rep-table"><thead><tr>
+            <th style="text-align:left;">Param A</th>
+            <th style="text-align:left;">Param B</th>
+            <th title="Cosine similarity of sensitivity vectors: +1 = same direction, -1 = opposite">similarity</th>
+            <th title="Combined magnitude — both params must have strong effects">impact</th>
+            <th title="Interaction strength = |similarity| × impact">strength</th>
+        </tr></thead><tbody>`;
+
+        const topPairs = paramCorrelations.slice(0, 12); // show top 12
+        for (const { keys: [k0, k1], similarity, impact } of topPairs) {
+            const p0 = TUNE_PARAMS.find(p => p.key === k0);
+            const p1 = TUNE_PARAMS.find(p => p.key === k1);
+            const strength = Math.abs(similarity) * impact;
+            const simColor = similarity > 0.3 ? '#1a7a4a' : similarity < -0.3 ? '#b02020' : '#555';
+            html += `<tr>
+                <td style="text-align:left;">${p0?.label || k0}</td>
+                <td style="text-align:left;">${p1?.label || k1}</td>
+                <td style="color:${simColor}">${similarity >= 0 ? '+' : ''}${similarity.toFixed(2)}</td>
+                <td>${impact.toFixed(2)}</td>
+                <td style="font-weight:600;">${strength.toFixed(3)}</td>
+            </tr>`;
+        }
+        html += `</tbody></table>`;
+
+        return html;
+    }
+
+    // Render the tuning report
+    function renderTuneReport(results, correlationResults) {
+        if ((!results || results.length === 0) && (!correlationResults || correlationResults.length === 0)) {
+            elTuneReportBody.innerHTML = '<div style="color:rgba(0,0,0,0.4);">No results yet.</div>';
+            return;
+        }
+
+        let html = `<div style="font-size:10px;color:rgba(0,0,0,0.5);margin-bottom:8px;">
+            Each parameter is varied independently while others stay at baseline.
+            Steps: ${TUNE_STEPS.map(i => STEPS[i].name).join(', ')}<br>
+            <b>Metrics</b>: perf (FPS, cpu) · quality (yield = rendered/total)
+        </div>`;
+
+        // Color helpers for quality metrics
+        const yieldColor = (v) => v >= 0.3 ? '#1a7a4a' : v >= 0.15 ? '#8a5800' : '#b02020';
+
+        for (const paramResult of (results || [])) {
+            const { param, runs } = paramResult;
+            if (!runs || runs.length === 0) continue;
+
+            // Multi-criteria normalized score. Each metric normalized to [0,1]
+            // within this param's runs, then weighted. Higher = better.
+            const norm = (arr, i, invert) => {
+                const min = Math.min(...arr), max = Math.max(...arr);
+                if (max === min) return 0.5;
+                const v = (arr[i] - min) / (max - min);
+                return invert ? 1 - v : v;
+            };
+            const fpsArr = runs.map(r => r.fpsAvg);
+            const p5Arr = runs.map(r => r.fpsP5 || r.fpsAvg);
+            const wfArr = runs.map(r => r.msWorst);
+            const rendArr = runs.map(r => r.rendAvg);
+            const clutArr = runs.map(r => r.clutter ?? 0);
+            const tuneScore = (i) =>
+                norm(rendArr, i, false) * TUNE_WEIGHTS.rendAvg + // more rendered labels = better
+                norm(wfArr, i, true) * TUNE_WEIGHTS.msWorst +    // lower worst frame = better
+                norm(p5Arr, i, false) * TUNE_WEIGHTS.fpsP5 +     // higher p5 = more stable floor
+                norm(clutArr, i, true) * TUNE_WEIGHTS.clutter +  // less on-screen overlap = better
+                norm(fpsArr, i, false) * TUNE_WEIGHTS.fpsAvg;    // avg FPS (vsync-capped: low weight)
+            let bestIdx = 0, worstIdx = 0;
+            for (let i = 1; i < runs.length; i++) {
+                if (tuneScore(i) > tuneScore(bestIdx)) bestIdx = i;
+                if (tuneScore(i) < tuneScore(worstIdx)) worstIdx = i;
+            }
+
+            html += `<div class="tune-param-name">${param.label} <span style="font-weight:400;color:rgba(0,0,0,0.4);font-size:9px;">(${param.key})</span></div>`;
+            html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:4px;">${param.desc}</div>`;
+            html += `<table class="rep-table"><thead><tr>
+                <th style="text-align:left;">Value</th>
+                <th title="Average FPS">FPS</th>
+                <th title="5th-percentile FPS">p5</th>
+                <th title="Avg frame time">ms/f</th>
+                <th title="Label pipeline CPU per frame">lbl/f</th>
+                <th title="Worst single frame">wf</th>
+                <th class="grp" title="Rendered labels / total labels — higher = more informative map">yield</th>
+                <th title="Rendered labels (avg)">rend</th>
+                <th title="Visual clutter: avg overlapping label pairs per rendered label, measured on-screen (engine-independent) — catches stale/overlapping labels during motion. avg /peak, lower = cleaner">clut</th>
+                <th class="grp" title="FPS delta vs this param's baseline value">Δ fps</th>
+            </tr></thead><tbody>`;
+
+            for (let i = 0; i < runs.length; i++) {
+                const r = runs[i];
+                const isBaseline = r.value === BASELINE_CONFIG[param.key];
+                const rowClass = i === bestIdx ? 'tune-best' : (i === worstIdx ? 'tune-worst' : '');
+                const baselineFps = runs.find(x => x.value === BASELINE_CONFIG[param.key])?.fpsAvg;
+                const delta = baselineFps ? ((r.fpsAvg / baselineFps - 1) * 100) : 0;
+                const deltaStr = baselineFps
+                    ? `<span style="color:${delta >= 0 ? '#1a7a4a' : '#b02020'}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</span>`
+                    : '—';
+
+                html += `<tr class="${rowClass}">
+                    <td style="text-align:left;font-weight:${isBaseline ? '700' : '400'};">${r.value}${isBaseline ? ' ★' : ''}</td>
+                    <td style="color:${fpsColor(r.fpsAvg)}">${fmt(r.fpsAvg, 1)}</td>
+                    <td>${fmt(r.fpsP5, 1)}</td>
+                    <td>${fmt(r.msAvg, 2)}</td>
+                    <td>${fmt(r.lblCpu, 2)}</td>
+                    <td style="color:${msColor(r.msWorst, 20, 50)}">${fmt(r.msWorst, 0)}</td>
+                    <td class="grp" style="color:${yieldColor(r.yield)}">${(r.yield * 100).toFixed(1)}%</td>
+                    <td>${r.rendAvg}</td>
+                    <td style="color:${(r.clutter ?? 0) < 0.1 ? '#1a7a4a' : (r.clutter ?? 0) < 0.5 ? '#8a5800' : '#b02020'}">${(r.clutter ?? 0).toFixed(2)}<span style="opacity:0.45;font-size:8px;"> /${(r.clutterPeak ?? 0).toFixed(1)}</span></td>
+                    <td class="grp">${deltaStr}</td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+        }
+
+        // ── Statistical analysis (sensitivity + deduced correlations) ─────────
+        if (results && results.length >= 3) {
+            const sensitivity = computeSensitivity(results);
+            const paramCorrelations = computeParamCorrelations(sensitivity);
+            html += renderAnalysis(results, sensitivity, paramCorrelations);
+        }
+
+        // ── Correlation grid results (from Phase 2) ──────────────────────────
+        if (correlationResults && correlationResults.length > 0) {
+            html += `<div class="tune-param-name" style="margin-top:18px;color:#4030a0;">Cross-parameter grid search</div>`;
+            html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:6px;">
+                Curated interacting pairs (structurally coupled params tuned jointly) + top deduced pair from Phase 1, tested as 2D grids. Cell = FPS / yield%.
+            </div>`;
+
+            const yieldColor2 = (v) => v >= 0.3 ? '#1a7a4a' : v >= 0.15 ? '#8a5800' : '#b02020';
+
+            for (const corr of correlationResults) {
+                html += `<div style="font-size:10px;font-weight:600;color:#1a3060;margin:10px 0 3px;">${corr.label}</div>`;
+                html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:4px;">${corr.desc}</div>`;
+
+                const { keys, grid, cells } = corr;
+                if (!cells || cells.length === 0) continue;
+
+                html += `<table class="rep-table"><thead><tr>
+                    <th style="text-align:left;">${keys[0]} \\ ${keys[1]}</th>`;
+                for (const v1 of grid[1]) html += `<th>${v1}</th>`;
+                html += `</tr></thead><tbody>`;
+
+                for (let r = 0; r < grid[0].length; r++) {
+                    html += `<tr><td style="text-align:left;font-weight:600;">${grid[0][r]}</td>`;
+                    for (let c = 0; c < grid[1].length; c++) {
+                        const cell = cells[r * grid[1].length + c];
+                        if (!cell) { html += `<td>—</td>`; continue; }
+                        const bg = cell.fpsAvg >= 55 ? 'rgba(26,122,74,0.1)' :
+                                   cell.fpsAvg >= 30 ? 'rgba(138,88,0,0.08)' : 'rgba(176,32,32,0.08)';
+                        html += `<td style="background:${bg};font-size:9px;line-height:1.3;" title="fps=${fmt(cell.fpsAvg,0)} yield=${(cell.yield*100).toFixed(0)}%">
+                            <b style="color:${fpsColor(cell.fpsAvg)}">${fmt(cell.fpsAvg, 0)}</b><br>
+                            <span style="color:${yieldColor2(cell.yield)}">${(cell.yield * 100).toFixed(0)}%</span>
+                        </td>`;
+                    }
+                    html += `</tr>`;
+                }
+                html += `</tbody></table>`;
+            }
+        }
+
+        // ── Summary: best value for each param ────────────────────────────────
+        if (results && results.length > 0) {
+            html += `<div class="tune-param-name" style="margin-top:16px;color:#1a3060;">Recommended configuration</div>`;
+            html += `<div style="font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:4px;">
+                Best value per param by weighted score: FPS 40% · p5 floor 20% · worst frame 15% · rendered count 25%.
+            </div>`;
+            html += `<table class="rep-table"><thead><tr>
+                <th style="text-align:left;">Parameter</th>
+                <th style="text-align:left;">Best</th>
+                <th>FPS</th>
+                <th>yield</th>
+                <th>Δ fps</th>
+            </tr></thead><tbody>`;
+            for (const paramResult of results) {
+                const { param, runs } = paramResult;
+                if (!runs || runs.length === 0) continue;
+                // Same multi-criteria scoring as the per-param tables
+                const _n = (arr, i, inv) => { const mn = Math.min(...arr), mx = Math.max(...arr); if (mx === mn) return 0.5; const v = (arr[i] - mn) / (mx - mn); return inv ? 1 - v : v; };
+                const _fps = runs.map(r => r.fpsAvg);
+                const _p5 = runs.map(r => r.fpsP5 || r.fpsAvg);
+                const _wf = runs.map(r => r.msWorst);
+                const _rnd = runs.map(r => r.rendAvg);
+                const _cl = runs.map(r => r.clutter ?? 0);
+                const _sc = (i) => _n(_rnd,i,false)*TUNE_WEIGHTS.rendAvg + _n(_wf,i,true)*TUNE_WEIGHTS.msWorst + _n(_p5,i,false)*TUNE_WEIGHTS.fpsP5 + _n(_cl,i,true)*TUNE_WEIGHTS.clutter + _n(_fps,i,false)*TUNE_WEIGHTS.fpsAvg;
+                let bestIdx = 0;
+                for (let i = 1; i < runs.length; i++) {
+                    if (_sc(i) > _sc(bestIdx)) bestIdx = i;
+                }
+                const best = runs[bestIdx];
+                const baselineFps = runs.find(x => x.value === BASELINE_CONFIG[param.key])?.fpsAvg;
+                const delta = baselineFps ? ((best.fpsAvg / baselineFps - 1) * 100) : 0;
+                const deltaStr = baselineFps
+                    ? `<span style="color:${delta >= 0 ? '#1a7a4a' : '#b02020'}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</span>`
+                    : '—';
+                html += `<tr>
+                    <td style="text-align:left;">${param.label}</td>
+                    <td style="text-align:left;font-weight:600;">${best.value}</td>
+                    <td style="color:${fpsColor(best.fpsAvg)}">${fmt(best.fpsAvg, 1)}</td>
+                    <td>${(best.yield * 100).toFixed(1)}%</td>
+                    <td>${deltaStr}</td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+        }
+
+        elTuneReportBody.innerHTML = html;
+    }
+
+    async function runParamTuning() {
+        if (runner.running || _tuneAborted) return;
+        _tuneAborted = false;
+        _suppressPublish = true; // prevent main report from overwriting tune panel
+
+        // Force instanced mode for tuning
+        labelMode = 'instanced';
+        syncModeButtons();
+
+        // Halve step durations for the sweep: same camera path shape, half the
+        // wall time per eval. All evals share the scale so they stay comparable
+        // to EACH OTHER (not to full-length benchmark runs). Restored on finish.
+        _stepTimeScale = 0.5;
+
+        setQuickControlsDisabled(true);
+        elBtnStop.disabled  = false;
+        elBtnReset.disabled = true;
+        elStatus.textContent = 'TUNING…';
+
+        elTuneReport.classList.add('visible');
+        elTuneReportBody.innerHTML = '<div style="color:rgba(0,0,0,0.4);">Starting parameter tuning…</div>';
+
+        const allResults = [];
+        const correlationResults = [];
+        let paramIdx = 0;
+
+
+
+        // Helper: run one config variant and return metrics
+        async function runOneVariant(configOverrides, isHard, param) {
+            if (isHard) {
+                // Fresh scene with the overridden manager installed BEFORE any
+                // tile streams, so every LabelsNode binds to it (see setupScene).
+                await setupScene({ ...BASELINE_CONFIG, ...configOverrides });
+            } else {
+                // Soft param: mutate the live config only. Do NOT rebuild the
+                // scene per value — each GlobeView rebuild leaks scene remnants
+                // (feature caches, GL resources), and ~50 rebuilds OOMs the tab.
+                // The reused scene's stale end-state (camera left deep-zoomed by
+                // step 11) is handled by the rendered-count stabilization wait
+                // below, which blocks until the start view has genuinely reloaded.
+                resetTuneConfig();
+                applyTuneConfig(configOverrides);
+            }
+
+
+
+            // Wait for the scene to actually have labels loaded before measuring.
+            // Drive camera to the starting position and wait for tiles to stream in.
+            const startPlacement = STEPS[TUNE_STEPS[0]].drive(0);
+            applyPlacement(view, startPlacement);
+            view.notifyChange(view.camera3D);
+
+            // Wait until the start view has GENUINELY loaded before measuring.
+            // Don't trust `_labelsById.size` — on a reused scene it is instantly
+            // satisfied by stale labels left registered by the previous value's
+            // run (which ends deep-zoomed at ~50 m with ~6 rendered), so the
+            // measurement started early and rendered stayed pinned at ~6.
+            // Instead wait for the RENDERED count to stabilize: unchanged
+            // (and > 0) for a full second — longer than cullingRate, so at least
+            // one collision pass confirmed it — with a minimum settle time and a
+            // hard timeout.
+            await new Promise((resolve) => {
+                const t0 = performance.now();
+                let lastRendered = -1;
+                let stableSince = performance.now();
+                function check() {
+                    const now = performance.now();
+                    const { isRendered, total } = _computeLabelStats();
+                    if (isRendered !== lastRendered) {
+                        lastRendered = isRendered;
+                        stableSince = now;
+                    }
+                    const settled  = now - t0 > 2000                 // min settle: let tiles stream
+                        && isRendered > 0 && total > 0
+                        && now - stableSince > 1000;                 // rendered flat for 1 s
+                    const timedOut = now - t0 > 15000;
+                    if (settled || timedOut || _tuneAborted) { resolve(); return; }
+                    view.notifyChange(view.camera3D);
+                    requestAnimationFrame(check);
+                }
+                check();
+            });
+            if (_tuneAborted) return null;
+
+            // Run timed steps (stability tracks passively, zero projection)
+            resetProfilerBaseline();
+            _lastFrameMs = 16;
+            rollingFrames = [];
+            _clutterAccum = { sum: 0, n: 0, peak: 0, frames: 0 };
+
+            const stepResults = await new Promise((resolve) => {
+                runner.start((results) => resolve(results), TUNE_STEPS);
+            });
+            if (_tuneAborted) return null;
+
+            // Visual clutter accumulated by the frame-loop sampler during the run.
+            const clutter = _clutterAccum && _clutterAccum.n > 0 ? _clutterAccum.sum / _clutterAccum.n : 0;
+            const clutterPeak = _clutterAccum ? _clutterAccum.peak : 0;
+            _clutterAccum = null;
+
+            // Perf metrics from the timed run
+            const overall = overallOf(stepResults);
+            if (!overall) return null;
+
+            return {
+                fpsAvg: overall.fpsAvg,
+                fpsP5: overall.fpsP5,
+                msAvg: overall.msAvg,
+                msWorst: overall.msWorst,
+                cpuAvg: overall.cpuAvg,
+                lblCpu: labelCpuOf(overall),
+                rendAvg: overall.rendAvg,
+                lblAvg: overall.lblAvg,
+                yield: overall.lblAvg > 0 ? overall.rendAvg / overall.lblAvg : 0,
+                clutter,
+                clutterPeak,
+            };
+        }
+
+        // Release memory between variants. The tab must survive ~50 evals: the
+        // dominant heap item is the MVT source's parsed-features LRU (up to 1500
+        // FeatureCollections — potentially GBs at street zooms), so drop it
+        // between values; the next value re-parses its tiles, which is fine
+        // since every eval is meant to start cold anyway.
+        function cleanupGPU() {
+            if (!view) return;
+            const r = view.mainLoop?.gfxEngine?.getRenderer();
+            r?.renderLists?.dispose();
+            const src = view.getLayerById?.('MVT')?.source;
+            if (src?._featuresCaches) {
+                Object.values(src._featuresCaches).forEach(c => c?.clear?.());
+            }
+            // Do NOT clear _layoutCache — it's keyed by text+font+size, and
+            // clearing it mid-run causes re-layout against stale atlas state,
+            // producing garbled glyphs (e.g. 'j' missing from "Villejuif").
+        }
+
+        // ── Phase 1: Single-param sweeps ──────────────────────────────────────
+        for (const param of TUNE_PARAMS) {
+            if (_tuneAborted) break;
+            paramIdx++;
+            const progress = `Phase 1 — Param ${paramIdx}/${TUNE_PARAMS.length}: ${param.label}`;
+            elTuneReportProg.textContent = progress;
+            elStatus.textContent = `TUNING: ${param.label}`;
+
+            const runs = [];
+
+            // One scene rebuild per PARAM (12 total — bounded leak), not per
+            // value (~50 rebuilds leaked the tab to OOM). Hard params rebuild
+            // inside runOneVariant instead, since they need a fresh manager.
+            if (param.type !== 'hard') {
+                await setupScene();
+            }
+
+            for (let vi = 0; vi < param.values.length; vi++) {
+                if (_tuneAborted) break;
+                const value = param.values[vi];
+                elStepName.textContent = `Tuning: ${param.label} = ${value}`;
+                elStepDesc.textContent = `${param.desc} (${vi + 1}/${param.values.length})`;
+
+                const metrics = await runOneVariant(
+                    { [param.key]: value },
+                    param.type === 'hard',
+                    param,
+                );
+                if (_tuneAborted) break;
+                if (metrics) {
+                    runs.push({ value, ...metrics });
+                    // Update report in real-time after each value
+                    renderTuneReport([...allResults, { param, runs: [...runs] }], correlationResults);
+                }
+                cleanupGPU();
+            }
+
+            if (!_tuneAborted) {
+                allResults.push({ param, runs });
+                renderTuneReport(allResults, correlationResults);
+            }
+        }
+
+        // ── Phase 2: Cross-parameter grids ────────────────────────────────────
+        // CURATED pairs first: structurally-coupled params whose optimum is a
+        // JOINT choice — one-at-a-time sweeps can't find it, and the old
+        // "effect similarity" heuristic detected params that act ALIKE, which is
+        // the wrong signal for params that INTERACT (downscale × coarseScale are
+        // two halves of the same bitmap structure regardless of how similar
+        // their marginal effects look). Then at most ONE deduced pair from the
+        // Phase-1 correlations. 3×3 grids keep total runtime bounded.
+        const CURATED_PAIRS = [
+            { keys: ['downscale', 'coarseScale'], grid: [[4, 8, 16], [16, 32, 64]],
+              desc: 'Collision bitmap structure — viewport downscale × coarse tile size jointly set resolution vs speed.' },
+            { keys: ['updateRate', 'cullingRate'], grid: [[0.1, 0.5, 1.0], [0.1, 0.5, 1.0]],
+              desc: 'Sync cadence × collision cadence — together they set how much label work runs per second.' },
+            { keys: ['layoutBudgetPerTick', 'layoutTimeBudgetMs'], grid: [[0, 100, 500], [0, 4, 16]],
+              desc: 'Count cap × time cap on per-tick layout — whichever limit hits first wins, so they only make sense jointly.' },
+        ];
+        const MAX_DEDUCED_PAIRS = 1;
+        if (!_tuneAborted && allResults.length >= 3) {
+            const sensitivity = computeSensitivity(allResults);
+            const paramCorrelations = computeParamCorrelations(sensitivity);
+            const pairId = keys => [...keys].sort().join('+');
+            const curatedIds = new Set(CURATED_PAIRS.map(p => pairId(p.keys)));
+            const pick3 = vals => (vals.length <= 3 ? [...vals]
+                : [vals[0], vals[Math.round((vals.length - 1) / 2)], vals[vals.length - 1]]);
+            const deduced = paramCorrelations
+                .filter(c => !curatedIds.has(pairId(c.keys)))
+                .slice(0, MAX_DEDUCED_PAIRS)
+                .map(({ keys, similarity }) => {
+                    const p0 = TUNE_PARAMS.find(p => p.key === keys[0]);
+                    const p1 = TUNE_PARAMS.find(p => p.key === keys[1]);
+                    if (!p0 || !p1) return null;
+                    return { keys, grid: [pick3(p0.values), pick3(p1.values)],
+                             desc: `Deduced from Phase 1 (effect similarity ${similarity.toFixed(2)}).` };
+                })
+                .filter(Boolean);
+            const pairDefs = [...CURATED_PAIRS, ...deduced];
+
+            let corrIdx = 0;
+            for (const def of pairDefs) {
+                if (_tuneAborted) break;
+                corrIdx++;
+
+                const [key0, key1] = def.keys;
+                const param0 = TUNE_PARAMS.find(p => p.key === key0);
+                const param1 = TUNE_PARAMS.find(p => p.key === key1);
+                const vals0 = def.grid[0];
+                const vals1 = def.grid[1];
+
+                const corrDef = {
+                    keys: def.keys,
+                    label: `${param0?.label ?? key0} × ${param1?.label ?? key1}`,
+                    desc: def.desc,
+                    grid: def.grid,
+                };
+
+                elTuneReportProg.textContent = `Phase 2 — Grid ${corrIdx}/${pairDefs.length}: ${corrDef.label}`;
+                elStatus.textContent = `GRID: ${corrDef.label}`;
+
+                const cells = [];
+                const isHard = param0?.type === 'hard' || param1?.type === 'hard';
+
+                if (!isHard) {
+                    await setupScene();
+                }
+
+                for (let r = 0; r < vals0.length; r++) {
+                    for (let c = 0; c < vals1.length; c++) {
+                        if (_tuneAborted) { cells.push(null); continue; }
+                        const v0 = vals0[r], v1 = vals1[c];
+                        elStepName.textContent = `Grid: ${key0}=${v0}, ${key1}=${v1}`;
+                        elStepDesc.textContent = `${corrDef.label} (${r * vals1.length + c + 1}/${vals0.length * vals1.length})`;
+
+                        const metrics = await runOneVariant(
+                            { [key0]: v0, [key1]: v1 },
+                            isHard,
+                            null,
+                        );
+                        cells.push(metrics ? { v0, v1, ...metrics } : null);
+                        renderTuneReport(allResults, [...correlationResults, { ...corrDef, cells: [...cells] }]);
+                        cleanupGPU();
+                    }
+                }
+
+                if (!_tuneAborted) {
+                    correlationResults.push({ ...corrDef, cells });
+                    renderTuneReport(allResults, correlationResults);
+                }
+            }
+        }
+
+        // Cleanup
+        _suppressPublish = false;
+        _stepTimeScale = 1;      // restore full step durations for normal runs
+        _clutterAccum = null;    // stop sampling outside tune evals
+
+        // Finished
+        elTuneReportProg.textContent = _tuneAborted ? '■ Stopped' : '✓ Complete';
+        elStatus.textContent = _tuneAborted ? 'STOPPED' : 'DONE';
+        setQuickControlsDisabled(false);
+        elBtnStop.disabled  = true;
+        elBtnReset.disabled = false;
+
+        if (!_tuneAborted && allResults.length > 0) {
+            const payload = {
+                type: 'param-tuning',
+                dataset: datasetMode,
+                baseline: BASELINE_CONFIG,
+                params: allResults.map(({ param, runs }) => ({
+                    key: param.key,
+                    label: param.label,
+                    type: param.type,
+                    desc: param.desc,
+                    runs,
+                })),
+                correlations: correlationResults.map(({ label, desc, keys, grid, cells }) => ({
+                    label, desc, keys, grid,
+                    cells: cells.map(c => c ? { v0: c.v0, v1: c.v1, fpsAvg: c.fpsAvg, yield: c.yield } : null),
+                })),
+            };
+            enableExport(payload);
+            console.log('[LabelBench] param tuning complete:', JSON.stringify(payload, null, 2));
+        }
+
+        _tuneAborted = false;
+    }
+
+    elBtnTuneParams.addEventListener('click', async () => {
+        if (runner.running) return;
+        await countdown();
+        runParamTuning();
+    });
+
+    elBtnTuneClose.addEventListener('click', () => {
+        elTuneReport.classList.remove('visible');
+    });
+
+    // Wire stop button to also abort tuning
+    const _origStopHandler = elBtnStop.onclick;
+    elBtnStop.addEventListener('click', () => { _tuneAborted = true; });
 
     setupScene().then(() => {
         elStepName.textContent = 'Ready';

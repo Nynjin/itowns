@@ -1,0 +1,2188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iTowns — Collision Algorithm Benchmark</title>
+
+<!--
+    COLLISION-ONLY BENCHMARK
+    ========================
+    This bench isolates the *label collision / placement algorithm* and nothing else.
+    There is no renderer engine, no maplibre, no itowns view, no tiles, no GPU work.
+
+    Fairness contract (see the block comment above `runBenchmark` for details):
+      1. Dataset .......... one seeded, deterministic set of Labels. Same for every variant.
+      2. Camera path ...... one scripted, deterministic sequence of camera matrices.
+      3. Projection ....... done ONCE per frame, shared. Every variant gets identical AABBs.
+      4. Score ............ computed ONCE per frame with the shared formula. Shared.
+      5. Candidate filter . a single global TOGGLE. On => every variant sees the same
+                            pre-filtered set. Off => every variant sees the full set.
+                            The collision algorithm always runs AFTER this filter.
+      6. Occupancy ........ each variant owns a *fresh* occupancy structure; nothing leaks.
+
+    The only thing that differs between variants is the placement algorithm itself
+    (how candidates are ordered + which occupancy structure decides visibility).
+    That is the thing we time.
+-->
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://unpkg.com/three@0.182.0/build/three.module.js",
+        "@label/Label":      "../packages/Label/lib/Label.js",
+        "@label/Projector":  "../packages/Label/lib/Collision/LabelProjector.js",
+        "@label/Bitmap":     "../packages/Label/lib/Collision/HierarchicalBitmap.js",
+        "@label/Config":     "../packages/Label/lib/Types/LabelConfig.js"
+    }
+}
+</script>
+
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+        width: 100%; height: 100%;
+        background: #0f1420; color: #d7dceb;
+        font-family: 'Consolas', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 13px; overflow: hidden;
+    }
+    #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; }
+
+    /* ── Controls ─────────────────────────────────────────────── */
+    #controls { padding: 16px; overflow-y: auto; border-right: 1px solid #222a3d; background: #131a29; }
+    h1 { font-size: 15px; font-weight: 700; margin-bottom: 4px; letter-spacing: -0.3px; }
+    .sub { font-size: 11px; color: #6b7690; margin-bottom: 16px; line-height: 1.5; }
+    .field { margin-bottom: 12px; }
+    .field label { display: flex; justify-content: space-between; font-size: 11px; color: #8b96b0; margin-bottom: 4px; }
+    .field label b { color: #d7dceb; font-weight: 600; }
+    input[type=range] { width: 100%; accent-color: #4f9dff; }
+    .toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; cursor: pointer; }
+    .toggle input { width: 16px; height: 16px; accent-color: #4f9dff; }
+    .toggle span { font-size: 12px; }
+    .variants { margin: 8px 0 16px; }
+    .variants .toggle span small { color: #6b7690; display: block; font-size: 10px; }
+    button {
+        width: 100%; padding: 10px; margin-top: 4px;
+        background: #2f6fd8; color: #fff; border: none; border-radius: 5px;
+        font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #3f7fe8; }
+    button:disabled { background: #3a445c; opacity: 0.5; cursor: default; }
+    button.ghost { background: #1d2740; color: #9fb0d0; margin-top: 8px; }
+    button.ghost:hover { background: #24304f; }
+    hr { border: none; border-top: 1px solid #222a3d; margin: 14px 0; }
+
+    /* ── Results ──────────────────────────────────────────────── */
+    #results { padding: 16px 20px; overflow-y: auto; }
+    #status { font-size: 12px; color: #7f8aa8; margin-bottom: 12px; min-height: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid #1e2740; font-variant-numeric: tabular-nums; }
+    th:first-child, td:first-child { text-align: left; }
+    th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7690; font-weight: 600; }
+    td { font-size: 13px; }
+    td.name { font-weight: 600; color: #eaf0ff; }
+    td.best { color: #56d193; font-weight: 700; }
+    td.red { color: #e0605f; font-weight: 700; }
+    td.dim { color: #6b7690; }
+    .bar { height: 6px; background: #4f9dff; border-radius: 3px; }
+    .barcell { width: 120px; }
+    .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+
+    #previewWrap { margin-top: 6px; }
+    #previewWrap h2 { font-size: 12px; color: #8b96b0; margin-bottom: 8px; font-weight: 600; }
+    #preview { background: #0a0e17; border: 1px solid #222a3d; border-radius: 4px; display: block; max-width: 100%; }
+    .legend { font-size: 11px; color: #6b7690; margin-top: 6px; line-height: 1.6; }
+    .note { font-size: 11px; color: #6b7690; line-height: 1.6; margin-top: 8px; }
+    code { background: #1a2237; padding: 1px 5px; border-radius: 3px; color: #b9c6e8; }
+</style>
+</head>
+<body>
+<div id="app">
+    <div id="controls">
+        <h1>Collision Bench</h1>
+        <p class="sub">Isolates the label placement algorithm. No renderer, no tiles, no GPU — same dataset, same camera path, same projection for every variant.</p>
+
+        <div class="field">
+            <label>Labels <b id="v-labels">8000</b></label>
+            <input type="range" id="labels" min="500" max="300000" step="500" value="8000">
+        </div>
+        <div class="field">
+            <label>Camera frames <b id="v-frames">120</b></label>
+            <input type="range" id="frames" min="20" max="400" step="10" value="120">
+        </div>
+        <div class="field">
+            <label>Measured passes <b id="v-passes">6</b></label>
+            <input type="range" id="passes" min="1" max="20" step="1" value="6">
+        </div>
+        <div class="field">
+            <label>Depth buckets <b id="v-buckets">32</b></label>
+            <input type="range" id="buckets" min="4" max="8192" step="4" value="32">
+        </div>
+        <div class="field">
+            <label>iTowns downscale <b id="v-downscale">8</b></label>
+            <input type="range" id="downscale" min="1" max="16" step="1" value="8">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">occupancy-bitmap resolution of the iTowns methods only</div>
+        </div>
+        <div class="field">
+            <label>Occlusion tolerance <b id="v-occlusion">0.10</b></label>
+            <input type="range" id="occlusion" min="0" max="0.3" step="0.01" value="0.1">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">iTowns partial-overlap allowance (acceptable; max = 2×). 0 = no overlap</div>
+        </div>
+        <div class="field">
+            <label>Grid cell <b id="v-gridCell">32</b></label>
+            <input type="range" id="gridCell" min="8" max="128" step="8" value="32">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">grid-index cell for grid / bucket+grid / PAL — speed only, identical results</div>
+        </div>
+        <div class="field">
+            <label>PAL positions (K) <b id="v-palK">4</b></label>
+            <input type="range" id="palK" min="1" max="8" step="1" value="4">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">candidate positions per label for QGIS/PAL methods (NE,NW,SE,SW,N,S,E,W)</div>
+        </div>
+        <div class="field">
+            <label>Pyramid levels <b id="v-pyramidLevels">4</b></label>
+            <input type="range" id="pyramidLevels" min="1" max="12" step="1" value="4">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">quadtree depth for 'bucket + binary pyramid' (1 = flat early-exit, deeper = more pruning)</div>
+        </div>
+        <div class="field">
+            <label>Global downscale <b id="v-globalDownscale">1</b></label>
+            <input type="range" id="globalDownscale" min="1" max="16" step="1" value="1">
+            <div style="font-size:10px;color:#6b7690;margin-top:2px">collision resolution for ALL methods (1 = full-res)</div>
+        </div>
+        <div class="field">
+            <label>World extent <b id="v-world">6000</b></label>
+            <input type="range" id="world" min="1000" max="20000" step="500" value="6000">
+        </div>
+
+        <hr>
+        <label class="toggle">
+            <input type="checkbox" id="candidateFilter" checked>
+            <span>Candidate pre-filter (frustum + visibility)<br><small style="color:#6b7690">shared toggle · runs before every variant</small></span>
+        </label>
+        <label class="toggle">
+            <input type="checkbox" id="ceilingMatchDownscale">
+            <span>Match ceiling to downscale<br><small style="color:#6b7690">score vs the same-resolution optimum (isolates algorithm from resolution). Off = full-res ground truth. No effect at global downscale 1.</small></span>
+        </label>
+
+        <div class="variants" id="variantList"></div>
+
+        <button id="run">Run benchmark</button>
+        <button id="reseed" class="ghost">New dataset seed</button>
+
+        <p class="note">Timing measures only <code>place()</code> — ordering + occupancy tests. Projection, scoring and candidate filtering are shared and excluded.</p>
+    </div>
+
+    <div id="results">
+        <div id="status">Ready. Press “Run benchmark”.</div>
+        <div id="prepSummary" class="note" style="margin:0 0 12px; font-size:12px; color:#8b96b0;"></div>
+        <table id="resultTable"><thead></thead><tbody></tbody></table>
+        <p class="note" style="margin:-8px 0 16px"><b>flicker/frame</b> = labels that flip shown↔hidden between consecutive frames while staying on-screen (temporal instability = popping). Measured <b>with</b> the render-penalty hysteresis on — this is the axis that feature exists to improve, and why static quality is measured cold. % is flips ÷ rendered.</p>
+
+        <div id="qualityBlock" style="display:none;">
+            <h2 style="font-size:12px; color:#8b96b0; margin:4px 0 8px; font-weight:600;">Placement quality — importance retained vs optimal <span class="dim" style="font-weight:400;">(single reference frame)</span></h2>
+            <div id="ceilingSummary" class="note" style="margin:0 0 8px; font-size:12px; color:#8b96b0;"></div>
+            <table id="qualityTable"><thead></thead><tbody></tbody></table>
+            <p class="note">Labels carry class weights — <b style="color:#ff5d6c">city 100</b> · <b style="color:#ffb454">town 30</b> · <b style="color:#4f9dff">road 8</b> · <b style="color:#6b7690">POI 1</b> — and the priority key is importance-first (how the label-placement literature scores quality: maximise total weight placed). Ceiling = near-optimal Maximum-Weight Independent Set (annealing) on <b>full-resolution</b> geometry — a fixed ground truth independent of the downscale slider. <b>% of optimal</b> scores only <b>clean</b> (non-overlapping) importance — a label rendered on top of another isn't validly placed and must not inflate the score (gross is shown greyed when it differs). <b>clean by class</b> shows where any gap comes from (dropping a city costs far more than a POI). Because the ceiling is fixed at full res, <b>Downscale is an accuracy knob</b>: finer (1) → higher % but slower; coarser → lower %. The <b>overlaps</b> column is the honesty check — placed labels sitting on top of another, measured at <b>full resolution</b> (not the variant's own grid, so a coarse downscale can't hide sub-cell collisions). iTowns' bitmap methods intentionally allow some (partial-occlusion packing); binary methods (grid, DOM, QGIS/PAL) stay near 0 at fine downscale but reveal real collisions as you coarsen. A high % is only real if overlaps stay low — read the two columns together. This snapshot is measured <b>cold</b> (one reference frame, render-history reset) so it reflects intrinsic placement quality; that is why bucket converges to sort as depth-buckets increase, rather than wandering with the frame-to-frame hysteresis feedback.</p>
+        </div>
+
+        <div id="previewWrap">
+            <h2>Last-frame placement preview <span class="dim" style="font-weight:400;">— every method, same frame</span></h2>
+            <div id="previewGrid" style="display:grid; gap:12px; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));"></div>
+            <div class="legend">
+                <span class="swatch" style="background:#56d193"></span>placed (clean) &nbsp;
+                <span class="swatch" style="background:#f0964a"></span>placed but overlapping &nbsp;
+                <span class="swatch" style="background:#33405c"></span>culled / occluded &nbsp;
+                — actual placed positions (shifted for PAL), same frame per variant.
+            </div>
+            <p class="note">All variants receive identical input (same projection, same importance-weighted priority key), so differences are the algorithm alone. Raw count is not quality — check the importance table above: a method can render more labels yet retain less importance.</p>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { Label, RotationAlignment } from '@label/Label';
+import { LabelProjector }            from '@label/Projector';
+import { HierarchicalBitmap }        from '@label/Bitmap';
+import { DefaultLabelConfig }        from '@label/Config';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deterministic PRNG — every dataset/camera path is reproducible from a seed.
+// ─────────────────────────────────────────────────────────────────────────────
+function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config plumbing
+// ─────────────────────────────────────────────────────────────────────────────
+const VIEWPORT_W = 1600, VIEWPORT_H = 900;
+let SEED = 1337;
+
+function readConfig() {
+    return {
+        labelCount:  +document.getElementById('labels').value,
+        frames:      +document.getElementById('frames').value,
+        passes:      +document.getElementById('passes').value,
+        buckets:     +document.getElementById('buckets').value,
+        downscale:       +document.getElementById('downscale').value,        // iTowns bitmap only
+        globalDownscale: +document.getElementById('globalDownscale').value,  // all methods
+        gridCell:        +document.getElementById('gridCell').value,         // grid-index cell (speed)
+        palK:            +document.getElementById('palK').value,             // PAL candidate positions
+        pyramidLevels:   +document.getElementById('pyramidLevels').value,    // binary-pyramid depth
+        worldExtent: +document.getElementById('world').value,
+        candidate:   document.getElementById('candidateFilter').checked,
+        ceilingMatchDownscale: document.getElementById('ceilingMatchDownscale').checked,
+        // Shared collision config, cloned from production defaults but with the
+        // bench-tunable knobs overridden. pxPerUnit is derived from the camera in
+        // runBenchmark() so a label's bitmap footprint == boundsWidth·(fontSize/
+        // base)/downscale — the physically correct screen size (see note there).
+        cfg: {
+            ...DefaultLabelConfig,
+            pxPerUnit: 1024,                  // placeholder — recomputed from camera
+            fontSizePriorityPower: 1,
+            // iTowns partial-occlusion tolerance, exposed so its effect is visible:
+            // the production default 0.1 lets labels chain-overlap into clutter in
+            // dense scenes; 0 makes iTowns clean and competitive with binary methods.
+            acceptableOcclusion: +document.getElementById('occlusion').value,
+            maxOcclusion:        Math.min(1, 2 * (+document.getElementById('occlusion').value)),
+            coarseScale: 4
+        },
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Label importance classes — discrete, power-law rarity (like a real basemap:
+// few cities, many POIs). `weight` drives both the placement priority key and
+// the quality ceiling's objective. `cumulative` is the cumulative-probability
+// boundary: a uniform roll in [0,1) picks the first class it falls under.
+// ─────────────────────────────────────────────────────────────────────────────
+const CLASSES = [
+    { name: 'city', weight: 100, font: 44, cumulative: 0.02, color: '#ff5d6c' },
+    { name: 'town', weight: 30,  font: 30, cumulative: 0.10, color: '#ffb454' },
+    { name: 'road', weight: 8,   font: 22, cumulative: 0.35, color: '#4f9dff' },
+    { name: 'poi',  weight: 1,   font: 16, cumulative: 1.00, color: '#6b7690' },
+];
+function classForRoll(r) {
+    for (const c of CLASSES) { if (r < c.cumulative) return c; }
+    return CLASSES[CLASSES.length - 1];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dataset — real Label instances, synthetic geometry. Built once per seed.
+// Labels sit on the y=0 ground plane over a worldExtent × worldExtent area.
+// Each label gets an importance class; `label.importance` is read by prepareFrame.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildDataset(opts) {
+    const rand = mulberry32(SEED);
+    const half = opts.worldExtent / 2;
+    const labels = new Array(opts.labelCount);
+
+    for (let i = 0; i < opts.labelCount; i++) {
+        const cls   = classForRoll(rand());
+        const chars = 3 + ((rand() * 12) | 0);
+        const l = new Label({
+            text: 'x'.repeat(chars),
+            position: [(rand() * 2 - 1) * half, 0, (rand() * 2 - 1) * half],
+            fontSize: cls.font,
+            rotationAlignment: RotationAlignment.Viewport, // screen-aligned billboards
+        });
+        // Layout results the collision code reads. bounds are in font-pixel space.
+        l.bounds = { width: chars * 0.55 * cls.font, height: cls.font * 1.3 };
+        l.glyphs = new Array(chars);   // only length is read by the candidate filter
+        l.visible = true;
+        l.opacity = 1;
+        l.groupVisible = true;
+        l.importance = cls.weight;     // ad-hoc field, read by prepareFrame only
+        labels[i] = l;
+    }
+    return labels;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera path — one scripted orbit+zoom. Deterministic function of frame index.
+// ─────────────────────────────────────────────────────────────────────────────
+function makeCamera(opts) {
+    const cam = new THREE.PerspectiveCamera(50, VIEWPORT_W / VIEWPORT_H, 1, 1e6);
+    return cam;
+}
+function setCameraForFrame(cam, i, frames, opts) {
+    const t      = i / frames;
+    const angle  = t * Math.PI * 2;                       // one full orbit
+    const zoom   = 0.55 + 0.45 * Math.sin(t * Math.PI * 3); // in/out breathing
+    const radius = opts.worldExtent * (0.35 + 0.5 * zoom);
+    const height = opts.worldExtent * (0.25 + 0.35 * zoom);
+    // slow pan of the look-at target so labels drift across the frustum edges
+    const tx = Math.sin(t * Math.PI * 2) * opts.worldExtent * 0.15;
+    const tz = Math.cos(t * Math.PI * 2) * opts.worldExtent * 0.15;
+
+    cam.position.set(Math.cos(angle) * radius + tx, height, Math.sin(angle) * radius + tz);
+    cam.lookAt(tx, 0, tz);
+    cam.updateMatrixWorld(true);
+    cam.updateProjectionMatrix();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED per-frame preparation. Produces the identical input every variant sees.
+//   - projection  (LabelProjector, the production one)
+//   - candidate filter (toggle)
+//   - score       (the production distance·size formula)
+// Returns a flat Structure-of-Arrays for cache-friendly, allocation-free variants.
+// ─────────────────────────────────────────────────────────────────────────────
+const _aabb = { x0: 0, y0: 0, x1: 0, y1: 0 };
+
+function prepareFrame(projector, cam, labels, opts, bmW, bmH, out) {
+    projector.setFrame(cam.matrixWorldInverse, cam.projectionMatrix, bmW, bmH, cam.near, cam.far);
+
+    const cx = cam.position.x, cy = cam.position.y, cz = cam.position.z;
+    const base = opts.cfg.baseFontSize, power = opts.cfg.fontSizePriorityPower;
+    let n = 0, visN = 0;
+
+    for (let k = 0; k < labels.length; k++) {
+        const label = labels[k];
+
+        // Candidate pre-filter (the shared toggle): cheap frustum/visibility cull.
+        // Runs on every label; survivors ("candidates") advance to projection.
+        if (opts.candidate && !projector.checkVisible(label)) { continue; }
+        visN++;
+        if (!projector.project(label, _aabb)) { continue; }
+
+        const dx = label.position.x - cx, dy = label.position.y - cy, dz = label.position.z - cz;
+        const distSq = dx * dx + dy * dy + dz * dz;
+        const sizeFactor = base / label.fontSize;
+        const score = distSq * (power === 1 ? sizeFactor : sizeFactor ** power);
+
+        out.x0[n] = _aabb.x0; out.y0[n] = _aabb.y0;
+        out.x1[n] = _aabb.x1; out.y1[n] = _aabb.y1;
+        out.score[n]  = score;
+        out.weight[n] = label.importance;   // class importance for priority + ceiling
+        out.idx[n]    = k;     // back-reference into `labels` for persistent prev-state
+        n++;
+    }
+    out.n = n;
+    out.visN = visN;   // candidates surviving the pre-filter (== N when toggle off)
+    return out;
+}
+
+function makeItemBuffer(cap) {
+    return {
+        n: 0,
+        x0: new Int32Array(cap), y0: new Int32Array(cap),
+        x1: new Int32Array(cap), y1: new Int32Array(cap),
+        score: new Float64Array(cap),
+        weight: new Float64Array(cap),
+        idx: new Int32Array(cap),
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VARIANTS
+//   Each variant exposes:
+//     reset(labelCount)     — allocate/clear persistent per-variant state
+//     place(items, opts, W, H) -> renderedCount   — the TIMED region
+//     lastDecision          — Uint8Array(labelCount), 1 if rendered (for preview)
+//   `place` may ONLY read items (shared) and its own state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// --- Shared occlusion decision replicating the production threshold model. ----
+// Faithful to LabelCollisionEngine: place if the label's box overlaps already-
+// placed labels by at most `threshold` of its area (partial-occlusion tolerance).
+function bitmapDecide(bitmap, x0, y0, x1, y1, prevRender, cfg) {
+    if (bitmap.isCoarseEmpty(x0, y0, x1, y1)) {
+        bitmap.setRegion(x0, y0, x1, y1);
+        return true;
+    }
+    const area      = (x1 - x0 + 1) * (y1 - y0 + 1);
+    const claimed   = bitmap.countFine(x0, y0, x1, y1);
+    const threshold = prevRender ? cfg.maxOcclusion : cfg.acceptableOcclusion;
+    if (claimed / area <= threshold) { bitmap.setRegion(x0, y0, x1, y1); return true; }
+    return false;
+}
+
+// Importance model: labels carry a class weight (city ≫ town ≫ road ≫ POI).
+// The priority key is IMPORTANCE-PRIMARY, distance-secondary, so every variant
+// places important labels first — a POI can never outrank a city, whatever its
+// distance. IMP_SCALE is large enough that the class term dominates the ~3-unit
+// log-distance spread. This is the single lever that makes "are labels
+// prioritised properly?" a measurable question.
+const MAX_IMPORTANCE = 100;                        // city weight (see CLASSES)
+const LOGW_MAX       = Math.log(MAX_IMPORTANCE);
+const IMP_SCALE      = 5;
+
+// Priority key: lower = higher priority (= placed first). Importance term pushes
+// low-importance labels to high keys; distance breaks ties within a class. Still
+// penalised (demoted) when the label was NOT rendered last frame, as production.
+function priorityKey(score, weight, prevRender, penalty) {
+    let k = Math.log1p(score) + IMP_SCALE * (LOGW_MAX - Math.log(weight));
+    if (!prevRender) { k *= penalty; }
+    return k;
+}
+
+// ── Variant A: depth-bucket scatter + HierarchicalBitmap. ─────────────────────
+// THIS IS THE iTOWNS PRODUCTION ALGORITHM (LabelCollisionEngine phases 2–3):
+// O(n) depth-bucket priority scatter + two-level occupancy bitmap with a
+// partial-occlusion acceptance threshold.
+class BucketBitmap {
+    constructor(opts) {
+        this.name = 'iTowns · bucket + bitmap';
+        this.color = '#4f9dff';
+        this.opts = opts;
+        this.bitmap = new HierarchicalBitmap(opts.cfg.coarseScale);
+        this.numBuckets = opts.buckets;
+        this.buckets = Array.from({ length: this.numBuckets }, () => []);
+        this.itShift = opts.itownsShift || 0;   // iTowns-only occupancy downscale
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.keys = new Float64Array(count);
+    }
+    // w,h are the global collision resolution; the iTowns bitmap is further
+    // downscaled by itShift. Size with CEIL (not >>) so the bottom/right edge row
+    // isn't lost — otherwise clamped edge labels map to inverted boxes and place
+    // for free (they'd pile overlaps along the screen edge).
+    resize(w, h) {
+        const D = 1 << this.itShift;
+        this.bmW = Math.max(1, Math.ceil(w / D));
+        this.bmH = Math.max(1, Math.ceil(h / D));
+        this.bitmap.resize(this.bmW, this.bmH);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.bitmap.clear();
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+
+        // Depth-adaptive bucket calibration: derive the key range from THIS frame's
+        // candidates (one O(n) min/max pass). Production relies on the camera's
+        // near/far being tightened to visible content each frame (iTowns does this
+        // on the globe); a fixed range would collapse all labels into a few buckets
+        // when the scene's depth span is narrow, degrading bucketing to insertion
+        // order. Calibrating to the actual range keeps all buckets meaningful.
+        const keys = this.keys;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) {
+            const k = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty);
+            keys[i] = k;
+            if (k < lo) lo = k; if (k > hi) hi = k;
+        }
+        const logScale = (this.numBuckets - 1) / ((hi - lo) || 1);
+
+        // Phase: scatter into depth buckets by priority key.
+        let minB = this.numBuckets, maxB = -1;
+        for (let i = 0; i < n; i++) {
+            let b = ((keys[i] - lo) * logScale) | 0;
+            if (b < 0) b = 0; else if (b >= this.numBuckets) b = this.numBuckets - 1;
+            this.buckets[b].push(i);
+            if (b < minB) minB = b; if (b > maxB) maxB = b;
+        }
+
+        // Phase: walk near->far, decide against the occupancy bitmap. AABBs are in
+        // global-collision cells; map them into the downscaled bitmap's cells with
+        // floor(min)/ceil(max) — conservative boxes, as the iTowns projector does —
+        // and clamp the max to the bitmap bounds.
+        const s = this.itShift, m = (1 << s) - 1, bw1 = this.bmW - 1, bh1 = this.bmH - 1;
+        let rendered = 0;
+        for (let b = minB; b <= maxB; b++) {
+            const bucket = this.buckets[b];
+            for (let j = 0; j < bucket.length; j++) {
+                const i = bucket[j];
+                const id = items.idx[i];
+                const bx0 = Math.max(0, items.x0[i] >> s), by0 = Math.max(0, items.y0[i] >> s);
+                const bx1 = Math.min(bw1, (items.x1[i] + m) >> s), by1 = Math.min(bh1, (items.y1[i] + m) >> s);
+                if (bx0 > bx1 || by0 > by1) { this.prev[id] = 0; continue; }
+                const r = bitmapDecide(this.bitmap, bx0, by0, bx1, by1, this.prev[id], cfg);
+                if (r) { rendered++; this.lastDecision[id] = 1; }
+                this.prev[id] = r ? 1 : 0;
+            }
+            bucket.length = 0;
+        }
+        return rendered;
+    }
+}
+
+// ── Variant B: exact Array.sort + HierarchicalBitmap. ──────────────────────────
+// Identical occupancy + decision + priority key as A. Only the ordering differs
+// (exact O(n log n) comparison sort vs A's O(n) bucket quantisation).
+class SortBitmap {
+    constructor(opts) {
+        this.name = 'iTowns-var · sort + bitmap';
+        this.color = '#56d193';
+        this.opts = opts;
+        this.bitmap = new HierarchicalBitmap(opts.cfg.coarseScale);
+        this.order = new Int32Array(0);
+        this.key = new Float64Array(0);
+        this.itShift = opts.itownsShift || 0;   // iTowns-only occupancy downscale
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+    }
+    resize(w, h) {
+        const D = 1 << this.itShift;
+        this.bmW = Math.max(1, Math.ceil(w / D));
+        this.bmH = Math.max(1, Math.ceil(h / D));
+        this.bitmap.resize(this.bmW, this.bmH);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.bitmap.clear();
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) {
+            order[i] = i;
+            key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty);
+        }
+        // sort the index view ascending by key (subarray so length == n)
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        const sh = this.itShift, m = (1 << sh) - 1, bw1 = this.bmW - 1, bh1 = this.bmH - 1;
+        let rendered = 0;
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            const id = items.idx[i];
+            const bx0 = Math.max(0, items.x0[i] >> sh), by0 = Math.max(0, items.y0[i] >> sh);
+            const bx1 = Math.min(bw1, (items.x1[i] + m) >> sh), by1 = Math.min(bh1, (items.y1[i] + m) >> sh);
+            if (bx0 > bx1 || by0 > by1) { this.prev[id] = 0; continue; }
+            const r = bitmapDecide(this.bitmap, bx0, by0, bx1, by1, this.prev[id], cfg);
+            if (r) { rendered++; this.lastDecision[id] = 1; }
+            this.prev[id] = r ? 1 : 0;
+        }
+        return rendered;
+    }
+}
+
+// OR-set a packed-bit region (mirrors HierarchicalBitmap's regionSet).
+function regionSetBits(bm, wpr, x0, y0, x1, y1) {
+    const wA = x0 >> 5, wB = x1 >> 5;
+    const mA = (0xffffffff << (x0 & 31)) >>> 0;
+    const mB = (0xffffffff >>> (31 - (x1 & 31)));
+    for (let y = y0; y <= y1; y++) {
+        const row = y * wpr;
+        if (wA === wB) bm[row + wA] |= mA & mB;
+        else { bm[row + wA] |= mA; for (let w = wA + 1; w < wB; w++) bm[row + w] = 0xffffffff; bm[row + wB] |= mB; }
+    }
+}
+
+// Multi-level occupancy pyramid (quadtree of packed bits). Level 0 is the finest
+// grid; each higher level is ½ per axis and a cell is set if ANY child is. Binary
+// only. isEmpty() descends from the coarsest level and recurses ONLY into set
+// cells, so large empty regions are confirmed empty near the top — the fix for the
+// bitmap's area-bound cost. `maxLevels` caps depth (1 = flat early-exit bitmap).
+class PyramidOccupancy {
+    constructor(maxLevels) { this.maxLevels = Math.max(1, maxLevels); }
+    resize(w, h) {
+        this.levels = [];
+        let lw = Math.max(1, w), lh = Math.max(1, h);
+        for (let k = 0; ; k++) {
+            const wpr = (lw + 31) >> 5;
+            this.levels.push({ w: lw, h: lh, wpr, bits: new Uint32Array(wpr * lh) });
+            if ((lw <= 1 && lh <= 1) || k + 1 >= this.maxLevels) break;
+            lw = (lw + 1) >> 1; lh = (lh + 1) >> 1;
+        }
+        this.L = this.levels.length;
+    }
+    clear() { for (let k = 0; k < this.L; k++) this.levels[k].bits.fill(0); }
+    set(x0, y0, x1, y1) {
+        for (let k = 0; k < this.L; k++) {
+            const lv = this.levels[k];
+            regionSetBits(lv.bits, lv.wpr, x0 >> k, y0 >> k, x1 >> k, y1 >> k);
+        }
+    }
+    isEmpty(x0, y0, x1, y1) { return this._descend(this.L - 1, x0, y0, x1, y1); }
+    _descend(k, x0, y0, x1, y1) {
+        const lv = this.levels[k], bits = lv.bits, wpr = lv.wpr;
+        const cx0 = x0 >> k, cx1 = x1 >> k, cy0 = y0 >> k, cy1 = y1 >> k;
+        for (let cy = cy0; cy <= cy1; cy++) {
+            const row = cy * wpr;
+            for (let cx = cx0; cx <= cx1; cx++) {
+                if ((bits[row + (cx >> 5)] & (1 << (cx & 31))) === 0) continue;   // subtree empty → skip
+                if (k === 0) return false;                                        // set fine cell in box → overlap
+                const chx0 = Math.max(x0, cx << k), chx1 = Math.min(x1, ((cx + 1) << k) - 1);
+                const chy0 = Math.max(y0, cy << k), chy1 = Math.min(y1, ((cy + 1) << k) - 1);
+                if (!this._descend(k - 1, chx0, chy0, chx1, chy1)) return false;
+            }
+        }
+        return true;
+    }
+}
+
+// ── Variant B2: bucket + BINARY occupancy pyramid (the improved bitmap). ──────
+// iTowns' bucket ordering, but the occupancy is pure binary (any set pixel →
+// reject; no partial-occlusion clutter) tested with an early-exiting quadtree
+// pyramid (fast large-empty checks). Hysteresis is preserved through the ordering
+// (render-penalty key) — rendered labels place first and reclaim their spots — not
+// through occlusion leniency, which pure binary drops. Same iTowns downscale knob.
+class BucketBinaryPyramid {
+    constructor(opts) {
+        this.name = 'bucket + binary pyramid';
+        this.color = '#00e5ff';
+        this.opts = opts;
+        this.numBuckets = opts.buckets;
+        this.buckets = Array.from({ length: this.numBuckets }, () => []);
+        this.itShift = opts.itownsShift || 0;
+        this.pyr = new PyramidOccupancy(opts.pyramidLevels || 4);
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.keys = new Float64Array(count);
+    }
+    resize(w, h) {
+        const D = 1 << this.itShift;
+        this.bmW = Math.max(1, Math.ceil(w / D));
+        this.bmH = Math.max(1, Math.ceil(h / D));
+        this.pyr.resize(this.bmW, this.bmH);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n, penalty = cfg.renderPenaltyMultiplier;
+        this.pyr.clear();
+        this.lastDecision.fill(0);
+
+        // Bucket-scatter ordering (identical to the iTowns bucket variant), with the
+        // render-penalty key — this is the surviving hysteresis under pure binary.
+        const keys = this.keys;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) { const k = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); keys[i] = k; if (k < lo) lo = k; if (k > hi) hi = k; }
+        const scale = (this.numBuckets - 1) / ((hi - lo) || 1);
+        let minB = this.numBuckets, maxB = -1;
+        for (let i = 0; i < n; i++) { let b = ((keys[i] - lo) * scale) | 0; if (b < 0) b = 0; else if (b >= this.numBuckets) b = this.numBuckets - 1; this.buckets[b].push(i); if (b < minB) minB = b; if (b > maxB) maxB = b; }
+
+        const s = this.itShift, m = (1 << s) - 1, bw1 = this.bmW - 1, bh1 = this.bmH - 1;
+        let rendered = 0;
+        for (let b = minB; b <= maxB; b++) {
+            const bucket = this.buckets[b];
+            for (let j = 0; j < bucket.length; j++) {
+                const i = bucket[j], id = items.idx[i];
+                const x0 = Math.max(0, items.x0[i] >> s), y0 = Math.max(0, items.y0[i] >> s);
+                const x1 = Math.min(bw1, (items.x1[i] + m) >> s), y1 = Math.min(bh1, (items.y1[i] + m) >> s);
+                if (x0 > x1 || y0 > y1) { this.prev[id] = 0; continue; }
+                let r = false;
+                if (this.pyr.isEmpty(x0, y0, x1, y1)) { this.pyr.set(x0, y0, x1, y1); r = true; }   // binary + early-exit
+                if (r) { rendered++; this.lastDecision[id] = 1; }
+                this.prev[id] = r ? 1 : 0;
+            }
+            bucket.length = 0;
+        }
+        return rendered;
+    }
+}
+
+// ── Variant B3: exact sort + BINARY occupancy pyramid. ────────────────────────
+// Completes the ordering × occupancy matrix: sort + pyramid alongside bucket +
+// pyramid (B2), isolating the ordering's effect on the pyramid occupancy structure.
+// Pure binary (no partial occlusion), early-exit quadtree descent. Same iTowns
+// downscale knob as the bitmap/pyramid variants.
+class SortBinaryPyramid {
+    constructor(opts) {
+        this.name = 'sort + binary pyramid';
+        this.color = '#b388ff';
+        this.opts = opts;
+        this.itShift = opts.itownsShift || 0;
+        this.pyr = new PyramidOccupancy(opts.pyramidLevels || 4);
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+    }
+    resize(w, h) {
+        const D = 1 << this.itShift;
+        this.bmW = Math.max(1, Math.ceil(w / D));
+        this.bmH = Math.max(1, Math.ceil(h / D));
+        this.pyr.resize(this.bmW, this.bmH);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n, penalty = cfg.renderPenaltyMultiplier;
+        this.pyr.clear();
+        this.lastDecision.fill(0);
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        const s = this.itShift, m = (1 << s) - 1, bw1 = this.bmW - 1, bh1 = this.bmH - 1;
+        let rendered = 0;
+        for (let si = 0; si < n; si++) {
+            const i = view[si], id = items.idx[i];
+            const x0 = Math.max(0, items.x0[i] >> s), y0 = Math.max(0, items.y0[i] >> s);
+            const x1 = Math.min(bw1, (items.x1[i] + m) >> s), y1 = Math.min(bh1, (items.y1[i] + m) >> s);
+            if (x0 > x1 || y0 > y1) { this.prev[id] = 0; continue; }
+            let r = false;
+            if (this.pyr.isEmpty(x0, y0, x1, y1)) { this.pyr.set(x0, y0, x1, y1); r = true; }
+            if (r) { rendered++; this.lastDecision[id] = 1; }
+            this.prev[id] = r ? 1 : 0;
+        }
+        return rendered;
+    }
+}
+
+// ── Variant C: exact sort + brute-force AABB rejection (binary overlap). ───────
+// A "simple" baseline: no partial occlusion, reject if the box overlaps ANY box
+// already placed. O(rendered) per candidate. Same input, same order as B.
+class SortBruteAABB {
+    constructor(opts) {
+        this.name = 'baseline · sort + brute AABB';
+        this.color = '#e0a64a';
+        this.opts = opts;
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);       // unused for decision, kept for parity of key
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.px0 = new Int32Array(count); this.py0 = new Int32Array(count);
+        this.px1 = new Int32Array(count); this.py1 = new Int32Array(count);
+    }
+    resize() {}
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        const px0 = this.px0, py0 = this.py0, px1 = this.px1, py1 = this.py1;
+        let placed = 0, rendered = 0;
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            const ax0 = items.x0[i], ay0 = items.y0[i], ax1 = items.x1[i], ay1 = items.y1[i];
+            let hit = false;
+            for (let p = 0; p < placed; p++) {
+                if (ax0 <= px1[p] && ax1 >= px0[p] && ay0 <= py1[p] && ay1 >= py0[p]) { hit = true; break; }
+            }
+            const id = items.idx[i];
+            if (!hit) {
+                px0[placed] = ax0; py0[placed] = ay0; px1[placed] = ax1; py1[placed] = ay1;
+                placed++; rendered++; this.lastDecision[id] = 1;
+                this.prev[id] = 1;
+            } else { this.prev[id] = 0; }
+        }
+        return rendered;
+    }
+}
+
+// ── Variant D: exact sort + uniform grid-hashed AABB rejection. ────────────────
+// THIS APPROXIMATES THE MAPLIBRE ALGORITHM: symbols sorted by priority, placed
+// one by one, each tested for overlap against a spatial grid index of already-
+// placed boxes (maplibre's GridIndex). Binary overlap — no partial occlusion.
+class SortGridAABB {
+    constructor(opts) {
+        this.name = 'MapLibre-style · sort + grid';
+        this.color = '#c77dff';
+        this.opts = opts;
+        this.cell = opts.gridCell || 32; // grid-index cell (speed only, not results)
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.px0 = new Int32Array(count); this.py0 = new Int32Array(count);
+        this.px1 = new Int32Array(count); this.py1 = new Int32Array(count);
+    }
+    resize(w, h) {
+        this.gw = Math.max(1, Math.ceil(w / this.cell));
+        this.gh = Math.max(1, Math.ceil(h / this.cell));
+        this.grid = Array.from({ length: this.gw * this.gh }, () => []);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+        const cell = this.cell, gw = this.gw, gh = this.gh;
+        for (let g = 0; g < this.grid.length; g++) { this.grid[g].length = 0; }
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        const px0 = this.px0, py0 = this.py0, px1 = this.px1, py1 = this.py1;
+        let placed = 0, rendered = 0;
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            const ax0 = items.x0[i], ay0 = items.y0[i], ax1 = items.x1[i], ay1 = items.y1[i];
+            let cgx0 = (ax0 / cell) | 0, cgx1 = (ax1 / cell) | 0;
+            let cgy0 = (ay0 / cell) | 0, cgy1 = (ay1 / cell) | 0;
+            if (cgx0 < 0) cgx0 = 0; if (cgy0 < 0) cgy0 = 0;
+            if (cgx1 >= gw) cgx1 = gw - 1; if (cgy1 >= gh) cgy1 = gh - 1;
+
+            let hit = false;
+            outer:
+            for (let gy = cgy0; gy <= cgy1 && !hit; gy++) {
+                for (let gx = cgx0; gx <= cgx1; gx++) {
+                    const bucket = this.grid[gy * gw + gx];
+                    for (let b = 0; b < bucket.length; b++) {
+                        const p = bucket[b];
+                        if (ax0 <= px1[p] && ax1 >= px0[p] && ay0 <= py1[p] && ay1 >= py0[p]) { hit = true; break outer; }
+                    }
+                }
+            }
+            const id = items.idx[i];
+            if (!hit) {
+                px0[placed] = ax0; py0[placed] = ay0; px1[placed] = ax1; py1[placed] = ay1;
+                for (let gy = cgy0; gy <= cgy1; gy++)
+                    for (let gx = cgx0; gx <= cgx1; gx++)
+                        this.grid[gy * gw + gx].push(placed);
+                placed++; rendered++; this.lastDecision[id] = 1;
+                this.prev[id] = 1;
+            } else { this.prev[id] = 0; }
+        }
+        return rendered;
+    }
+}
+
+// ── Variant D2 (experimental): bucket-scatter ORDER + uniform grid PLACEMENT. ──
+// Combines iTowns' O(n) depth-bucket ordering with MapLibre's clean binary grid:
+// cheap priority ordering, zero-overlap occupancy. Isolates whether the coarse
+// bucket order costs quality once placement forbids overlap entirely.
+class BucketGrid {
+    constructor(opts) {
+        this.name = 'bucket + grid';
+        this.color = '#ffd23f';
+        this.opts = opts;
+        this.numBuckets = opts.buckets;
+        this.buckets = Array.from({ length: this.numBuckets }, () => []);
+        this.cell = opts.gridCell || 32;
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.keys = new Float64Array(count);
+        this.px0 = new Int32Array(count); this.py0 = new Int32Array(count);
+        this.px1 = new Int32Array(count); this.py1 = new Int32Array(count);
+    }
+    resize(w, h) {
+        this.gw = Math.max(1, Math.ceil(w / this.cell));
+        this.gh = Math.max(1, Math.ceil(h / this.cell));
+        this.grid = Array.from({ length: this.gw * this.gh }, () => []);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+        const cell = this.cell, gw = this.gw, gh = this.gh;
+        for (let g = 0; g < this.grid.length; g++) { this.grid[g].length = 0; }
+
+        // Bucket-scatter ordering (identical to the iTowns bucket variant).
+        const keys = this.keys;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) {
+            const k = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty);
+            keys[i] = k;
+            if (k < lo) lo = k; if (k > hi) hi = k;
+        }
+        const scale = (this.numBuckets - 1) / ((hi - lo) || 1);
+        let minB = this.numBuckets, maxB = -1;
+        for (let i = 0; i < n; i++) {
+            let b = ((keys[i] - lo) * scale) | 0;
+            if (b < 0) b = 0; else if (b >= this.numBuckets) b = this.numBuckets - 1;
+            this.buckets[b].push(i);
+            if (b < minB) minB = b; if (b > maxB) maxB = b;
+        }
+
+        // Binary grid placement, walking buckets near->far.
+        const px0 = this.px0, py0 = this.py0, px1 = this.px1, py1 = this.py1;
+        let placed = 0, rendered = 0;
+        for (let b = minB; b <= maxB; b++) {
+            const bucket = this.buckets[b];
+            for (let jj = 0; jj < bucket.length; jj++) {
+                const i = bucket[jj];
+                const ax0 = items.x0[i], ay0 = items.y0[i], ax1 = items.x1[i], ay1 = items.y1[i];
+                let cgx0 = (ax0 / cell) | 0, cgx1 = (ax1 / cell) | 0;
+                let cgy0 = (ay0 / cell) | 0, cgy1 = (ay1 / cell) | 0;
+                if (cgx0 < 0) cgx0 = 0; if (cgy0 < 0) cgy0 = 0;
+                if (cgx1 >= gw) cgx1 = gw - 1; if (cgy1 >= gh) cgy1 = gh - 1;
+
+                let hit = false;
+                outer:
+                for (let gy = cgy0; gy <= cgy1 && !hit; gy++) {
+                    for (let gx = cgx0; gx <= cgx1; gx++) {
+                        const gb = this.grid[gy * gw + gx];
+                        for (let p = 0; p < gb.length; p++) {
+                            const q = gb[p];
+                            if (ax0 <= px1[q] && ax1 >= px0[q] && ay0 <= py1[q] && ay1 >= py0[q]) { hit = true; break outer; }
+                        }
+                    }
+                }
+                const id = items.idx[i];
+                if (!hit) {
+                    px0[placed] = ax0; py0[placed] = ay0; px1[placed] = ax1; py1[placed] = ay1;
+                    for (let gy = cgy0; gy <= cgy1; gy++)
+                        for (let gx = cgx0; gx <= cgx1; gx++)
+                            this.grid[gy * gw + gx].push(placed);
+                    placed++; rendered++; this.lastDecision[id] = 1;
+                    this.prev[id] = 1;
+                } else { this.prev[id] = 0; }
+            }
+            bucket.length = 0;
+        }
+        return rendered;
+    }
+}
+
+// ── Variant E: sort + ScreenGrid — the iTowns DOM label placement algorithm. ──
+// Mirrors Label2DRenderer's ScreenGrid exactly:
+//   • ceil(W/20) × ceil(H/20) grid cells (same formula as Label2DRenderer.setSize)
+//   • binary AABB overlap via isIntersectedOrOverlaped (no partial-occlusion)
+//   • labels stored per-cell so each candidate only tests its spatial neighbours
+// Sort uses the shared priorityKey (same distance·size formula as B–D) since
+// `order` is not defined on bench labels; the DOM path sorts by feature `order`
+// descending which is functionally equivalent for same-dataset comparisons.
+class DomScreenGrid {
+    constructor(opts) {
+        this.name = 'DOM · ScreenGrid';
+        this.color = '#ff9f43';
+        this.opts = opts;
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.px0 = new Int32Array(count); this.py0 = new Int32Array(count);
+        this.px1 = new Int32Array(count); this.py1 = new Int32Array(count);
+    }
+    resize(w, h) {
+        // Mirror Label2DRenderer.setSize: Math.ceil(dim / 20) cells per axis
+        this.nx = Math.max(1, Math.ceil(w / 20));
+        this.ny = Math.max(1, Math.ceil(h / 20));
+        this.bw = w; this.bh = h;
+        this.grid = Array.from({ length: this.nx * this.ny }, () => []);
+    }
+    place(items, opts, W, H) {
+        const cfg = opts.cfg, n = items.n;
+        this.lastDecision.fill(0);
+        const penalty = cfg.renderPenaltyMultiplier;
+        const nx = this.nx, ny = this.ny, bw = this.bw, bh = this.bh;
+        for (let g = 0; g < this.grid.length; g++) { this.grid[g].length = 0; }
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) {
+            order[i] = i;
+            key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty);
+        }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        const px0 = this.px0, py0 = this.py0, px1 = this.px1, py1 = this.py1;
+        let placed = 0, rendered = 0;
+
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            const ax0 = items.x0[i], ay0 = items.y0[i], ax1 = items.x1[i], ay1 = items.y1[i];
+
+            // Mirror ScreenGrid.insert(): map AABB to cell range (same formula)
+            const minx = Math.max(0,      Math.floor(ax0 / bw * nx));
+            const maxx = Math.min(nx - 1, Math.floor(ax1 / bw * nx));
+            const miny = Math.max(0,      Math.floor(ay0 / bh * ny));
+            const maxy = Math.min(ny - 1, Math.floor(ay1 / bh * ny));
+
+            let hit = false;
+            outer:
+            for (let ci = minx; ci <= maxx && !hit; ci++) {
+                for (let cj = miny; cj <= maxy; cj++) {
+                    const bucket = this.grid[ci * ny + cj];
+                    for (let b = 0; b < bucket.length; b++) {
+                        const p = bucket[b];
+                        // isIntersectedOrOverlaped: !(a.left>b.right||a.right<b.left||a.top>b.bottom||a.bottom<b.top)
+                        if (!(ax0 > px1[p] || ax1 < px0[p] || ay0 > py1[p] || ay1 < py0[p])) {
+                            hit = true; break outer;
+                        }
+                    }
+                }
+            }
+
+            const id = items.idx[i];
+            if (!hit) {
+                px0[placed] = ax0; py0[placed] = ay0; px1[placed] = ax1; py1[placed] = ay1;
+                for (let ci = minx; ci <= maxx; ci++)
+                    for (let cj = miny; cj <= maxy; cj++)
+                        this.grid[ci * ny + cj].push(placed);
+                placed++; rendered++; this.lastDecision[id] = 1;
+                this.prev[id] = 1;
+            } else { this.prev[id] = 0; }
+        }
+        return rendered;
+    }
+}
+
+// ── Variant F: multi-candidate point placement — the QGIS/PAL family. ─────────
+// Unlike every greedy variant above (one fixed box per label), each point label
+// has K candidate POSITIONS around its anchor (NE/NW/SE/SW — the classic 4-
+// position model; PAL/QGIS use up to 8 plus line-following). Labels are tried in
+// priority order; the first candidate position that clears the placed set wins,
+// so a blocked high-priority label SHIFTS instead of being dropped. Costs up to
+// K× the conflict tests — the quality-for-cost trade the point-feature label-
+// placement literature is built on. Conflicts use the same grid index as MapLibre.
+// (Cesium's screen-space declutter is ~ the single-position 'grid' variant —
+// distance-sorted greedy + a 2D screen grid — so it is not duplicated here.)
+const PAL_POSITIONS = [        // [mx, my]: box = [px+mx·w, ..]×[py+my·h, ..]
+    [0, -1], [-1, -1], [0, 0], [-1, 0],                 // NE, NW, SE, SW (K=4)
+    [-0.5, -1], [-0.5, 0], [0, -0.5], [-1, -0.5],       // N, S, E, W  (K=8)
+];
+class MultiCandidatePAL {
+    constructor(opts) {
+        this.name = 'QGIS/PAL · sort multi-candidate';
+        this.color = '#2ee6c6';
+        this.opts = opts;
+        this.K = Math.max(1, Math.min(8, opts.palK || 4));   // candidate positions per label
+        this.cell = opts.gridCell || 32;
+        this.shifts = true;    // places boxes away from the anchor → recorded per label
+        this.record = false;   // when true, store the chosen position index per label
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.px0 = new Int32Array(count); this.py0 = new Int32Array(count);
+        this.px1 = new Int32Array(count); this.py1 = new Int32Array(count);
+        // chosen PAL position index per label id (only written when this.record),
+        // so the audit can reconstruct the actual box at full resolution.
+        this.rpos = new Int32Array(count);
+    }
+    resize(w, h) {
+        this.gw = Math.max(1, Math.ceil(w / this.cell));
+        this.gh = Math.max(1, Math.ceil(h / this.cell));
+        this.grid = Array.from({ length: this.gw * this.gh }, () => []);
+    }
+    // Priority order the candidates are attempted in. Overridden by the bucket
+    // variant; here it's an exact sort by the shared priority key.
+    _computeOrder(items, opts, n) {
+        const penalty = opts.cfg.renderPenaltyMultiplier;
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+        return view;
+    }
+    place(items, opts, W, H) {
+        const n = items.n;
+        this.lastDecision.fill(0);
+        const cell = this.cell, gw = this.gw, gh = this.gh;
+        for (let g = 0; g < this.grid.length; g++) { this.grid[g].length = 0; }
+
+        const view = this._computeOrder(items, opts, n);
+
+        const px0 = this.px0, py0 = this.py0, px1 = this.px1, py1 = this.py1;
+        let placed = 0, rendered = 0;
+
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            const w  = items.x1[i] - items.x0[i], h = items.y1[i] - items.y0[i];
+            const px = (items.x0[i] + items.x1[i]) * 0.5, py = (items.y0[i] + items.y1[i]) * 0.5;
+
+            let done = false;
+            for (let k = 0; k < this.K && !done; k++) {
+                const ax0 = (px + PAL_POSITIONS[k][0] * w) | 0;
+                const ay0 = (py + PAL_POSITIONS[k][1] * h) | 0;
+                const ax1 = ax0 + w, ay1 = ay0 + h;
+
+                let cgx0 = (ax0 / cell) | 0, cgx1 = (ax1 / cell) | 0;
+                let cgy0 = (ay0 / cell) | 0, cgy1 = (ay1 / cell) | 0;
+                if (cgx0 < 0) cgx0 = 0; if (cgy0 < 0) cgy0 = 0;
+                if (cgx1 >= gw) cgx1 = gw - 1; if (cgy1 >= gh) cgy1 = gh - 1;
+
+                let hit = false;
+                outer:
+                for (let gy = cgy0; gy <= cgy1 && !hit; gy++) {
+                    for (let gx = cgx0; gx <= cgx1; gx++) {
+                        const bucket = this.grid[gy * gw + gx];
+                        for (let b = 0; b < bucket.length; b++) {
+                            const p = bucket[b];
+                            if (ax0 <= px1[p] && ax1 >= px0[p] && ay0 <= py1[p] && ay1 >= py0[p]) { hit = true; break outer; }
+                        }
+                    }
+                }
+                if (!hit) {
+                    px0[placed] = ax0; py0[placed] = ay0; px1[placed] = ax1; py1[placed] = ay1;
+                    for (let gy = cgy0; gy <= cgy1; gy++)
+                        for (let gx = cgx0; gx <= cgx1; gx++)
+                            this.grid[gy * gw + gx].push(placed);
+                    if (this.record) { this.rpos[items.idx[i]] = k; }
+                    placed++; rendered++; this.lastDecision[items.idx[i]] = 1;
+                    this.prev[items.idx[i]] = 1;
+                    done = true;
+                }
+            }
+            if (!done) this.prev[items.idx[i]] = 0;
+        }
+        return rendered;
+    }
+}
+
+// Multi-candidate placement (PAL) driven by O(n) bucket-scatter ordering instead
+// of an exact sort — the QGIS/PAL counterpart of the bucket vs sort question.
+class BucketMultiCandidatePAL extends MultiCandidatePAL {
+    constructor(opts) {
+        super(opts);
+        this.name = 'QGIS/PAL · bucket multi-candidate';
+        this.color = '#f25f9e';
+        this.numBuckets = opts.buckets;
+        this.buckets = Array.from({ length: this.numBuckets }, () => []);
+    }
+    _computeOrder(items, opts, n) {
+        const penalty = opts.cfg.renderPenaltyMultiplier;
+        const order = this.order, key = this.key;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) {
+            const k = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty);
+            key[i] = k;
+            if (k < lo) lo = k; if (k > hi) hi = k;
+        }
+        const scale = (this.numBuckets - 1) / ((hi - lo) || 1);
+        for (let b = 0; b < this.numBuckets; b++) this.buckets[b].length = 0;
+        let minB = this.numBuckets, maxB = -1;
+        for (let i = 0; i < n; i++) {
+            let b = ((key[i] - lo) * scale) | 0;
+            if (b < 0) b = 0; else if (b >= this.numBuckets) b = this.numBuckets - 1;
+            this.buckets[b].push(i);
+            if (b < minB) minB = b; if (b > maxB) maxB = b;
+        }
+        let p = 0;
+        for (let b = minB; b <= maxB; b++) { const bk = this.buckets[b]; for (let j = 0; j < bk.length; j++) order[p++] = bk[j]; }
+        return order.subarray(0, p);
+    }
+}
+
+// ── Variant G: sort + grid + SA POLISH (budgeted metaheuristic middle tier). ───
+// The real gap between greedy and the offline optimum can ONLY be closed by
+// accepting temporarily-worse moves — a deterministic hill-climb is stuck at the
+// greedy local optimum immediately (verified: strict swaps and remove-refill both
+// gain 0% here, because importance-first greedy already grabs the heavy labels).
+// So this is the honest middle tier: greedy grid, then a SHORT simulated-annealing
+// polish with a fixed per-frame iteration budget (unlike the near-converged, offline
+// ceiling). Add a label evicting its grid conflicts when the trade improves; worse
+// trades accepted with prob e^(Δ/T); cool to cold; keep the best seen (greedy is
+// the floor). The slowest real-time method — that is the quality-for-cost trade.
+class SortGridSAPolish {
+    constructor(opts) {
+        this.name = 'sort + grid + SA polish';
+        this.color = '#a0d911';
+        this.opts = opts;
+        this.cell = opts.gridCell || 32;
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.placed = new Uint8Array(count);
+        this.greedySnap = new Uint8Array(count);
+        this.stamp = new Int32Array(count).fill(-1);
+        this._conf = [];
+    }
+    resize(w, h) {
+        this.gw = Math.max(1, Math.ceil(w / this.cell));
+        this.gh = Math.max(1, Math.ceil(h / this.cell));
+        this.grid = Array.from({ length: this.gw * this.gh }, () => []);
+    }
+    _cells(items, i, fn) {
+        const cell = this.cell, gw = this.gw, gh = this.gh;
+        let x0 = (items.x0[i] / cell) | 0, x1 = (items.x1[i] / cell) | 0;
+        let y0 = (items.y0[i] / cell) | 0, y1 = (items.y1[i] / cell) | 0;
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 >= gw) x1 = gw - 1; if (y1 >= gh) y1 = gh - 1;
+        for (let gy = y0; gy <= y1; gy++) for (let gx = x0; gx <= x1; gx++) fn(gy * gw + gx);
+    }
+    _add(items, i) { this._cells(items, i, c => this.grid[c].push(i)); this.placed[i] = 1; }
+    _remove(items, i) {
+        this.placed[i] = 0;
+        this._cells(items, i, c => { const a = this.grid[c]; const k = a.indexOf(i); if (k >= 0) a[k] = a[a.length - 1], a.pop(); });
+    }
+    _conflicts(items, i, tag) {
+        const conf = this._conf; conf.length = 0;
+        const ax0 = items.x0[i], ay0 = items.y0[i], ax1 = items.x1[i], ay1 = items.y1[i];
+        this._cells(items, i, c => {
+            const a = this.grid[c];
+            for (let b = 0; b < a.length; b++) {
+                const j = a[b];
+                if (this.stamp[j] === tag) continue;
+                this.stamp[j] = tag;
+                if (ax0 <= items.x1[j] && ax1 >= items.x0[j] && ay0 <= items.y1[j] && ay1 >= items.y0[j]) conf.push(j);
+            }
+        });
+        return conf;
+    }
+    place(items, opts, W, H) {
+        const n = items.n, penalty = opts.cfg.renderPenaltyMultiplier, wt = items.weight;
+        this.lastDecision.fill(0);
+        this.placed.fill(0);
+        for (let g = 0; g < this.grid.length; g++) this.grid[g].length = 0;
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], wt[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        let tag = 0, Wcur = 0;
+        // Greedy pass.
+        for (let s = 0; s < n; s++) {
+            const i = view[s];
+            if (this._conflicts(items, i, ++tag).length === 0) { this._add(items, i); Wcur += wt[i]; }
+        }
+        this.greedySnap.set(this.placed);
+        const greedyW = Wcur;
+
+        // Budgeted simulated-annealing polish on the dynamic grid.
+        const rand = mulberry32(0x9e3779b9);
+        const iters = Math.min(300000, n * 12);
+        let T = MAX_IMPORTANCE * 0.5; const cool = Math.pow(0.5 / T, 1 / Math.max(1, iters));
+        for (let t = 0; t < iters; t++) {
+            const i = (rand() * n) | 0;
+            if (this.placed[i]) {
+                if (rand() < Math.exp(-wt[i] / T)) { this._remove(items, i); Wcur -= wt[i]; }
+            } else {
+                const conf = this._conflicts(items, i, ++tag);
+                let cw = 0;
+                for (let k = 0; k < conf.length; k++) cw += wt[conf[k]];
+                const d = wt[i] - cw;
+                if (d > 0 || rand() < Math.exp(d / T)) {
+                    for (let k = 0; k < conf.length; k++) { this._remove(items, conf[k]); Wcur -= wt[conf[k]]; }
+                    this._add(items, i); Wcur += wt[i];
+                }
+            }
+            T *= cool;
+        }
+        // Greedy is the floor: keep the annealed result only if it actually improved.
+        if (Wcur < greedyW) this.placed.set(this.greedySnap);
+
+        let rendered = 0;
+        for (let i = 0; i < n; i++) {
+            const on = this.placed[i];
+            this.prev[items.idx[i]] = on;
+            if (on) { this.lastDecision[items.idx[i]] = 1; rendered++; }
+        }
+        return rendered;
+    }
+}
+
+// Compact dynamic R-tree (RBush-style) — insert + boolean overlap query. Used by
+// the OpenLayers-style variant. Placement is IDENTICAL to the grid (both exact
+// AABB overlap); only the spatial index — and thus query speed — differs.
+class RTree {
+    constructor(maxEntries = 9) { this._max = maxEntries; this.clear(); }
+    clear() { this.root = this._node(true); }
+    _node(leaf) { return { children: [], leaf, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }; }
+    _extend(a, b) {
+        if (b.minX < a.minX) a.minX = b.minX; if (b.minY < a.minY) a.minY = b.minY;
+        if (b.maxX > a.maxX) a.maxX = b.maxX; if (b.maxY > a.maxY) a.maxY = b.maxY;
+    }
+    _recalc(node) {
+        node.minX = Infinity; node.minY = Infinity; node.maxX = -Infinity; node.maxY = -Infinity;
+        for (let i = 0; i < node.children.length; i++) this._extend(node, node.children[i]);
+    }
+    _enlarge(box, it) {
+        const nx = Math.min(box.minX, it.minX), ny = Math.min(box.minY, it.minY);
+        const xx = Math.max(box.maxX, it.maxX), xy = Math.max(box.maxY, it.maxY);
+        return (xx - nx) * (xy - ny) - (box.maxX - box.minX) * (box.maxY - box.minY);
+    }
+    collides(q) {
+        const root = this.root;
+        if (q.minX > root.maxX || q.maxX < root.minX || q.minY > root.maxY || q.maxY < root.minY) return false;
+        const stack = [root];
+        while (stack.length) {
+            const node = stack.pop();
+            const ch = node.children;
+            for (let i = 0; i < ch.length; i++) {
+                const c = ch[i];
+                if (q.minX <= c.maxX && q.maxX >= c.minX && q.minY <= c.maxY && q.maxY >= c.minY) {
+                    if (node.leaf) return true;
+                    stack.push(c);
+                }
+            }
+        }
+        return false;
+    }
+    insert(item) {
+        const split = this._insert(this.root, item);
+        if (split) { const old = this.root; this.root = this._node(false); this.root.children.push(old, split); this._recalc(this.root); }
+    }
+    _insert(node, item) {
+        this._extend(node, item);
+        if (node.leaf) { node.children.push(item); return node.children.length > this._max ? this._split(node) : null; }
+        let best = node.children[0], bestEnl = Infinity;
+        for (let i = 0; i < node.children.length; i++) { const e = this._enlarge(node.children[i], item); if (e < bestEnl) { bestEnl = e; best = node.children[i]; } }
+        const split = this._insert(best, item);
+        if (split) { node.children.push(split); return node.children.length > this._max ? this._split(node) : null; }
+        return null;
+    }
+    _split(node) {
+        const byX = (node.maxX - node.minX) >= (node.maxY - node.minY);
+        node.children.sort(byX
+            ? (a, b) => (a.minX + a.maxX) - (b.minX + b.maxX)
+            : (a, b) => (a.minY + a.maxY) - (b.minY + b.maxY));
+        const right = this._node(node.leaf);
+        right.children = node.children.splice(node.children.length >> 1);
+        this._recalc(node); this._recalc(right);
+        return right;
+    }
+}
+
+// ── Variant H: sort + R-tree (OpenLayers / RBush declutter). ───────────────────
+// Same greedy binary placement as MapLibre's grid, but the occupancy is an R-tree
+// instead of a uniform hash grid. Placement is identical — this isolates the
+// spatial-index choice (tree vs grid) as a pure speed comparison.
+class SortRTree {
+    constructor(opts) { this.name = 'OpenLayers-style · sort + R-tree'; this.color = '#69c0ff'; this.opts = opts; }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this.tree = new RTree(9);
+    }
+    resize() {}   // resolution-independent
+    place(items, opts, W, H) {
+        const n = items.n, penalty = opts.cfg.renderPenaltyMultiplier;
+        this.lastDecision.fill(0);
+        this.tree.clear();
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], items.weight[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        let rendered = 0;
+        for (let s = 0; s < n; s++) {
+            const i = view[s], id = items.idx[i];
+            const q = { minX: items.x0[i], minY: items.y0[i], maxX: items.x1[i], maxY: items.y1[i] };
+            if (!this.tree.collides(q)) {
+                this.tree.insert(q);
+                rendered++; this.lastDecision[id] = 1; this.prev[id] = 1;
+            } else { this.prev[id] = 0; }
+        }
+        return rendered;
+    }
+}
+
+// ── Variant I: deck.gl-style GPU raster collision (REAL WebGL2). ──────────────
+// Not a CPU stand-in: all candidate boxes are drawn in ONE instanced pass into a
+// collision map, depth-tested by priority so the highest-priority label wins each
+// pixel (label index encoded in RGB via flat-interpolated colour). The map is read
+// back through a Pixel Buffer Object (PBO) — the same async-DMA path deck.gl's
+// CollisionFilterExtension uses — and a label is kept if it owns ≥ `coverage` of
+// its own pixels. A fence sync gates the readback so the benchmark still measures
+// wall-clock GPU+transfer time honestly. Off by default; all GL is guarded so a
+// failure disables the variant, not the page.
+//
+// Key fixes over the naïve version:
+//   • `flat` interpolation for vColor — smooth would corrupt the integer-encoded
+//     label IDs across triangle edges, producing garbage pixel ownership.
+//   • DEPTH_COMPONENT24 — 16-bit depth only has ~32 K distinct values; the label
+//     slider goes to 300 K, so priorities would alias and winners become random.
+//   • Full NDC depth range [-1, 1] — doubles effective precision vs [0, 1].
+//   • PBO + fenceSync readback — avoids the synchronous readPixels CPU stall;
+//     DMA transfer runs in parallel with the fence poll (matches deck.gl's model,
+//     minus the 1-frame latency it uses for fully-async reads).
+//   • Explicit VAO — WebGL2 best practice (default VAO works but is fragile across
+//     context-loss / driver quirks).
+//   • Framebuffer completeness check — surfaces driver/format issues immediately.
+class GpuRasterCollision {
+    constructor(opts) {
+        this.name = 'deck.gl-style · GPU raster';
+        this.color = '#ff9c6e';
+        this.opts = opts;
+        this.coverage = 0.5;         // keep a label if it wins ≥ 50% of its pixels
+        this._init = false; this._ok = false; this._gl = null;
+    }
+    reset(count) {
+        this.prev = new Uint8Array(count);
+        this.lastDecision = new Uint8Array(count);
+        this.order = new Int32Array(count);
+        this.key = new Float64Array(count);
+        this._inst = new Float32Array(count * 8);
+        this._won = new Int32Array(count);
+    }
+    resize(w, h) { this.W = w; this.H = h; if (this._init && this._ok) this._alloc(); }
+    _fail(m) { console.warn('GPU raster variant disabled —', m); this._ok = false; }
+    _compile(gl, type, src) {
+        const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.warn(gl.getShaderInfoLog(s)); return null; }
+        return s;
+    }
+    _initGL() {
+        this._init = true;
+        try {
+            const cv = document.createElement('canvas'); cv.width = this.W; cv.height = this.H;
+            const gl = cv.getContext('webgl2', { antialias: false, depth: true });
+            if (!gl) return this._fail('WebGL2 unavailable');
+            this._gl = gl; this._cv = cv;
+
+            // ── Shaders ──
+            // `flat` on vColor is critical: the RGB channels encode a 24-bit integer
+            // label ID. Smooth interpolation across the triangle would blend distinct
+            // integer bytes → garbage IDs → wrong pixel-ownership counts → broken.
+            const vs = this._compile(gl, gl.VERTEX_SHADER, `#version 300 es
+                in vec2 aQuad; in vec4 aBox; in float aDepth; in vec3 aColor;
+                uniform vec2 uRes;
+                flat out vec3 vColor;
+                void main(){
+                    vec2 p = mix(aBox.xy, aBox.zw, aQuad);
+                    gl_Position = vec4(p / uRes * 2.0 - 1.0, aDepth, 1.0);
+                    vColor = aColor;
+                }`);
+            const fs = this._compile(gl, gl.FRAGMENT_SHADER, `#version 300 es
+                precision highp float;
+                flat in vec3 vColor;
+                out vec4 o;
+                void main(){ o = vec4(vColor, 1.0); }`);
+            if (!vs || !fs) return this._fail('shader compile failed');
+            const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+            if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return this._fail(gl.getProgramInfoLog(p));
+            this._prog = p;
+            this._loc = {
+                aQuad: gl.getAttribLocation(p, 'aQuad'), aBox: gl.getAttribLocation(p, 'aBox'),
+                aDepth: gl.getAttribLocation(p, 'aDepth'), aColor: gl.getAttribLocation(p, 'aColor'),
+                uRes: gl.getUniformLocation(p, 'uRes'),
+            };
+
+            // ── VAO — captures all vertex attribute state ──
+            this._vao = gl.createVertexArray();
+            gl.bindVertexArray(this._vao);
+
+            // Quad geometry (per-vertex, divisor 0)
+            this._quadBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, this._quadBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(this._loc.aQuad);
+            gl.vertexAttribPointer(this._loc.aQuad, 2, gl.FLOAT, false, 0, 0);
+            gl.vertexAttribDivisor(this._loc.aQuad, 0);
+
+            // Instance buffer (per-instance, divisor 1) — data uploaded each frame
+            this._instBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, this._instBuf);
+            const st = 32;   // 8 floats × 4 bytes
+            gl.enableVertexAttribArray(this._loc.aBox);   gl.vertexAttribPointer(this._loc.aBox,   4, gl.FLOAT, false, st, 0);  gl.vertexAttribDivisor(this._loc.aBox, 1);
+            gl.enableVertexAttribArray(this._loc.aDepth); gl.vertexAttribPointer(this._loc.aDepth, 1, gl.FLOAT, false, st, 16); gl.vertexAttribDivisor(this._loc.aDepth, 1);
+            gl.enableVertexAttribArray(this._loc.aColor); gl.vertexAttribPointer(this._loc.aColor, 3, gl.FLOAT, false, st, 20); gl.vertexAttribDivisor(this._loc.aColor, 1);
+
+            gl.bindVertexArray(null);
+
+            // ── PBO for async readback (deck.gl model) ──
+            this._pbo = gl.createBuffer();
+
+            this._alloc();
+            this._ok = true;
+        } catch (e) { this._fail(e.message); }
+    }
+    _alloc() {
+        const gl = this._gl; if (!gl) return;
+        this._cv.width = this.W; this._cv.height = this.H;
+        if (this._fbo) { gl.deleteFramebuffer(this._fbo); gl.deleteTexture(this._tex); gl.deleteRenderbuffer(this._db); }
+
+        // Colour attachment — RGBA8, NEAREST (no filtering on integer-encoded IDs)
+        this._tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this._tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, this.W, this.H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        // Depth attachment — 24-bit. 16-bit only has ~32 K distinct values; the
+        // label slider goes to 300 K, so priorities would alias and winners become
+        // random. 24-bit gives ~8 M values in the usable range, sufficient.
+        this._db = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, this._db);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.W, this.H);
+
+        this._fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this._fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._tex, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this._db);
+
+        // Completeness check — surfaces driver/format issues immediately
+        const fbStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (fbStatus !== gl.FRAMEBUFFER_COMPLETE) return this._fail('FBO incomplete: 0x' + fbStatus.toString(16));
+
+        // PBO sized to match the framebuffer
+        const byteSize = this.W * this.H * 4;
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._pbo);
+        gl.bufferData(gl.PIXEL_PACK_BUFFER, byteSize, gl.STREAM_READ);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+
+        this._readBuf = new Uint8Array(byteSize);
+    }
+    place(items, opts, W, H) {
+        this.lastDecision.fill(0);
+        if (!this._init) this._initGL();
+        if (!this._ok) return 0;
+        const gl = this._gl, n = items.n, penalty = opts.cfg.renderPenaltyMultiplier, wt = items.weight;
+        if (n === 0) return 0;
+
+        const order = this.order, key = this.key;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(items.score[i], wt[i], this.prev[items.idx[i]], penalty); }
+        const view = order.subarray(0, n);
+        view.sort((a, b) => key[a] - key[b]);
+
+        // Pack instance data: [box x0,y0,x1,y1 | depth | R,G,B encoded label id]
+        // Depth uses FULL NDC range [-1, 1]: highest priority s=0 → -1 (nearest),
+        // lowest s=n-1 → +1 (farthest). This doubles effective depth precision vs
+        // the old [0, 1] mapping that wasted the bottom half of the depth buffer.
+        const inst = this._inst;
+        for (let s = 0; s < n; s++) {
+            const i = view[s], o = s * 8, id = i + 1;
+            inst[o]   = items.x0[i]; inst[o+1] = items.y0[i];
+            inst[o+2] = items.x1[i] + 1; inst[o+3] = items.y1[i] + 1;
+            inst[o+4] = n > 1 ? (s / (n - 1)) * 2.0 - 1.0 : -1.0;   // full [-1,+1] NDC
+            inst[o+5] = (id & 255) / 255;
+            inst[o+6] = ((id >> 8) & 255) / 255;
+            inst[o+7] = ((id >> 16) & 255) / 255;
+        }
+
+        // ── Draw ──
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this._fbo);
+        gl.viewport(0, 0, this.W, this.H);
+        gl.clearColor(0, 0, 0, 0); gl.clearDepth(1.0);
+        gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.disable(gl.BLEND);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.useProgram(this._prog);
+        gl.uniform2f(this._loc.uRes, this.W, this.H);
+
+        // Upload instance data and draw — VAO captures attribute layout from init
+        gl.bindVertexArray(this._vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._instBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, inst.subarray(0, n * 8), gl.DYNAMIC_DRAW);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
+        gl.bindVertexArray(null);
+
+        // ── PBO readback with fence sync (deck.gl model) ──
+        // 1. Initiate async DMA transfer from FBO → PBO (non-blocking)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._pbo);
+        gl.readPixels(0, 0, this.W, this.H, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+
+        // 2. Synchronous readback — gl.finish() guarantees all commands complete,
+        //    then we read from the PBO. The fence-based busy-poll (clientWaitSync
+        //    with timeout 0) hangs indefinitely on some browsers/drivers because
+        //    the tight loop starves the browser's GPU completion path.
+        gl.finish();
+
+        // 3. Copy PBO → CPU typed array (getBufferSubData, the WebGL2 PBO read path)
+        const buf = this._readBuf;
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._pbo);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+
+        // ── Count pixel ownership per label ──
+        const won = this._won;
+        for (let i = 0; i < n; i++) won[i] = 0;
+        for (let p = 0; p < buf.length; p += 4) {
+            const id = buf[p] | (buf[p+1] << 8) | (buf[p+2] << 16);
+            if (id !== 0) won[id - 1]++;
+        }
+        let rendered = 0;
+        for (let i = 0; i < n; i++) {
+            const area = (items.x1[i] - items.x0[i] + 1) * (items.y1[i] - items.y0[i] + 1);
+            const id = items.idx[i];
+            const on = won[i] >= this.coverage * area ? 1 : 0;
+            this.prev[id] = on;
+            if (on) { this.lastDecision[id] = 1; rendered++; }
+        }
+        return rendered;
+    }
+}
+
+const VARIANT_FACTORIES = [
+    { key: 'bucket',  label: 'iTowns · bucket + bitmap',   hint: 'PRODUCTION iTowns — O(n) depth scatter + occupancy bitmap',  make: o => new BucketBitmap(o),  on: true },
+    { key: 'sort',    label: 'iTowns-var · sort + bitmap', hint: 'iTowns variant — exact O(n log n) sort, same occupancy',     make: o => new SortBitmap(o),    on: true },
+    { key: 'binpyr',  label: 'bucket + binary pyramid',    hint: 'improved bitmap — pure binary, early-exit quadtree pyramid',  make: o => new BucketBinaryPyramid(o), on: true },
+    { key: 'sortpyr', label: 'sort + binary pyramid',       hint: 'exact sort + pure binary early-exit quadtree pyramid',       make: o => new SortBinaryPyramid(o),   on: false },
+    { key: 'grid',    label: 'MapLibre-style · sort + grid', hint: 'approximates MapLibre — sort + grid index, binary overlap', make: o => new SortGridAABB(o),  on: true },
+    { key: 'rtree',   label: 'OpenLayers-style · sort + R-tree', hint: 'RBush declutter — same placement as grid, tree index (speed)', make: o => new SortRTree(o),  on: false },
+    { key: 'bktgrid', label: 'bucket + grid',               hint: 'O(n) bucket order + binary grid placement',                make: o => new BucketGrid(o),    on: true },
+    { key: 'sapolish', label: 'sort + grid + SA polish',    hint: 'greedy then budgeted simulated-annealing — greedy→optimal middle tier', make: o => new SortGridSAPolish(o), on: false },
+    { key: 'dom',     label: 'DOM · ScreenGrid',            hint: 'iTowns DOM path — sort + ~20px screen grid, binary AABB',   make: o => new DomScreenGrid(o), on: true },
+    { key: 'pal',     label: 'QGIS/PAL · sort multi-candidate',   hint: 'point-feature — sort order, K positions/label, shift not drop', make: o => new MultiCandidatePAL(o),       on: true },
+    { key: 'palbkt',  label: 'QGIS/PAL · bucket multi-candidate', hint: 'PAL with O(n) bucket order instead of exact sort',              make: o => new BucketMultiCandidatePAL(o), on: true },
+    { key: 'gpu',     label: 'deck.gl-style · GPU raster',  hint: 'REAL WebGL2 — instanced draw, depth priority, PBO+fence readback (browser)', make: o => new GpuRasterCollision(o), on: false },
+    { key: 'brute',   label: 'baseline · sort + brute AABB', hint: 'reference — O(n²) overlap, no spatial index',               make: o => new SortBruteAABB(o), on: false },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUALITY CEILING — near-optimal reference, computed OFFLINE on one frame.
+//
+// Quality is NOT label count — a method that drops a capital to fit three
+// hamlets placed "more" labels but did worse. The right target is the Maximum-
+// WEIGHT Independent Set: the non-overlapping subset that retains the most total
+// IMPORTANCE (Σ class weights). That is NP-hard, so we approximate it with
+// simulated-annealing local search — the classic research baseline (Christensen–
+// Marks–Shieber 1995). It is NOT a real-time method and never enters the timing
+// table; it is the yardstick every fast method is scored against ("% of optimal
+// importance retained"). If bucket and exact-sort both retain ~90% of the ceiling
+// AND similar city counts, bucketing isn't sacrificing priority.
+//
+// (A pure max-COUNT ceiling is deliberately avoided: it rewards spamming tiny
+// low-importance labels and would slander any priority-respecting algorithm.)
+//
+// Only tractable at modest N, so it is gated. Binary-overlap methods (grid, DOM,
+// brute) are bounded by this ceiling; partial-occlusion methods (the bitmap ones)
+// may exceed 100% by packing important labels into allowed overlap.
+// ─────────────────────────────────────────────────────────────────────────────
+const CEILING_MAX_N = 100000;   // above this, SA is skipped (too many rectangles)
+const CEILING_MS    = 120000;   // wall-clock budget for the annealing search
+
+function computeCeiling(items, W, H) {
+    const n = items.n;
+    if (n === 0)             return { feasible: false, reason: 'no candidates', n };
+    if (n > CEILING_MAX_N)   return { feasible: false, reason: `${n} candidates > ${CEILING_MAX_N} cap`, n };
+
+    const t0 = performance.now();
+    const x0 = items.x0, y0 = items.y0, x1 = items.x1, y1 = items.y1;
+
+    // Static uniform grid over ALL candidates → overlapping-neighbour discovery.
+    const cell = 32;
+    const gw = Math.max(1, Math.ceil(W / cell));
+    const gh = Math.max(1, Math.ceil(H / cell));
+    const grid = Array.from({ length: gw * gh }, () => []);
+    const cellsOf = (i, fn) => {
+        let cx0 = (x0[i] / cell) | 0, cx1 = (x1[i] / cell) | 0;
+        let cy0 = (y0[i] / cell) | 0, cy1 = (y1[i] / cell) | 0;
+        if (cx1 >= gw) cx1 = gw - 1; if (cy1 >= gh) cy1 = gh - 1;
+        for (let gy = cy0; gy <= cy1; gy++) for (let gx = cx0; gx <= cx1; gx++) fn(gy * gw + gx);
+    };
+    for (let i = 0; i < n; i++) cellsOf(i, c => grid[c].push(i));
+
+    // Adjacency list of truly-overlapping neighbours (dedup via per-i stamp).
+    const adj = new Array(n);
+    const stamp = new Int32Array(n).fill(-1);
+    for (let i = 0; i < n; i++) {
+        const list = [];
+        cellsOf(i, c => {
+            const bucket = grid[c];
+            for (let b = 0; b < bucket.length; b++) {
+                const j = bucket[b];
+                if (j === i || stamp[j] === i) continue;
+                stamp[j] = i;
+                if (x0[i] <= x1[j] && x1[i] >= x0[j] && y0[i] <= y1[j] && y1[i] >= y0[j]) list.push(j);
+            }
+        });
+        adj[i] = list;
+    }
+
+    const wt = items.weight;
+
+    // Greedy init in the SAME importance-primary priority order the variants use.
+    const order = new Int32Array(n);
+    for (let i = 0; i < n; i++) order[i] = i;
+    order.sort((a, b) => priorityKey(items.score[a], wt[a], true, 1) - priorityKey(items.score[b], wt[b], true, 1));
+    const on = new Uint8Array(n);
+    let weight = 0;
+    for (let s = 0; s < n; s++) {
+        const i = order[s], a = adj[i];
+        let ok = true;
+        for (let k = 0; k < a.length; k++) if (on[a[k]]) { ok = false; break; }
+        if (ok) { on[i] = 1; weight += wt[i]; }
+    }
+
+    // Simulated annealing maximising retained IMPORTANCE: add i and evict its ON
+    // neighbours when the traded weight improves (Δ = w_i − Σ w_evicted), worse
+    // trades accepted with prob e^(Δ/T); occasional drops for diversification.
+    const rand = mulberry32(0x1a2b3c4d);
+    let best = weight;
+    const iters = Math.min(3_000_000, n * 400);
+    let T = MAX_IMPORTANCE * 0.5; const Tend = 0.5;
+    const cool = Math.pow(Tend / T, 1 / Math.max(1, iters));
+    for (let it = 0; it < iters; it++) {
+        if ((it & 8191) === 0 && performance.now() - t0 > CEILING_MS) break;
+        const i = (rand() * n) | 0, a = adj[i];
+        if (on[i]) {
+            if (rand() < Math.exp(-wt[i] / T)) { on[i] = 0; weight -= wt[i]; }   // diversify
+        } else {
+            let evicted = 0;
+            for (let k = 0; k < a.length; k++) if (on[a[k]]) evicted += wt[a[k]];
+            const delta = wt[i] - evicted;
+            if (delta > 0 || rand() < Math.exp(delta / T)) {
+                for (let k = 0; k < a.length; k++) if (on[a[k]]) { on[a[k]] = 0; weight -= wt[a[k]]; }
+                on[i] = 1; weight += wt[i];
+            }
+        }
+        if (weight > best) best = weight;
+        T *= cool;
+    }
+    return { feasible: true, weight: best, ms: performance.now() - t0, n };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Benchmark orchestration
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+ * runBenchmark — the fair harness.
+ *
+ * For every measured pass we walk the SAME camera path. At each frame we build
+ * the shared item buffer ONCE (projection + candidate filter + score), then hand
+ * that identical buffer to each enabled variant and time only its place() call.
+ * Running all variants against the same per-frame buffer guarantees byte-for-byte
+ * identical input; interleaving them per-frame (rather than per-pass) keeps cache
+ * and thermal conditions equal. A warmup pass primes JIT for every variant first.
+ */
+async function runBenchmark(status) {
+    const opts = readConfig();
+    // Two independent resolutions:
+    //   globalShift — collision resolution EVERY method runs at (default 1 = full-res).
+    //   itownsShift — the iTowns bitmap methods downscale their occupancy grid by
+    //                 this much ON TOP of global; no other method sees it.
+    opts.globalShift = Math.round(Math.log2(opts.globalDownscale));
+    opts.itownsShift = Math.round(Math.log2(opts.downscale));
+    const bmWi = Math.max(1, VIEWPORT_W >> opts.globalShift);
+    const bmHi = Math.max(1, VIEWPORT_H >> opts.globalShift);
+
+    status('Building dataset…');
+    await raf();
+    const labels    = buildDataset(opts);
+    const cam       = makeCamera(opts);
+
+    // Derive pxPerUnit from the (constant) camera projection so a label of
+    // `bounds.width` font-pixels occupies `bounds.width` full-res screen pixels,
+    // i.e. `bounds.width·(fontSize/base)/downscale` bitmap cells. Without this the
+    // font-pixel bounds have no physical screen scale and labels blow up.
+    opts.cfg.pxPerUnit = 0.5 * VIEWPORT_W * cam.projectionMatrix.elements[0];
+
+    const projector = new LabelProjector(opts.cfg);
+    const items     = makeItemBuffer(opts.labelCount);
+    const refItems  = makeItemBuffer(opts.labelCount);   // full-res, for the quality ceiling
+
+    const variants = VARIANT_FACTORIES
+        .filter(v => document.getElementById('vt-' + v.key).checked)
+        .map(v => { const inst = v.make(opts); inst.reset(opts.labelCount); inst.resize(bmWi, bmHi); return inst; });
+
+    if (variants.length === 0) { status('Select at least one variant.'); return null; }
+
+    // Per-variant per-frame timing samples (across all measured passes).
+    const samples  = variants.map(() => []);
+    const rendered = variants.map(() => 0);
+    let renderedFrames = 0;
+    // Shared prep accounting (projection + candidate filter), attributed to the
+    // toggle rather than to any variant.
+    let prepMsSum = 0, candSum = 0, placedSum = 0;
+
+    // Flicker / temporal-stability accounting, measured WITH hysteresis (the warm
+    // runtime path). A "flip" is a label that changes render state between two
+    // consecutive frames while remaining on-screen in BOTH — so enter/leave-frustum
+    // transitions are not mistaken for flicker. This is the axis the render-penalty
+    // hysteresis exists to improve, and the reason quality is measured cold instead.
+    const prevDec  = variants.map(() => new Uint8Array(opts.labelCount));
+    const flipSum  = variants.map(() => 0);
+    const prevCand = new Uint8Array(opts.labelCount);
+    const curCand  = new Uint8Array(opts.labelCount);
+    let flipFrames = 0;
+
+    // Warmup pass (not measured) — prime JIT + let prev-state stabilise.
+    status('Warming up…');
+    await raf();
+    for (let f = 0; f < opts.frames; f++) {
+        setCameraForFrame(cam, f, opts.frames, opts);
+        prepareFrame(projector, cam, labels, opts, bmWi, bmHi, items);
+        for (const v of variants) { v.place(items, opts, bmWi, bmHi); }
+    }
+
+    // Measured passes.
+    for (let pass = 0; pass < opts.passes; pass++) {
+        status(`Measuring pass ${pass + 1}/${opts.passes}…`);
+        await raf();
+        prevCand.fill(0);   // no flicker counted across the pass seam (camera jump)
+        for (let f = 0; f < opts.frames; f++) {
+            setCameraForFrame(cam, f, opts.frames, opts);
+            const tp = performance.now();
+            prepareFrame(projector, cam, labels, opts, bmWi, bmHi, items);
+            prepMsSum += performance.now() - tp;
+            candSum   += items.visN;
+            placedSum += items.n;
+            for (let vi = 0; vi < variants.length; vi++) {
+                const v = variants[vi];
+                const t0 = performance.now();
+                const r  = v.place(items, opts, bmWi, bmHi);
+                const dt = performance.now() - t0;
+                samples[vi].push(dt);
+                rendered[vi] += r;
+            }
+            renderedFrames++;
+
+            // ── flicker bookkeeping (not timed) ──
+            curCand.fill(0);
+            for (let i = 0; i < items.n; i++) curCand[items.idx[i]] = 1;
+            if (f > 0) {
+                for (let vi = 0; vi < variants.length; vi++) {
+                    const dec = variants[vi].lastDecision, pdec = prevDec[vi];
+                    let flips = 0;
+                    for (let i = 0; i < items.n; i++) {
+                        const id = items.idx[i];
+                        if (prevCand[id] && (dec[id] ^ pdec[id])) flips++;
+                    }
+                    flipSum[vi] += flips;
+                }
+                flipFrames++;
+            }
+            for (let vi = 0; vi < variants.length; vi++) prevDec[vi].set(variants[vi].lastDecision);
+            prevCand.set(curCand);
+        }
+    }
+
+    // Aggregate.
+    const rows = variants.map((v, vi) => {
+        const s = samples[vi].slice().sort((a, b) => a - b);
+        const sum = s.reduce((a, b) => a + b, 0);
+        return {
+            name: v.name, color: v.color, variant: v,
+            mean: sum / s.length,
+            p50: s[(s.length * 0.5) | 0],
+            p95: s[(s.length * 0.95) | 0],
+            min: s[0],
+            avgRendered: rendered[vi] / renderedFrames,
+            flicker: flipFrames > 0 ? flipSum[vi] / flipFrames : 0,   // flips per frame
+        };
+    });
+
+    const summary = {
+        labelCount: opts.labelCount,
+        candidate: opts.candidate,
+        avgCandidates: candSum / renderedFrames,   // survive pre-filter
+        avgPlaced: placedSum / renderedFrames,      // reach the collision alg
+        avgPrepMs: prepMsSum / renderedFrames,      // projection + candidate cost
+    };
+
+    // ── Quality ceiling on a single reference frame (the last frame) ──
+    // The ceiling is the geometric optimum of the SCENE, not of any grid, so it is
+    // computed on FULL-RESOLUTION AABBs (downscale = 1) — a fixed ground truth,
+    // independent of the downscale slider. Variants still place at their own
+    // downscale; their rendered SET (which labels) is what we score. This makes
+    // "% of optimal" monotonic: finer downscale → higher %, as it should be.
+    status('Computing quality ceiling (annealing)…');
+    await raf();
+    setCameraForFrame(cam, opts.frames - 1, opts.frames, opts);
+    prepareFrame(projector, cam, labels, opts, bmWi, bmHi, items);          // variant resolution
+    prepareFrame(projector, cam, labels, opts, VIEWPORT_W, VIEWPORT_H, refItems); // full-res for ceiling
+
+    // Available importance / class counts in the reference frame (context).
+    let availWeight = 0;
+    const availByClass = {};
+    for (let i = 0; i < items.n; i++) {
+        availWeight += items.weight[i];
+        availByClass[items.weight[i]] = (availByClass[items.weight[i]] || 0) + 1;
+    }
+
+    // Ceiling & audit resolution: full-res ground truth by default, or matched to
+    // the global downscale so the score isolates algorithm quality from resolution.
+    const refPos    = buildRefPos(refItems, opts.labelCount);
+    const matchDS   = opts.ceilingMatchDownscale;
+    const cItems    = matchDS ? items   : refItems;
+    const cW        = matchDS ? bmWi     : VIEWPORT_W;
+    const cH        = matchDS ? bmHi     : VIEWPORT_H;
+    const cPos      = matchDS ? buildRefPos(items, opts.labelCount) : refPos;
+
+    const ceiling = computeCeiling(cItems, cW, cH);
+    ceiling.matched = matchDS; ceiling.resW = cW; ceiling.resH = cH;
+    // Measure quality COLD: reset each variant's render-history first. The render-
+    // penalty hysteresis is a temporal-stability feature, but across a frame path
+    // it forms a feedback loop that turns a single-frame quality reading into
+    // chaotic noise (bucket@1024 would not converge to sort, counts non-monotonic
+    // in bucket size). A cold placement isolates the algorithm's intrinsic quality
+    // and is consistent with the frame-intrinsic ceiling. (Flicker/stability, when
+    // we add it, is the right place to measure the hysteresis instead.)
+    variants.forEach(v => { v.record = true; if (v.prev) v.prev.fill(0); });
+    const qualityRows = variants.map(v => {
+        const placed = v.place(items, opts, bmWi, bmHi);   // this frame's placement
+        // Full-res boxes + overlap flags. Quality counts only CLEAN (non-overlapping)
+        // labels: a label rendered on top of another is not validly placed, so it
+        // must not inflate importance-kept (that is what let overlap-packing score
+        // higher than a clean layout). Both labels of an overlapping pair are
+        // excluded — same non-overlap basis as the ceiling.
+        const { boxes, idxs } = fullResPlacedBoxes(v, items, cItems, cPos);
+        const { flags, count: overlaps } = overlapFlags(boxes, cW, cH);
+        let kept = 0, keptClean = 0;
+        const keptByClass = {};
+        for (let k = 0; k < boxes.length; k++) {
+            const w = items.weight[idxs[k]];
+            kept += w;
+            if (!flags[k]) {
+                keptClean += w;
+                keptByClass[w] = (keptByClass[w] || 0) + 1;   // clean labels per class
+            }
+        }
+        return { name: v.name, color: v.color, placed, kept, keptClean, keptByClass, overlaps };
+    });
+    variants.forEach(v => { v.record = false; });
+    const quality = { ceiling, rows: qualityRows, refCandidates: items.n, availWeight, availByClass };
+
+    return { rows, opts, bmWi, bmHi, labels, cam, projector, items, refItems, refPos, summary, quality };
+}
+
+function raf() { return new Promise(r => requestAnimationFrame(() => r())); }
+
+// FULL-RESOLUTION boxes for a variant's rendered labels. The variant decides
+// WHICH labels to show at its own (possibly coarse) downscale, but we score the
+// result on the true full-res geometry (`refItems`, the same projection the
+// ceiling uses) — so a coarse grid can't hide sub-cell overlaps it never saw.
+// Non-shifting variants keep the anchor box; PAL re-applies its chosen position
+// offset at full resolution. `refPos` maps a label id → its row in refItems.
+function fullResPlacedBoxes(variant, items, refItems, refPos) {
+    const dec = variant.lastDecision, shifts = variant.shifts, rpos = variant.rpos;
+    const boxes = [], idxs = [];
+    for (let i = 0; i < items.n; i++) {
+        const id = items.idx[i];
+        if (dec[id] !== 1) continue;
+        const j = refPos[id];
+        if (j < 0) continue;                 // not present in the full-res projection
+        let x0 = refItems.x0[j], y0 = refItems.y0[j], x1 = refItems.x1[j], y1 = refItems.y1[j];
+        if (shifts) {
+            const w = x1 - x0, h = y1 - y0;
+            const cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
+            const p = PAL_POSITIONS[rpos[id]];
+            x0 = (cx + p[0] * w) | 0; y0 = (cy + p[1] * h) | 0; x1 = x0 + w; y1 = y0 + h;
+        }
+        boxes.push([x0, y0, x1, y1]);
+        idxs.push(i);                        // items row for this placed box
+    }
+    return { boxes, idxs };
+}
+
+// Map label id → row index in a full-res item buffer.
+function buildRefPos(refItems, labelCount) {
+    const refPos = new Int32Array(labelCount).fill(-1);
+    for (let j = 0; j < refItems.n; j++) refPos[refItems.idx[j]] = j;
+    return refPos;
+}
+
+// Flag every placed box that strictly overlaps another placed box. Grid-indexed.
+// This is the honesty check: a method can't win by rendering labels on top of
+// each other. Partial-occlusion methods (the bitmap ones) intentionally report
+// some overlaps; binary methods (grid/DOM/PAL) should report ~0.
+function overlapFlags(boxes, W, H) {
+    const n = boxes.length, flags = new Uint8Array(n);
+    if (n < 2) return { flags, count: 0 };
+    const cell = 32, gw = Math.max(1, Math.ceil(W / cell)), gh = Math.max(1, Math.ceil(H / cell));
+    const grid = new Map();
+    const cellsOf = (b, fn) => {
+        let a = (b[0] / cell) | 0, c = (b[2] / cell) | 0, d = (b[1] / cell) | 0, e = (b[3] / cell) | 0;
+        if (a < 0) a = 0; if (d < 0) d = 0; if (c >= gw) c = gw - 1; if (e >= gh) e = gh - 1;
+        for (let gy = d; gy <= e; gy++) for (let gx = a; gx <= c; gx++) fn(gy * gw + gx);
+    };
+    for (let i = 0; i < n; i++) cellsOf(boxes[i], ci => { let a = grid.get(ci); if (!a) { a = []; grid.set(ci, a); } a.push(i); });
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+        const bi = boxes[i]; let hit = false;
+        cellsOf(bi, ci => {
+            if (hit) return;
+            const a = grid.get(ci);
+            for (let k = 0; k < a.length; k++) {
+                const j = a[k]; if (j === i) continue; const bj = boxes[j];
+                if (bi[0] < bj[2] && bi[2] > bj[0] && bi[1] < bj[3] && bi[3] > bj[1]) { hit = true; return; }
+            }
+        });
+        if (hit) { flags[i] = 1; count++; }
+    }
+    return { flags, count };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rendering results
+// ─────────────────────────────────────────────────────────────────────────────
+function renderResults(result) {
+    const { rows, summary } = result;
+
+    // Shared-stage summary — makes the candidate toggle's effect explicit.
+    const culled = summary.labelCount - summary.avgCandidates;
+    document.getElementById('prepSummary').innerHTML = `
+        <b>${summary.labelCount.toLocaleString()}</b> labels ·
+        candidate filter <b>${summary.candidate ? 'ON' : 'OFF'}</b> →
+        <b>${summary.avgCandidates.toFixed(0)}</b> candidates
+        (<span class="dim">${culled.toFixed(0)} culled</span>) →
+        <b>${summary.avgPlaced.toFixed(0)}</b> reach collision ·
+        shared prep <b>${summary.avgPrepMs.toFixed(3)} ms/frame</b>
+        <span class="dim">(projection + candidate, excluded from variant timings below)</span>`;
+
+    const thead = document.querySelector('#resultTable thead');
+    const tbody = document.querySelector('#resultTable tbody');
+    const bestMean = Math.min(...rows.map(r => r.mean));
+    const maxMean  = Math.max(...rows.map(r => r.mean));
+
+    const minFlickerPct = Math.min(...rows.map(r => r.avgRendered > 0 ? r.flicker / r.avgRendered * 100 : 0));
+    thead.innerHTML = `<tr>
+        <th>Variant</th><th>mean ms</th><th>p50</th><th>p95</th><th>min</th>
+        <th>rendered</th><th>flicker/frame</th><th>relative</th></tr>`;
+
+    tbody.innerHTML = rows.map(r => {
+        const rel = r.mean / bestMean;
+        const barW = Math.max(2, (r.mean / maxMean) * 118) | 0;
+        const flkPct = r.avgRendered > 0 ? r.flicker / r.avgRendered * 100 : 0;
+        const flkCls = flkPct <= minFlickerPct + 0.05 ? 'best' : (flkPct > 15 ? 'red' : '');
+        return `<tr>
+            <td class="name"><span class="swatch" style="background:${r.color}"></span>${r.name}</td>
+            <td class="${r.mean === bestMean ? 'best' : ''}">${r.mean.toFixed(4)}</td>
+            <td>${r.p50.toFixed(4)}</td>
+            <td>${r.p95.toFixed(4)}</td>
+            <td class="dim">${r.min.toFixed(4)}</td>
+            <td>${r.avgRendered.toFixed(0)}</td>
+            <td class="${flkCls}">${r.flicker.toFixed(1)} <span class="dim">(${flkPct.toFixed(1)}%)</span></td>
+            <td class="barcell"><div class="bar" style="width:${barW}px"></div><small style="color:#6b7690"> ${rel.toFixed(2)}×</small></td>
+        </tr>`;
+    }).join('');
+
+    renderQuality(result.quality);
+    renderAllPreviews(result, rows);
+}
+
+function renderQuality(q) {
+    const block = document.getElementById('qualityBlock');
+    if (!q) { block.style.display = 'none'; return; }
+    block.style.display = 'block';
+
+    const summary = document.getElementById('ceilingSummary');
+    const c = q.ceiling;
+    if (!c.feasible) {
+        summary.innerHTML = `Importance ceiling not computed — <b>${c.reason}</b>. Lower the label count to bring the reference frame under ${CEILING_MAX_N} candidates.`;
+        document.querySelector('#qualityTable thead').innerHTML = '';
+        document.querySelector('#qualityTable tbody').innerHTML = '';
+        return;
+    }
+    const availStr = CLASSES.map(cl => `<b style="color:${cl.color}">${q.availByClass[cl.weight] || 0}</b>`).join('/');
+    summary.innerHTML = `Reference frame: <b>${q.refCandidates}</b> candidates
+        (on screen by class ${availStr} = city/town/road/POI, ${q.availWeight.toLocaleString()} importance) ·
+        optimal retainable importance ≈ <b>${c.weight.toLocaleString()}</b>
+        <span class="dim">(weighted annealing at ${c.matched ? `matched ${c.resW}×${c.resH}` : 'full-res'}, ${c.ms.toFixed(0)} ms — offline)</span>`;
+
+    const bestPct = Math.max(...q.rows.map(r => (r.keptClean / c.weight) * 100));
+    document.querySelector('#qualityTable thead').innerHTML = `<tr>
+        <th>Variant</th><th>clean importance</th><th>% of optimal</th><th>clean by class</th><th>labels</th><th>overlaps</th><th></th></tr>`;
+    document.querySelector('#qualityTable tbody').innerHTML = q.rows.map(r => {
+        const pct = c.weight > 0 ? (r.keptClean / c.weight) * 100 : 0;
+        const barW = Math.max(2, Math.min(118, pct * 1.0)) | 0;
+        const cls = pct >= bestPct - 0.05 ? 'best' : (pct < 70 ? 'red' : '');
+        // clean-by-class as coloured counts: city/town/road/POI (importance order)
+        const byClass = CLASSES.map(cl =>
+            `<span style="color:${cl.color}">${r.keptByClass[cl.weight] || 0}</span>`).join('<span class="dim">/</span>');
+        const inflated = r.kept > r.keptClean ? ` <span class="dim">of ${r.kept.toLocaleString()} gross</span>` : '';
+        const ovPct = r.placed > 0 ? (r.overlaps / r.placed) * 100 : 0;
+        const ovCls = r.overlaps === 0 ? 'best' : (ovPct > 15 ? 'red' : '');
+        return `<tr>
+            <td class="name"><span class="swatch" style="background:${r.color}"></span>${r.name}</td>
+            <td>${r.keptClean.toLocaleString()}${inflated}</td>
+            <td class="${cls}">${pct.toFixed(1)}%</td>
+            <td style="font-weight:600">${byClass}</td>
+            <td class="dim">${r.placed}</td>
+            <td class="${ovCls}">${r.overlaps}${r.overlaps ? ` <span class="dim">(${ovPct.toFixed(0)}%)</span>` : ''}</td>
+            <td class="barcell"><div class="bar" style="width:${barW}px; background:${r.color}"></div></td>
+        </tr>`;
+    }).join('');
+}
+
+// One preview canvas per variant, all showing the same reference frame side by side.
+function renderAllPreviews(result, rows) {
+    const grid = document.getElementById('previewGrid');
+    grid.innerHTML = '';
+    for (const row of rows) {
+        const cell = document.createElement('div');
+        const cv = document.createElement('canvas');
+        cv.width = 320; cv.height = 180;
+        cv.style.cssText = 'width:100%; height:auto; display:block; background:#0a0e17; border:1px solid #222a3d; border-radius:4px;';
+        const cap = document.createElement('div');
+        cap.className = 'legend';
+        cap.style.cssText = 'margin-top:4px; font-size:11px;';
+        cap.innerHTML = `<span class="swatch" style="background:${row.color}"></span>${row.name}`;
+        cell.appendChild(cv);
+        cell.appendChild(cap);
+        grid.appendChild(cell);
+        drawPreview(result, row.variant, cv);
+    }
+}
+
+function drawPreview(result, variant, cv) {
+    const { opts, bmWi, bmHi, labels, cam, projector, items, refItems, refPos } = result;
+    // Re-run the reference frame for this variant to get a fresh lastDecision + rpos.
+    setCameraForFrame(cam, opts.frames - 1, opts.frames, opts);
+    prepareFrame(projector, cam, labels, opts, bmWi, bmHi, items);
+    variant.record = true;                    // capture PAL's chosen positions
+    if (variant.prev) variant.prev.fill(0);   // COLD, to match the quality table
+    variant.place(items, opts, bmWi, bmHi);
+    variant.record = false;
+
+    const ctx = cv.getContext('2d');
+    // Everything is drawn in FULL-RESOLUTION space (matches the audit).
+    const sx = cv.width / VIEWPORT_W, sy = cv.height / VIEWPORT_H;
+    ctx.fillStyle = '#0a0e17';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+
+    const dec = variant.lastDecision;
+    // Culled boxes (gray, full-res anchor position) first so placed draw on top.
+    for (let i = 0; i < items.n; i++) {
+        const id = items.idx[i];
+        if (dec[id] === 1) continue;
+        const j = refPos[id]; if (j < 0) continue;
+        ctx.fillStyle = 'rgba(51,64,92,0.4)';
+        ctx.fillRect(refItems.x0[j] * sx, refItems.y0[j] * sy,
+            Math.max(1, (refItems.x1[j] - refItems.x0[j]) * sx), Math.max(1, (refItems.y1[j] - refItems.y0[j]) * sy));
+    }
+    // Placed boxes at their ACTUAL full-res positions (shifted for PAL). Overlapping
+    // ones are drawn orange so any real overlap is visible; clean ones are green.
+    const { boxes } = fullResPlacedBoxes(variant, items, refItems, refPos);
+    const { flags, count } = overlapFlags(boxes, VIEWPORT_W, VIEWPORT_H);
+    for (let k = 0; k < boxes.length; k++) {
+        const b = boxes[k];
+        ctx.fillStyle = flags[k] ? 'rgba(240,150,70,0.85)' : 'rgba(86,209,147,0.9)';
+        ctx.fillRect(b[0] * sx, b[1] * sy, Math.max(1, (b[2] - b[0]) * sx), Math.max(1, (b[3] - b[1]) * sy));
+    }
+    ctx.fillStyle = '#9fb0d0';
+    ctx.font = '11px Consolas';
+    ctx.fillText(`${boxes.length} placed · ${count} overlap`, 6, 14);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI wiring
+// ─────────────────────────────────────────────────────────────────────────────
+function bindSlider(id) {
+    const el = document.getElementById(id);
+    const out = document.getElementById('v-' + id);
+    const upd = () => out.textContent = el.value;
+    el.addEventListener('input', upd); upd();
+}
+['labels', 'frames', 'passes', 'buckets', 'downscale', 'globalDownscale', 'occlusion', 'gridCell', 'palK', 'pyramidLevels', 'world'].forEach(bindSlider);
+
+// Variant checkboxes
+document.getElementById('variantList').innerHTML = VARIANT_FACTORIES.map(v => `
+    <label class="toggle">
+        <input type="checkbox" id="vt-${v.key}" ${v.on ? 'checked' : ''}>
+        <span>${v.label}<small>${v.hint}</small></span>
+    </label>`).join('');
+
+const statusEl = document.getElementById('status');
+const status = msg => { statusEl.textContent = msg; };
+
+document.getElementById('reseed').addEventListener('click', () => {
+    SEED = (Math.random() * 1e9) | 0;
+    status(`New seed: ${SEED}. Press Run.`);
+});
+
+document.getElementById('run').addEventListener('click', async () => {
+    const btn = document.getElementById('run');
+    btn.disabled = true;
+    try {
+        const t0 = performance.now();
+        const result = await runBenchmark(status);
+        if (result) {
+            renderResults(result);
+            status(`Done in ${((performance.now() - t0) / 1000).toFixed(1)}s · seed ${SEED} · ${result.opts.labelCount} labels · ${result.opts.frames}×${result.opts.passes} frames · candidate filter ${result.opts.candidate ? 'ON' : 'OFF'}`);
+        }
+    } catch (e) {
+        console.error(e);
+        status('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+});
+</script>
+</body>
+</html>

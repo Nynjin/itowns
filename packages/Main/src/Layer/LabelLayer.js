@@ -6,7 +6,7 @@ import { Coordinates, Extent } from '@itowns/geographic';
 import Label from 'Core/Label';
 import Style, { readExpression, StyleContext } from 'Core/Style';
 import { ScreenGrid } from 'Renderer/Label2DRenderer';
-import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement, LabelProfiler } from '@itowns/labels';
+import { Label as InstancedLabel, TextAnchorX, TextAnchorY, RotationAlignment, SymbolPlacement, LabelProfiler, TieredLabelCache } from '@itowns/labels';
 import { enqueueBudgeted } from 'Core/Scheduler/FrameBudget';
 
 const context = new StyleContext();
@@ -116,7 +116,10 @@ function snapshotInstancedTextStyle(context, geometryStyle, featureStyle, layerS
             ? SymbolPlacement.Line
             : SymbolPlacement.Point,
         offset: resolveTextProperty(context, geometryText.offset, featureText.offset, layerText.offset) || [0, 0],
-        padding: resolveTextProperty(context, geometryText.padding, featureText.padding, layerText.padding) || 20,
+        // Fallback when the style genuinely has no text-padding: MapLibre's own
+        // spec default is 2 (px), not 20 — see the note at the addLabel() padding
+        // read-site for how 20 leaked in here.
+        padding: resolveTextProperty(context, geometryText.padding, featureText.padding, layerText.padding) ?? 2,
     };
 }
 
@@ -218,7 +221,12 @@ class LabelsNode extends THREE.Group {
                     haloOpacity: textStyle.haloOpacity == undefined ? 1 : textStyle.haloOpacity,
                     anchorX: mapAnchorX(anchor),
                     anchorY: mapAnchorY(anchor),
-                    padding: label.padding || 20,
+                    // Unlike every other instanced-text property above, this used
+                    // to read `label.padding` — the OUTER Core/Label's own field,
+                    // whose sane class default (2, Core/Label.js) was unconditionally
+                    // stomped to 20 in convert() below. Read the resolved style
+                    // value instead, same as color/haloColor/offset/etc. above.
+                    padding: textStyle.padding ?? 2,
                     visible: label.visible,
                     rotationAlignment: textStyle.rotationAlignment || RotationAlignment.Map,
                     symbolPlacement: textStyle.symbolPlacement || SymbolPlacement.Point,
@@ -319,6 +327,15 @@ class LabelsNode extends THREE.Group {
 class LabelLayer extends GeometryLayer {
     #filterGrid = new ScreenGrid();
 
+    // Warm label cache. When an instanced tile is unloaded, its label GPU slots
+    // are kept registered (hidden) instead of destroyed, keyed by tile, so
+    // revisiting the tile (orbit/zoom churn) restores them cheaply instead of a
+    // full rebuild + re-upload. The tiered hot/cold/delete policy + storage live
+    // in the generic TieredLabelCache; this layer owns only the tile↔label side
+    // (the tile key, and when to park/restore). Null when caching is disabled.
+    #labelCache = null;
+    #labelManager = null;
+
     constructor(id, config = {}) {
         const {
             domElement,
@@ -348,6 +365,20 @@ class LabelLayer extends GeometryLayer {
         this.buildExtent = true;
         this.crs = config.source.crs;
         this.performance = performance;
+        // Keep an unloaded tile's instanced labels warm and restore them on
+        // revisit instead of re-uploading. Two tiers: HOT keeps them resident and
+        // hidden via `groupVisible = false` (restore = a visibility flip, zero GPU
+        // work); COLD frees their GPU slots but keeps the objects (restore =
+        // re-register, one upload, no re-shape). Only safe with the SYNC instanced
+        // manager: `groupVisible` is honoured by the main-thread collision engine,
+        // but the async manager collides in a worker whose copy wouldn't get the
+        // flip, so a parked (not REMOVE_LABELS'd) label would ghost. Hence
+        // `instanced && !async`; DOM labels don't have this GPU cost either.
+        // Disable with `cacheUnloadedLabels: false`. The hot/cold sizes are label
+        // GPU tuning and live in the manager's config (`hotLabelCacheSize` /
+        // `coldLabelCacheSize`); the cache is built lazily in #ensureLabelCache
+        // once the manager (and its config) is attached from the view.
+        this.cacheUnloadedLabels = instanced && !useAsync && (config.cacheUnloadedLabels ?? true);
         // Forced label count, applied PER TILE at the source in convert() (0 =
         // off): each tile builds at most N labels (first-N in feature order, no
         // sort), before the per-feature style/geometry work. This mirrors
@@ -406,6 +437,24 @@ class LabelLayer extends GeometryLayer {
             // tile and the label pipeline processes a matched workload. First-N in
             // feature order, no sort — same as MapLibre.
             if (this.forceLabelCount > 0 && labels.length >= this.forceLabelCount) { return; }
+
+            // Per-feature zoom gate: `f.style` is the MATCHED vector-tile style
+            // rule (VectorTileParser sets it to options.in.styles[feature.id]),
+            // which carries that rule's own minzoom/maxzoom
+            // (StyleOptions.setFromVectorTileLayer). This is what a Mapbox/MapLibre
+            // style JSON actually uses to stage labels in progressively by zoom
+            // (e.g. hamlet names from z12, major roads only below z14) — distinct
+            // from `this.style.zoom` checked further down, which is the LabelLayer's
+            // own top-level override and does not vary per matched rule. Without
+            // this, every style rule whose `filter` matched was treated as a label
+            // candidate at every zoom, since `filter` and `minzoom`/`maxzoom` are
+            // independent properties in the style spec — for a style with many
+            // zoom-staged layers this multiplies the candidate count severalfold.
+            // Guarded: `f.style` is the unresolved default (the
+            // StyleOptions.setFromProperties function) for non-vector-tile
+            // sources, which carries no `.zoom` — those are unaffected.
+            const fZoom = f.style && f.style.zoom;
+            if (fZoom && (fZoom.min > extentOrTile.zoom || fZoom.max <= extentOrTile.zoom)) { return; }
 
             if (f.style.text) {
                 if (Object.keys(f.style.text).length === 0) {
@@ -486,7 +535,12 @@ class LabelLayer extends GeometryLayer {
 
                     label.layerId = this.id;
                     label.order = f.order;
-                    label.padding = 20;
+                    // Do NOT set label.padding here: Core/Label's own constructor
+                    // already sets a sane default (2, matching MapLibre's
+                    // text-padding spec default — see Core/Label.js). This used to
+                    // unconditionally overwrite that with 20, inflating every DOM
+                    // label's overlap boundaries ~10x; the instanced path has its
+                    // own correctly-resolved padding via instancedTextStyle above.
 
                     labels.push(label);
                 });
@@ -623,6 +677,21 @@ class LabelLayer extends GeometryLayer {
             return;
         }
 
+        // If this tile's labels were parked on a previous unload, restore them
+        // (hot = visibility flip; cold = one re-upload) instead of a full rebuild.
+        if (this.cacheUnloadedLabels && labelsNode.isInstanced) {
+            const cache = this.#ensureLabelCache(labelsNode.instancedLabelManager);
+            const key = cache ? this.#tileKey(node) : null;
+            const parked = key ? cache.restore(key) : null;
+            if (parked) {
+                this.#restoreParkedLabels(node, labelsNode, parked);
+                node.layerUpdateState[this.id].noMoreUpdatePossible();
+                this.#submitToRendering(labelsNode);
+                context.view.notifyChange(node);
+                return;
+            }
+        }
+
         node.layerUpdateState[this.id].newTry();
 
         const command = {
@@ -681,18 +750,7 @@ class LabelLayer extends GeometryLayer {
                         node.addEventListener('show', () => labelsNode.domElements.labels.show());
                         node.addEventListener('hidden', () => this.#disallowToRendering(labelsNode));
                     } else {
-                        node.addEventListener('show', () => {
-                            labelsNode.instancedLabels.forEach((instancedLabel, label) => {
-                                instancedLabel.visible = label.visible;
-                                instancedLabel.groupVisible = true;
-                            });
-                        });
-                        node.addEventListener('hidden', () => {
-                            labelsNode.instancedLabels.forEach((instancedLabel) => {
-                                instancedLabel.visible = false;
-                                instancedLabel.groupVisible = false;
-                            });
-                        });
+                        this.#attachInstancedShowHide(node, labelsNode);
                     }
 
                     // Necessary event listener, to remove any Label attached to
@@ -725,6 +783,91 @@ class LabelLayer extends GeometryLayer {
         });
     }
 
+    // ── Warm label cache helpers ─────────────────────────────────────────────
+
+    // Lazily build the tiered cache once the label manager (and thus its config,
+    // which owns the hot/cold sizes) is available from the view. The enable state
+    // is read LIVE from the manager config every call, so setting both sizes to 0
+    // at runtime (e.g. the param-tuning sweep) genuinely disables the cache —
+    // and clears any warm entries so parked labels aren't left stuck hidden.
+    // Returns the cache, or null when disabled / the manager isn't ready.
+    #ensureLabelCache(manager) {
+        if (!manager) { return this.#labelCache; }
+        const enabled = this.cacheUnloadedLabels
+            && (manager.config.hotLabelCacheSize > 0 || manager.config.coldLabelCacheSize > 0);
+        if (!enabled) {
+            if (this.#labelCache) { this.#labelCache.clear(); this.#labelCache = null; }
+            return null;
+        }
+        if (!this.#labelCache) {
+            this.#labelManager = manager;
+            const store = {
+                addLabels: labels => this.#labelManager.addLabels(labels),
+                removeLabels: labels => this.#labelManager.removeLabels(labels),
+            };
+            this.#labelCache = new TieredLabelCache(
+                store,
+                map => [...map.values()],   // cached value is a Map<Label, InstancedLabel>
+                manager.config.hotLabelCacheSize,
+                manager.config.coldLabelCacheSize,
+            );
+        }
+        return this.#labelCache;
+    }
+
+
+    // Stable key for a tile across unload/reload: the source-projection extent
+    // bounds are deterministic per tile, so the same geographic tile always maps
+    // to the same key. Returns null when no usable extent (→ caching skipped).
+    #tileKey(node) {
+        const extents = node.getExtentsByProjection?.(this.source.crs)
+            || (node.extent ? [node.extent] : null);
+        if (!extents || !extents.length) { return null; }
+        let key = '';
+        for (const e of extents) {
+            if (e.zoom === undefined) { return null; }
+            key += `${e.zoom}|${e.west}|${e.south}|${e.east}|${e.north};`;
+        }
+        return key;
+    }
+
+    // show/hidden listeners for an instanced node (shared by fresh build + restore).
+    #attachInstancedShowHide(node, labelsNode) {
+        node.addEventListener('show', () => {
+            labelsNode.instancedLabels.forEach((instancedLabel, label) => {
+                instancedLabel.visible = label.visible;
+                instancedLabel.groupVisible = true;
+            });
+        });
+        node.addEventListener('hidden', () => {
+            labelsNode.instancedLabels.forEach((instancedLabel) => {
+                instancedLabel.visible = false;
+                instancedLabel.groupVisible = false;
+            });
+        });
+    }
+
+    // Reattach a parked label set to a freshly-created node. The InstancedLabels
+    // are still registered in the manager (GPU slots retained), so this is just a
+    // groupVisible flip — no rebuild, no re-upload.
+    #restoreParkedLabels(node, labelsNode, parked) {
+        labelsNode.instancedLabels = parked;
+        const nodeVisible = node.visible !== false;
+        parked.forEach((instancedLabel, label) => {
+            instancedLabel.visible = nodeVisible && label.visible;
+            instancedLabel.groupVisible = nodeVisible;
+        });
+        this.#attachInstancedShowHide(node, labelsNode);
+        node.addEventListener('removed', () => this.removeNodeDomElement(node));
+    }
+
+    #destroyInstancedLabels(labelsNode, manager) {
+        labelsNode.instancedLabels.forEach((instancedLabel) => {
+            if (manager) { manager.removeLabel(instancedLabel); }
+        });
+        labelsNode.instancedLabels.clear();
+    }
+
     removeLabelsFromNodeRecursive(node) {
         node.children.forEach((c) => {
             if (c.link[this.id]) {
@@ -737,13 +880,22 @@ class LabelLayer extends GeometryLayer {
     }
 
     removeNodeDomElement(node) {
-        if (node.link[this.id]?.isInstanced) {
-            node.link[this.id].instancedLabels.forEach((instancedLabel) => {
-                if (node.link[this.id].instancedLabelManager) {
-                    node.link[this.id].instancedLabelManager.removeLabel(instancedLabel);
-                }
-            });
-            node.link[this.id].instancedLabels.clear();
+        const labelsNode = node.link[this.id];
+        if (labelsNode?.isInstanced) {
+            const manager = labelsNode.instancedLabelManager;
+            const cache = labelsNode.instancedLabels.size > 0
+                ? this.#ensureLabelCache(manager)
+                : null;
+            const key = cache ? this.#tileKey(node) : null;
+            if (key && !cache.has(key)) {
+                // Park into the cache: the hot tier hides + keeps them resident;
+                // overflow demotes to cold (frees GPU slots). Revisit restores it
+                // — see update(). The cache handles hiding (groupVisible).
+                cache.park(key, labelsNode.instancedLabels);
+                labelsNode.instancedLabels = new Map();
+            } else {
+                this.#destroyInstancedLabels(labelsNode, manager);
+            }
         }
 
         if (node.link[this.id]?.domElements) {
@@ -761,6 +913,12 @@ class LabelLayer extends GeometryLayer {
         if (clearCache) {
             this.cache.clear();
         }
+        // Stop parking and release all warm-cached slots on teardown (disable
+        // first so the recursive removal below destroys, not re-parks).
+        this.cacheUnloadedLabels = false;
+        const labelCache = this.#labelCache;
+        this.#labelCache = null;
+        labelCache?.clear();
         this.domElement.dom.parentElement.removeChild(this.domElement.dom);
 
         this.parent.level0Nodes.forEach(obj => this.removeLabelsFromNodeRecursive(obj));

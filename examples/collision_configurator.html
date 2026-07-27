@@ -1,0 +1,2078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iTowns — Collision Configurator & Sweep</title>
+
+<!--
+    COLLISION CONFIGURATOR
+    ======================
+    The collision algorithm is decomposed into orthogonal axes:
+
+        ORDERING × OCCUPANCY × PLACEMENT × SHAPE × params
+
+    SHAPE is the *collision model* — how a label's footprint is approximated:
+
+        aabb        one axis-aligned box          (ignores rotation AND curvature)
+        pixel       one exact rotated quad        (rotation-aware, curve-blind)
+        curved      chain of circles / rects      (curve-aware, geometric — MapLibre)
+        curvedPixel exact raster of the chain     (fully exact)
+
+    Each model has a DIFFERENT optimum, so results are tabbed per model and each
+    tab is scored against its own MWIS ceiling. Comparing a pixel placement to an
+    AABB ceiling is apples-to-oranges (it can exceed 100%).
+
+    Pick one value per axis to run a single configuration, or select several and
+    run a SWEEP: every valid combination is measured on the same dataset / camera
+    path, then analysed statistically (ranked table, per-axis main effects,
+    speed↔quality Pareto front with clickable points, parameter correlations).
+    (Standalone; does not touch collision_bench.html.)
+-->
+
+<script type="importmap">
+{
+    "imports": {
+        "three":            "https://unpkg.com/three@0.182.0/build/three.module.js",
+        "@label/Label":     "../packages/Label/lib/Label.js",
+        "@label/Config":    "../packages/Label/lib/Types/LabelConfig.js"
+    }
+}
+</script>
+
+<style>
+    :root {
+        --bg:#0f1420; --surface:#131a29; --surface2:#1b2438; --border:#252f47;
+        --text:#d7dceb; --dim:#7f8aa8; --dim2:#5a6484; --accent:#4f9dff;
+        --green:#56d193; --orange:#ffb454; --red:#e0605f; --cyan:#00e5ff; --purple:#c77dff;
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    html,body { height:100%; }
+    body {
+        background:var(--bg); color:var(--text); overflow:hidden;
+        font-family:'Consolas','Cascadia Code','Fira Code',monospace; font-size:13px;
+    }
+    #app { display:grid; grid-template-columns:360px 1fr; height:100vh; }
+
+    /* ── controls ── */
+    #controls { background:var(--surface); border-right:1px solid var(--border); overflow-y:auto; padding:16px; }
+    h1 { font-size:15px; font-weight:700; letter-spacing:-0.3px; }
+    .sub { font-size:11px; color:var(--dim); margin:4px 0 14px; line-height:1.5; }
+    .axis { margin-bottom:14px; }
+    .axis > label { display:block; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:5px; }
+    .chips { display:flex; flex-wrap:wrap; gap:5px; }
+    .chip {
+        font-size:12px; padding:4px 9px; border-radius:5px; cursor:pointer; user-select:none;
+        background:var(--surface2); border:1px solid var(--border); color:var(--dim);
+    }
+    .chip.on { background:#183153; border-color:var(--accent); color:#cfe2ff; }
+    .chip.disabled { opacity:0.3; cursor:not-allowed; }
+    .param { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .param label { flex:0 0 120px; font-size:11px; color:var(--dim); }
+    .param input[type=range] { flex:1; accent-color:var(--accent); }
+    .param b { flex:0 0 46px; text-align:right; font-variant-numeric:tabular-nums; }
+    .param.multi .vals { flex:1; display:flex; flex-wrap:wrap; gap:4px; }
+    .param.multi .v { font-size:11px; padding:2px 6px; border-radius:4px; background:var(--surface2); border:1px solid var(--border); color:var(--dim); cursor:pointer; }
+    .param.multi .v.on { background:#183153; border-color:var(--accent); color:#cfe2ff; }
+    hr { border:none; border-top:1px solid var(--border); margin:14px 0; }
+    button {
+        width:100%; padding:9px; margin-top:6px; border:none; border-radius:6px; cursor:pointer;
+        font-family:inherit; font-size:13px; font-weight:600; color:#fff; background:#2f6fd8;
+    }
+    button:hover { background:#3f7fe8; }
+    button.ghost { background:var(--surface2); color:#9fb0d0; }
+    button.ghost:hover { background:#232f4a; }
+    button:disabled { opacity:0.5; cursor:default; }
+    .toggle { display:flex; gap:8px; align-items:center; margin-bottom:8px; cursor:pointer; }
+    .toggle input { width:15px; height:15px; accent-color:var(--accent); }
+    .note { font-size:10.5px; color:var(--dim2); line-height:1.5; margin-top:6px; }
+    .count { font-size:11px; color:var(--orange); margin-top:6px; }
+
+    /* ── results ── */
+    #results { overflow-y:auto; padding:18px 22px; }
+    #status { color:var(--dim); min-height:16px; margin-bottom:12px; }
+    h2 { font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:0.07em; margin:22px 0 10px; font-weight:600; }
+    table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+    th,td { padding:5px 9px; border-bottom:1px solid #1c2740; text-align:right; white-space:nowrap; }
+    th:first-child, td:first-child { text-align:left; }
+    th { font-size:10px; text-transform:uppercase; letter-spacing:0.05em; color:var(--dim); cursor:pointer; user-select:none; }
+    th:hover { color:var(--text); }
+    tbody tr:hover { background:#131c30; cursor:pointer; }
+    tr.sel { background:#152744 !important; }
+    td.best { color:var(--green); font-weight:700; }
+    td.bad { color:var(--red); }
+    .dim { color:var(--dim); }
+    .pill { display:inline-block; padding:1px 6px; border-radius:4px; background:var(--surface2); font-size:11px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px; }
+    .card h3 { font-size:12px; color:var(--dim); margin-bottom:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
+    canvas { display:block; max-width:100%; background:#0a0e17; border:1px solid var(--border); border-radius:6px; }
+    #pareto { cursor:pointer; }
+    .bar-row { display:grid; grid-template-columns:120px 1fr 52px; gap:8px; align-items:center; margin-bottom:5px; font-size:11px; }
+    .bar { height:9px; border-radius:3px; }
+    .legend { font-size:11px; color:var(--dim); margin-top:8px; }
+    .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+    .hint { font-size:11px; color:var(--dim); line-height:1.6; }
+    .kbd { background:var(--surface2); border:1px solid var(--border); border-radius:3px; padding:0 4px; }
+
+    /* ── model tabs ── */
+    .tabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin:14px 0 4px; flex-wrap:wrap; }
+    .tab {
+        font-size:12px; padding:7px 13px; cursor:pointer; user-select:none; color:var(--dim);
+        border:1px solid transparent; border-bottom:none; border-radius:6px 6px 0 0;
+    }
+    .tab:hover { color:var(--text); }
+    .tab.on { background:var(--surface); border-color:var(--border); color:#cfe2ff; margin-bottom:-1px; }
+    .tab .n { color:var(--dim2); font-size:10.5px; margin-left:5px; }
+    .modelnote { font-size:11px; color:var(--dim2); line-height:1.6; margin:8px 0 4px; }
+
+    /* ── result bar: filters + export (persists across table re-renders) ── */
+    #resultbar { display:none; margin:8px 0 2px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+    #resultbar.on { display:block; }
+    .rb-row { display:flex; flex-wrap:wrap; gap:14px 18px; align-items:center; }
+    .rb-f { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); }
+    .rb-f input { width:64px; background:var(--surface2); border:1px solid var(--border); color:var(--text);
+        border-radius:4px; padding:3px 6px; font-family:inherit; font-size:12px; }
+    .rb-sep { flex:1; }
+    .rb-btn { width:auto; margin:0; padding:6px 12px; font-size:12px; }
+    .rb-count { font-size:11px; color:var(--orange); }
+    td.expcell, th.expcell { text-align:center; width:26px; padding-left:4px; padding-right:4px; }
+    td.expcell input, th.expcell input { accent-color:var(--accent); cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="app">
+    <div id="controls">
+        <h1>Collision Configurator</h1>
+        <p class="sub">Compose ordering × occupancy × placement × shape. Select multiple values per axis to sweep every valid combination and analyse it statistically.</p>
+
+        <div class="axis">
+            <label>Ordering</label>
+            <div class="chips" id="ax-ordering"></div>
+        </div>
+        <div class="axis">
+            <label>Occupancy</label>
+            <div class="chips" id="ax-occupancy"></div>
+        </div>
+        <div class="axis">
+            <label>Placement</label>
+            <div class="chips" id="ax-placement"></div>
+        </div>
+        <div class="axis">
+            <label>Straight labels <span class="dim" style="text-transform:none;letter-spacing:0">— cities / towns / POIs</span></label>
+            <div class="chips" id="ax-straightShape"></div>
+        </div>
+        <div class="axis">
+            <label>Curved labels <span class="dim" style="text-transform:none;letter-spacing:0">— roads (line features)</span></label>
+            <div class="chips" id="ax-curvedShape"></div>
+        </div>
+
+        <hr>
+        <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:8px">Parameters <span class="dim" style="text-transform:none">— click values to include in a sweep</span></label>
+        <div class="param multi"><label>Downscale <span class="dim">raster</span></label><div class="vals" id="p-downscale"></div></div>
+        <div class="param multi"><label>Buckets <span class="dim">bucket</span></label><div class="vals" id="p-buckets"></div></div>
+        <div class="param multi"><label>Grid cell <span class="dim">grid</span></label><div class="vals" id="p-gridCell"></div></div>
+        <div class="param multi"><label>Pyramid levels</label><div class="vals" id="p-pyrLevels"></div></div>
+        <div class="param multi"><label>Occl. tolerance <span class="dim">bitmap</span></label><div class="vals" id="p-occlusionTol"></div></div>
+        <div class="param multi"><label>PAL K</label><div class="vals" id="p-palK"></div></div>
+        <p class="note">Occlusion tolerance is <b>hysteresis only</b>: a <i>new</i> label always needs a fully empty region (strict binary, early exit). Only an <i>already-rendered</i> label is kept while occluded up to this fraction. 0 = no stickiness.</p>
+
+        <hr>
+        <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:8px">Scene</label>
+        <div class="param"><label>Labels</label><input type="range" id="s-labels" min="200" max="48000" step="200" value="6000"><b id="s-labels-v">6000</b></div>
+        <div class="param"><label>World extent</label><input type="range" id="s-world" min="1000" max="16000" step="500" value="6000"><b id="s-world-v">6000</b></div>
+        <div class="param"><label>Frames</label><input type="range" id="s-frames" min="15" max="120" step="5" value="40"><b id="s-frames-v">40</b></div>
+        <div class="param"><label>Curved share</label><input type="range" id="s-share" min="0" max="100" step="5" value="35"><b id="s-share-v">35%</b></div>
+        <div class="param"><label>Curvature</label><input type="range" id="s-curve" min="0" max="300" step="5" value="140"><b id="s-curve-v">1.40</b></div>
+        <label class="toggle"><input type="checkbox" id="s-rotate"><span>Rotate labels (makes AABB vs pixel-perfect meaningful)</span></label>
+        <label class="toggle"><input type="checkbox" id="s-scale" checked><span>Measure scaling — re-runs every config at ¼N and 4N to fit ms ∝ N<sup>a</sup></span></label>
+
+        <hr>
+        <button id="runOne">Run single (first value of each)</button>
+        <button id="runSweep" class="ghost">Run full sweep</button>
+        <div class="count" id="comboCount"></div>
+        <p class="note">Each shape is a distinct collision model with its own optimum, so each gets its own tab and its own MWIS ceiling (near-optimal by annealing). Timing is the per-frame <span class="kbd">place()</span> cost.</p>
+    </div>
+
+    <div id="results">
+        <div id="status">Pick axes, then Run. Try several occupancies × shapes and press <b>Run full sweep</b>.</div>
+        <div id="resultbar"></div>
+        <div id="output"></div>
+    </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { Label, RotationAlignment } from '@label/Label';
+import { DefaultLabelConfig } from '@label/Config';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AXIS DEFINITIONS
+// ═════════════════════════════════════════════════════════════════════════════
+const AXES = {
+    ordering:  [
+        { id:'none',   label:'none (data order)' },
+        { id:'bucket', label:'bucket O(n)' },
+        { id:'sort',   label:'sort O(n log n)' },
+        { id:'radix',  label:'radix O(n·d)' },
+    ],
+    occupancy: [
+        { id:'brute',   label:'brute O(n²)' },
+        { id:'grid',    label:'grid (hash)' },
+        { id:'rtree',   label:'R-tree' },
+        { id:'bitmap',  label:'bitmap (count)' },
+        { id:'pyramid', label:'quadtree pyramid' },
+        { id:'summary', label:'word summary (bit/word)' },
+    ],
+    placement: [
+        { id:'single', label:'single anchor' },
+        { id:'pal',    label:'PAL (K positions)' },
+    ],
+    // How each KIND of label is approximated. They are separate axes, so a
+    // configuration can mix — e.g. boxes for point labels and circle chains for
+    // roads, which is what MapLibre actually does.
+    straightShape: [
+        { id:'aabb',  label:'AABB box' },
+        { id:'pixel', label:'exact quad' },
+    ],
+    curvedShape: [
+        { id:'cAabb',  label:'one AABB box' },
+        { id:'circle', label:'circle chain (MapLibre)' },
+        { id:'rect',   label:'AABB chain' },
+        { id:'cPixel', label:'exact chain' },
+    ],
+};
+const SHAPE_LABEL = { aabb:'AABB', pixel:'exact quad',
+                      cAabb:'one AABB', circle:'circle chain', rect:'AABB chain', cPixel:'exact chain' };
+// which occupancies are raster (have a downscale, can rasterise quads/discs)
+const RASTER = new Set(['bitmap', 'pyramid', 'summary']);
+// approximations that can only run on a raster occupancy
+const SHAPE_NEEDS_RASTER = new Set(['pixel', 'cPixel']);
+// every configuration is scored against ONE universal ground truth: the labels'
+// TRUE inked footprints. Each model's collider contains its label's ink, so any
+// placement valid under any model is also ink-disjoint — which makes the single
+// ink-MWIS ceiling an upper bound for all of them, and therefore a fair common
+// yardstick for ranking mixed (hybrid) configurations against pure ones.
+const INK_MODEL = 'ink';
+
+const PARAM_VALUES = {
+    downscale:    [1, 2, 4, 8, 16],
+    buckets:      [32, 256, 1024, 4096],
+    gridCell:     [16, 32, 64],
+    pyrLevels:    [1, 2, 4, 8],
+    occlusionTol: [0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4],
+    palK:         [4, 8],
+};
+// current selection state: Set of chosen ids per axis; Set of chosen values per param
+const sel = {
+    ordering: new Set(['bucket', 'sort']),
+    occupancy: new Set(['grid', 'bitmap', 'pyramid']),
+    placement: new Set(['single']),
+    straightShape: new Set(['aabb']),
+    curvedShape: new Set(['circle']),
+};
+const selP = {
+    downscale: new Set([8]), buckets: new Set([32]), gridCell: new Set([32]),
+    pyrLevels: new Set([4]), occlusionTol: new Set([0]), palK: new Set([4]),
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SHARED HARNESS — deterministic dataset, camera path, projection, ceiling
+// ═════════════════════════════════════════════════════════════════════════════
+const VW = 3840, VH = 2160;
+const MAXSEG = 8;                 // max chain segments per label
+let SEED = 1337;
+function mulberry32(s){let a=s>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+
+// Roads are LINE features — they are the curved ones. Everything else is a point
+// label and is straight. Road importance sits between town and poi so that road
+// labels actually survive the ordering; at weight 8 they were almost never placed
+// and the curved half of the benchmark had nothing in it.
+const CLASSES = [
+    { name:'city', w:100, font:44, cum:0.02, color:'#ff5d6c', curved:false },
+    { name:'town', w:30,  font:30, cum:0.10, color:'#ffb454', curved:false },
+    { name:'road', w:20,  font:22, cum:0.40, color:'#4f9dff', curved:true  },
+    { name:'poi',  w:1,   font:16, cum:1.00, color:'#6b7690', curved:false },
+];
+function classForRoll(r){ for(const c of CLASSES) if(r<c.cum) return c; return CLASSES[3]; }
+
+function buildDataset(opts) {
+    const rand = mulberry32(SEED), half = opts.world/2, L = new Array(opts.labels);
+    for (let i=0;i<opts.labels;i++) {
+        const cls = classForRoll(rand()), chars = 3 + ((rand()*12)|0);
+        const l = new Label({ text:'x'.repeat(chars), position:[(rand()*2-1)*half,0,(rand()*2-1)*half],
+            fontSize:cls.font, rotationAlignment:RotationAlignment.Viewport });
+        l.bounds = { width: chars*0.55*cls.font, height: cls.font*1.3 };
+        l.glyphs = new Array(chars); l.visible=true; l.opacity=1; l.groupVisible=true;
+        l.importance = cls.w;
+        l._rot = opts.rotate ? (rand()*Math.PI - Math.PI/2) : 0;   // screen-space rotation
+        // Every label bends, roads most. Curving ONLY roads looks like a bug in
+        // practice: importance ordering places almost nothing but cities/towns,
+        // so a road-only bend is never visible in the result. This is a benchmark
+        // control for how much curved geometry is in the scene, not a semantic one.
+        //
+        // The centreline is a SINE, not a circular arc: a constant-curvature arc
+        // just leans the whole label one way, whereas a real road S-bends, which
+        // is what actually stresses a chain-of-primitives approximation.
+        //   lateral(u) = amp · sin(2π·waves·u + phase),  u ∈ [-0.5, +0.5]
+        // Curvature belongs to the LABEL, not to the collision model: line
+        // features bend, point features do not. A straight label is exactly one
+        // quad, so its "chain" is a single segment and its ink is that quad.
+        // Curvature is assigned INDEPENDENTLY of class so that curved and straight
+        // labels share the same size and importance distribution. Tying it to the
+        // road class confounded the comparison: "curved" would also have meant
+        // "smaller and less important", and the model comparison would be measuring
+        // that instead of the geometry.
+        l._isCurved = rand() < opts.curvedShare;
+        l._curve = l._isCurved ? opts.curve : 0;                 // amplitude, in label heights
+        l._waves = 0.6 + rand()*0.7;                             // 0.6–1.3 periods over the label
+        l._phase = rand()*Math.PI*2;
+        const squareish = Math.round(l.bounds.width/l.bounds.height);
+        l._segs = l._isCurved ? Math.max(5, Math.min(MAXSEG, squareish)) : 1;
+        L[i] = l;
+    }
+    return L;
+}
+
+function makeCamera(){ const c = new THREE.PerspectiveCamera(50, VW/VH, 1, 1e6); return c; }
+function setCameraForFrame(cam, i, frames, world) {
+    const t=i/frames, ang=t*Math.PI*2, zoom=0.55+0.45*Math.sin(t*Math.PI*3);
+    const rad=world*(0.35+0.5*zoom), h=world*(0.25+0.35*zoom);
+    const tx=Math.sin(t*Math.PI*2)*world*0.15, tz=Math.cos(t*Math.PI*2)*world*0.15;
+    cam.position.set(Math.cos(ang)*rad+tx, h, Math.sin(ang)*rad+tz);
+    cam.lookAt(tx,0,tz); cam.updateMatrixWorld(true); cam.updateProjectionMatrix();
+}
+
+// ── SoA item buffer ──────────────────────────────────────────────────────────
+// Per label: screen AABB (broadphase + the `aabb` model), the whole-label
+// oriented quad (the `pixel` model), and a chain of segments (the curved models)
+// each carrying an oriented quad, its AABB, and a covering circle.
+function makeItems(cap){ return {
+    // x0..y1 is the UNION box (straight ∪ curved) — broadphase only, valid for
+    // every model. sa* is the straight label's own AABB, ca* the curved one.
+    n:0, x0:new Int32Array(cap), y0:new Int32Array(cap), x1:new Int32Array(cap), y1:new Int32Array(cap),
+    sax0:new Int32Array(cap), say0:new Int32Array(cap), sax1:new Int32Array(cap), say1:new Int32Array(cap),
+    cax0:new Int32Array(cap), cay0:new Int32Array(cap), cax1:new Int32Array(cap), cay1:new Int32Array(cap),
+    cx:new Float32Array(cap*4), cy:new Float32Array(cap*4), rot:new Uint8Array(cap),
+    curved:new Uint8Array(cap),          // is this label a line feature (bent)?
+    segOff:new Int32Array(cap), segN:new Int32Array(cap),
+    sgx:new Float32Array(cap*MAXSEG),  sgy:new Float32Array(cap*MAXSEG),  sgr:new Float32Array(cap*MAXSEG),
+    sx0:new Float32Array(cap*MAXSEG),  sy0:new Float32Array(cap*MAXSEG),
+    sx1:new Float32Array(cap*MAXSEG),  sy1:new Float32Array(cap*MAXSEG),
+    sqx:new Float32Array(cap*MAXSEG*4),sqy:new Float32Array(cap*MAXSEG*4),
+    score:new Float64Array(cap), weight:new Float64Array(cap), idx:new Int32Array(cap),
+};}
+
+// scratch: the chain's corner offsets in the label's own unrotated frame
+const _lu=new Float64Array(MAXSEG*4), _lv=new Float64Array(MAXSEG*4);
+function prepareFrame(cam, labels, cfg, out) {
+    const ve = cam.matrixWorldInverse.elements, pe = cam.projectionMatrix.elements;
+    const ox=cam.position.x, oy=cam.position.y, oz=cam.position.z;
+    const base=cfg.baseFontSize, pxU=cfg.pxPerUnit, ndcMargin=cfg.ndcCullMargin;
+    let n=0, segCur=0;
+    for (let k=0;k<labels.length;k++) {
+        const l=labels[k]; const p=l.position;
+        // camera-space
+        const vx=ve[0]*p.x+ve[4]*p.y+ve[8]*p.z+ve[12];
+        const vy=ve[1]*p.x+ve[5]*p.y+ve[9]*p.z+ve[13];
+        const vz=ve[2]*p.x+ve[6]*p.y+ve[10]*p.z+ve[14];
+        if (vz>=0) continue;
+        const ccw=pe[3]*vx+pe[7]*vy+pe[11]*vz+pe[15];
+        if (ccw<=0) continue;
+        const ndcx=(pe[0]*vx+pe[4]*vy+pe[8]*vz+pe[12])/ccw;
+        const ndcy=(pe[1]*vx+pe[5]*vy+pe[9]*vz+pe[13])/ccw;
+        if (Math.abs(ndcx)>1+ndcMargin || Math.abs(ndcy)>1+ndcMargin) continue;
+        const ws=(l.fontSize/base)/pxU, bw=l.bounds.width*ws, bh=l.bounds.height*ws;
+        const depth=Math.sqrt(vx*vx+vy*vy+vz*vz);
+        const rot=l._rot||0, curve=l._curve||0;
+        const waves=l._waves||1, phase=l._phase||0;
+        const cs=Math.cos(rot), sn=Math.sin(rot);
+        // project a label-local offset (viewport-aligned billboard: add in cam space)
+        let bad=false;
+        const projX=[0,0,0,0], projY=[0,0,0,0];
+        const proj=(lx,ly,arr,at)=>{
+            const wx=vx+lx*depth, wy=vy+ly*depth;
+            const px=pe[0]*wx+pe[4]*wy+pe[8]*vz+pe[12];
+            const py=pe[1]*wx+pe[5]*wy+pe[9]*vz+pe[13];
+            const pw=pe[3]*wx+pe[7]*wy+pe[11]*vz+pe[15];
+            if (pw<=0){ bad=true; return; }
+            arr[at*2]   = (px/pw*0.5+0.5)*VW;
+            arr[at*2+1] = (py/pw*-0.5+0.5)*VH;
+        };
+        const tmp=[0,0,0,0,0,0,0,0];
+        let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+        const grow=(x,y)=>{ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; };
+
+        // ── PASS 1: the chain in the label's own (unrotated) frame ───────────
+        // Follow the sine centreline: each segment sits ON the curve, is rotated
+        // to its TANGENT, and is as long as the arc step (longer than bw/segs
+        // where the curve is steep) so the chain has no gaps on a bend.
+        const segs=Math.max(1,Math.min(MAXSEG,l._segs|0));
+        const amp = curve*bh, kw = Math.PI*2*waves;   // kw: wavenumber (k is the label index)
+        const so = segCur;
+        let minU=1e9,maxU=-1e9,minV=1e9,maxV=-1e9;
+        for (let s=0;s<segs;s++){
+            const t=(s+0.5)/segs-0.5;                       // -0.5 .. +0.5 along baseline
+            let lx=t*bw, ly=0, ang=0, segW=bw/segs;
+            if (curve>0){
+                ly  = amp*Math.sin(kw*t+phase);
+                const dl = amp*kw*Math.cos(kw*t+phase);     // d(lateral)/dt
+                ang = Math.atan2(dl, bw);                   // tangent of the centreline
+                segW = (bw/segs)/Math.max(0.2,Math.cos(ang)); // arc step, so segments still touch
+            }
+            const ca=Math.cos(ang), sa=Math.sin(ang);
+            for (let c=0;c<4;c++){
+                const hx=(c===1||c===2? segW:-segW)*0.5, hy=(c===2||c===3? bh:-bh)*0.5;
+                const u=lx+hx*ca-hy*sa, v=ly+hx*sa+hy*ca;
+                _lu[s*4+c]=u; _lv[s*4+c]=v;
+                if(u<minU)minU=u; if(u>maxU)maxU=u; if(v<minV)minV=v; if(v>maxV)maxV=v;
+            }
+        }
+
+        // ── the STRAIGHT label: its exact rotated bw×bh quad ─────────────────
+        // This is the straight family's geometry and its own ink. `pixel` uses
+        // it verbatim, which is why that model is exactly 1.00× — curvature does
+        // not enter here at all; a straight label is not bent.
+        let sMinU=1e9,sMaxU=-1e9,sMinV=1e9,sMaxV=-1e9;
+        for (let c=0;c<4;c++){
+            let lx=(c===1||c===2? bw:-bw)*0.5, ly=(c===2||c===3? bh:-bh)*0.5;
+            if (rot){ const rx=lx*cs-ly*sn, ry=lx*sn+ly*cs; lx=rx; ly=ry; }
+            proj(lx,ly,tmp,c); if(bad)break;
+            const X=tmp[c*2], Y=tmp[c*2+1];
+            out.cx[n*4+c]=X; out.cy[n*4+c]=Y;
+            if(X<sMinU)sMinU=X; if(X>sMaxU)sMaxU=X; if(Y<sMinV)sMinV=Y; if(Y>sMaxV)sMaxV=Y;
+            grow(X,Y);
+        }
+        if (bad) continue;
+        // kept UNCLAMPED: a family's box must still say "I am off screen", which a
+        // box clamped into the viewport can no longer express
+        out.sax0[n]=Math.floor(sMinU); out.sax1[n]=Math.ceil(sMaxU);
+        out.say0[n]=Math.floor(sMinV); out.say1[n]=Math.ceil(sMaxV);
+
+        // ── PASS 2: project the chain (the CURVED label's geometry) ──────────
+        let cMinX=1e9,cMinY=1e9,cMaxX=-1e9,cMaxY=-1e9;
+        for (let s=0;s<segs;s++){
+            let sMinX=1e9,sMinY=1e9,sMaxX=-1e9,sMaxY=-1e9;
+            for (let c=0;c<4;c++){
+                let u=_lu[s*4+c], v=_lv[s*4+c];
+                if (rot){ const rx=u*cs-v*sn, ry=u*sn+v*cs; u=rx; v=ry; }
+                proj(u,v,tmp,c);
+                if (bad) break;
+                const X=tmp[c*2], Y=tmp[c*2+1];
+                out.sqx[(so+s)*4+c]=X; out.sqy[(so+s)*4+c]=Y;
+                if(X<sMinX)sMinX=X; if(X>sMaxX)sMaxX=X; if(Y<sMinY)sMinY=Y; if(Y>sMaxY)sMaxY=Y;
+            }
+            if (bad) break;
+            out.sx0[so+s]=sMinX; out.sy0[so+s]=sMinY; out.sx1[so+s]=sMaxX; out.sy1[so+s]=sMaxY;
+            // covering circle of the segment quad (centroid + max corner distance)
+            const qc=(so+s)*4;
+            const mx=(out.sqx[qc]+out.sqx[qc+1]+out.sqx[qc+2]+out.sqx[qc+3])*0.25;
+            const my=(out.sqy[qc]+out.sqy[qc+1]+out.sqy[qc+2]+out.sqy[qc+3])*0.25;
+            let rr=0; for(let c=0;c<4;c++){ const dx=out.sqx[qc+c]-mx, dy=out.sqy[qc+c]-my; const d=dx*dx+dy*dy; if(d>rr)rr=d; }
+            rr=Math.sqrt(rr);
+            out.sgx[so+s]=mx; out.sgy[so+s]=my; out.sgr[so+s]=rr;
+            // the union AABB must cover every model's primitives so it stays a
+            // valid broadphase for all of them (circles can bulge past the quads)
+            grow(mx-rr,my-rr); grow(mx+rr,my+rr);
+            // the curved family's own AABB — what `curvedAabb` actually reserves
+            if(mx-rr<cMinX)cMinX=mx-rr; if(mx+rr>cMaxX)cMaxX=mx+rr;
+            if(my-rr<cMinY)cMinY=my-rr; if(my+rr>cMaxY)cMaxY=my+rr;
+            if(sMinX<cMinX)cMinX=sMinX; if(sMaxX>cMaxX)cMaxX=sMaxX;
+            if(sMinY<cMinY)cMinY=sMinY; if(sMaxY>cMaxY)cMaxY=sMaxY;
+        }
+        if (bad) continue;
+
+        const bx0=Math.max(0,Math.floor(minX)), bx1=Math.min(VW-1,Math.ceil(maxX));
+        const by0=Math.max(0,Math.floor(minY)), by1=Math.min(VH-1,Math.ceil(maxY));
+        if (bx0>bx1||by0>by1) continue;
+        out.x0[n]=bx0; out.y0[n]=by0; out.x1[n]=bx1; out.y1[n]=by1;
+        out.cax0[n]=Math.floor(cMinX); out.cax1[n]=Math.ceil(cMaxX);
+        out.cay0[n]=Math.floor(cMinY); out.cay1[n]=Math.ceil(cMaxY);
+        out.rot[n]=(rot||curve)?1:0;
+        out.curved[n]=l._isCurved?1:0;
+        out.segOff[n]=so; out.segN[n]=segs; segCur+=segs;
+        const dx=p.x-ox, dy=p.y-oy, dz=p.z-oz;
+        out.score[n]=(dx*dx+dy*dy+dz*dz)*(base/l.fontSize);
+        out.weight[n]=l.importance; out.idx[n]=k; n++;
+    }
+    out.n=n; return out;
+}
+
+// Materialise every PAL candidate position as its own item, so the ceiling can
+// choose the best position per label. `idx` carries the owning label, which the
+// ceiling uses to make a label's candidates mutually exclusive.
+function expandCandidates(items, K){
+    const n=items.n, out=makeItems(n*K);
+    let segCur=0, m=0;
+    for(let i=0;i<n;i++){
+        const w=items.x1[i]-items.x0[i], h=items.y1[i]-items.y0[i];
+        const o=items.segOff[i], ns=items.segN[i];
+        for(let k=0;k<K;k++){
+            const dx=(PAL_POS[k][0]*w)|0, dy=(PAL_POS[k][1]*h)|0;
+            out.x0[m]=items.x0[i]+dx; out.x1[m]=items.x1[i]+dx;
+            out.y0[m]=items.y0[i]+dy; out.y1[m]=items.y1[i]+dy;
+            for(let c=0;c<4;c++){ out.cx[m*4+c]=items.cx[i*4+c]+dx; out.cy[m*4+c]=items.cy[i*4+c]+dy; }
+            out.segOff[m]=segCur; out.segN[m]=ns;
+            for(let s=0;s<ns;s++){
+                out.sgx[segCur+s]=items.sgx[o+s]+dx; out.sgy[segCur+s]=items.sgy[o+s]+dy; out.sgr[segCur+s]=items.sgr[o+s];
+                out.sx0[segCur+s]=items.sx0[o+s]+dx; out.sx1[segCur+s]=items.sx1[o+s]+dx;
+                out.sy0[segCur+s]=items.sy0[o+s]+dy; out.sy1[segCur+s]=items.sy1[o+s]+dy;
+                for(let c=0;c<4;c++){ out.sqx[(segCur+s)*4+c]=items.sqx[(o+s)*4+c]+dx; out.sqy[(segCur+s)*4+c]=items.sqy[(o+s)*4+c]+dy; }
+            }
+            segCur+=ns;
+            out.sax0[m]=items.sax0[i]+dx; out.sax1[m]=items.sax1[i]+dx;
+            out.say0[m]=items.say0[i]+dy; out.say1[m]=items.say1[i]+dy;
+            out.cax0[m]=items.cax0[i]+dx; out.cax1[m]=items.cax1[i]+dx;
+            out.cay0[m]=items.cay0[i]+dy; out.cay1[m]=items.cay1[i]+dy;
+            out.curved[m]=items.curved[i];
+            out.score[m]=items.score[i]; out.weight[m]=items.weight[i]; out.idx[m]=i;
+            m++;
+        }
+    }
+    out.n=m; return out;
+}
+
+// ── priority key: importance-primary, distance-secondary; prev-rendered wins ties
+const IMP_SCALE=5, LOGW_MAX=Math.log(100), RENDER_PENALTY=1.35;
+function priorityKey(score, weight, prevRendered){
+    const k = Math.log1p(score) + IMP_SCALE*(LOGW_MAX-Math.log(weight));
+    return prevRendered ? k : k*RENDER_PENALTY;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GEOMETRY PREDICATES  (ground truth for metrics + ceilings, per model)
+// ═════════════════════════════════════════════════════════════════════════════
+function clipViewport(poly){ // Sutherland–Hodgman against x∈[0,VW], y∈[0,VH]
+    const planes=[[1,0,0],[-1,0,VW],[0,1,0],[0,-1,VH]]; let out=poly;
+    for(const pl of planes){ const inp=out; out=[]; if(!inp.length)break;
+        const a=pl[0],b=pl[1],c=pl[2];
+        for(let k=0;k<inp.length;k++){ const cur=inp[k], nxt=inp[(k+1)%inp.length];
+            const dc=a*cur[0]+b*cur[1]+c, dn=a*nxt[0]+b*nxt[1]+c;
+            if(dc>=0)out.push(cur);
+            if((dc>=0)!==(dn>=0)){ const t=dc/(dc-dn); out.push([cur[0]+t*(nxt[0]-cur[0]),cur[1]+t*(nxt[1]-cur[1])]); }
+        }
+    }
+    return out;
+}
+function polyOverlap(pa,pb){ // convex-convex SAT; touching-only counts as separate
+    if(pa.length<3||pb.length<3)return false;
+    for(const poly of [pa,pb]){
+        for(let e=0;e<poly.length;e++){ const cur=poly[e], nxt=poly[(e+1)%poly.length];
+            const nx=-(nxt[1]-cur[1]), ny=(nxt[0]-cur[0]);
+            let minA=1e9,maxA=-1e9,minB=1e9,maxB=-1e9;
+            for(const p of pa){ const d=p[0]*nx+p[1]*ny; if(d<minA)minA=d; if(d>maxA)maxA=d; }
+            for(const p of pb){ const d=p[0]*nx+p[1]*ny; if(d<minB)minB=d; if(d>maxB)maxB=d; }
+            if(maxA<=minB||maxB<=minA)return false;
+        }
+    }
+    return true;
+}
+const labelQuad=(it,i)=>{const b=i*4;return[[it.cx[b],it.cy[b]],[it.cx[b+1],it.cy[b+1]],[it.cx[b+2],it.cy[b+2]],[it.cx[b+3],it.cy[b+3]]];};
+const segQuad  =(it,s)=>{const b=s*4;return[[it.sqx[b],it.sqy[b]],[it.sqx[b+1],it.sqy[b+1]],[it.sqx[b+2],it.sqy[b+2]],[it.sqx[b+3],it.sqy[b+3]]];};
+// The placement rasteriser only ever occupies on-screen pixels, so overlap that
+// happens outside the viewport must not count (it is culled by the renderer).
+const quadsOverlap = (it,i,j) => polyOverlap(clipViewport(labelQuad(it,i)), clipViewport(labelQuad(it,j)));
+// box overlap on a named AABB set: 'sa' = the straight label's box, 'ca' = the
+// curved label's box. (x0..y1 is the union box and is broadphase-only.)
+function boxOverlap(it,i,j,p){
+    const X0=it[p+'x0'], Y0=it[p+'y0'], X1=it[p+'x1'], Y1=it[p+'y1'];
+    if(!(X0[i]<X1[j]&&X1[i]>X0[j]&&Y0[i]<Y1[j]&&Y1[i]>Y0[j])) return false;
+    // for rectangles the intersection IS the overlap region, so this guard is exact
+    return onScreen(Math.max(X0[i],X0[j]),Math.max(Y0[i],Y0[j]),Math.min(X1[i],X1[j]),Math.min(Y1[i],Y1[j]));
+}
+const aabbOverlap       = (it,i,j)=>boxOverlap(it,i,j,'sa');
+const curvedAabbOverlap = (it,i,j)=>boxOverlap(it,i,j,'ca');
+// Every occupancy only ever occupies on-screen area, so an overlap whose region
+// lies entirely outside the viewport must not count — the renderer culls it.
+// the raster grids cover pixel columns 0..VW-1 / rows 0..VH-1, i.e. the
+// continuous span [0,VW) × [0,VH) — match that exactly or edge labels disagree
+const onScreen=(x0,y0,x1,y1)=> !(x1<=0||x0>=VW||y1<=0||y0>=VH);
+// Two discs overlap in a lens. The bounding box of that lens can touch the
+// viewport while the lens itself lies outside it, so test the lens directly:
+// take its deepest point (on the centre line, at the radical plane), clamp that
+// into the viewport, and require it to still be inside both discs.
+function circlesOverlapOnScreen(ax,ay,ar,bx,by,br){
+    const dx=bx-ax, dy=by-ay, d2=dx*dx+dy*dy, rr=ar+br;
+    if(d2>=rr*rr) return false;
+    let px,py;
+    if(d2<1e-12){ px=ax; py=ay; }
+    else { const d=Math.sqrt(d2), t=((d2+ar*ar-br*br)/(2*d))/d; px=ax+dx*t; py=ay+dy*t; }
+    const cx=Math.min(VW-1,Math.max(0,px)), cy=Math.min(VH-1,Math.max(0,py));
+    const ux=cx-ax, uy=cy-ay, vx=cx-bx, vy=cy-by;
+    return ux*ux+uy*uy<=ar*ar && vx*vx+vy*vy<=br*br;
+}
+function chainCircleOverlap(it,i,j){
+    const oi=it.segOff[i], ni=it.segN[i], oj=it.segOff[j], nj=it.segN[j];
+    for(let a=0;a<ni;a++){ const ax=it.sgx[oi+a], ay=it.sgy[oi+a], ar=it.sgr[oi+a];
+        for(let b=0;b<nj;b++)
+            if(circlesOverlapOnScreen(ax,ay,ar,it.sgx[oj+b],it.sgy[oj+b],it.sgr[oj+b])) return true;
+    }
+    return false;
+}
+function chainRectOverlap(it,i,j){
+    const oi=it.segOff[i], ni=it.segN[i], oj=it.segOff[j], nj=it.segN[j];
+    for(let a=0;a<ni;a++) for(let b=0;b<nj;b++){
+        if(!(it.sx0[oi+a]<it.sx1[oj+b]&&it.sx1[oi+a]>it.sx0[oj+b]&&it.sy0[oi+a]<it.sy1[oj+b]&&it.sy1[oi+a]>it.sy0[oj+b])) continue;
+        if(onScreen(Math.max(it.sx0[oi+a],it.sx0[oj+b]),Math.max(it.sy0[oi+a],it.sy0[oj+b]),
+                    Math.min(it.sx1[oi+a],it.sx1[oj+b]),Math.min(it.sy1[oi+a],it.sy1[oj+b]))) return true;
+    }
+    return false;
+}
+function chainQuadOverlap(it,i,j){
+    const oi=it.segOff[i], ni=it.segN[i], oj=it.segOff[j], nj=it.segN[j];
+    for(let a=0;a<ni;a++){ const A=clipViewport(segQuad(it,oi+a)); if(A.length<3)continue;
+        for(let b=0;b<nj;b++){ const B=clipViewport(segQuad(it,oj+b)); if(B.length<3)continue;
+            if(polyOverlap(A,B)) return true; } }
+    return false;
+}
+// model key → the ground-truth overlap predicate for that collision model
+function overlapFn(model){
+    return model===INK_MODEL ? chainQuadOverlap : aabbOverlap;
+}
+// ── collider waste: how much screen area a model RESERVES versus the label's
+//    true inked footprint. An AABB around a rotated or curved label reserves far
+//    more than the glyphs occupy, and that wasted area is what blocks neighbours.
+function quadArea(qx,qy,b){ // shoelace
+    let a=0; for(let k=0;k<4;k++){const n=(k+1)&3; a+=qx[b+k]*qy[b+n]-qx[b+n]*qy[b+k];} return Math.abs(a)*0.5;
+}
+// The label's own inked area, which differs by FAMILY: a straight label inks its
+// rotated quad, a curved one inks the chain of glyph quads along the curve.
+// A label's true ink is its chain of glyph quads (one segment if it is straight).
+function trueArea(it,i){
+    const o=it.segOff[i], n=it.segN[i]; let a=0;
+    for(let s=0;s<n;s++) a+=quadArea(it.sqx,it.sqy,(o+s)*4);
+    return a;
+}
+// The approximation applied to THIS label depends on the label's own kind.
+function shapeFor(cfg,it,i){ return it.curved[i] ? cfg.curvedShape : cfg.straightShape; }
+// How many collision primitives this label costs the structure. One box/quad for
+// the whole-label models; one per segment for the chains. This is the other half
+// of the trade: a chain buys a tighter fit by inserting and testing more pieces.
+function primCount(it,i,cfg){
+    const sh=shapeFor(cfg,it,i);
+    return (sh==='aabb'||sh==='cAabb'||sh==='pixel') ? 1 : it.segN[i];
+}
+function colliderArea(it,i,cfg){
+    const sh=shapeFor(cfg,it,i);
+    if(sh==='aabb')  return Math.max(0,it.sax1[i]-it.sax0[i])*Math.max(0,it.say1[i]-it.say0[i]);
+    if(sh==='pixel') return quadArea(it.cx,it.cy,i*4);                   // == its ink → 1.00×
+    if(sh==='cAabb') return Math.max(0,it.cax1[i]-it.cax0[i])*Math.max(0,it.cay1[i]-it.cay0[i]);
+    const o=it.segOff[i], n=it.segN[i]; let a=0;
+    if(sh==='circle'){ for(let s=0;s<n;s++)a+=Math.PI*it.sgr[o+s]*it.sgr[o+s]; return a; }
+    if(sh==='rect'){ for(let s=0;s<n;s++)a+=Math.max(0,it.sx1[o+s]-it.sx0[o+s])*Math.max(0,it.sy1[o+s]-it.sy0[o+s]); return a; }
+    return trueArea(it,i);  // cPixel == its ink → 1.00×
+}
+function modelKey(cfg){ return cfg.straightShape+'/'+cfg.curvedShape; }
+// The ceiling depends on the candidate set, not on the approximation: PAL's K
+// positions per label admit a better optimum than a single anchor.
+function ceilKey(cfg){ return INK_MODEL + (cfg.placement==='pal' ? '|pal'+cfg.palK : ''); }
+function modelLabel(mk){ const p=mk.split('/'); return `${SHAPE_LABEL[p[0]]||p[0]} · ${SHAPE_LABEL[p[1]]||p[1]}`; }
+
+// ── quality ceiling: near-optimal MWIS by annealing, full-res, in the given
+//    collision model. Each model has its own optimum — a permissive model (pixel,
+//    curved) fits strictly more than AABB, so scoring it against the AABB ceiling
+//    yields a spurious >100%. ──
+function computeCeiling(items0, model, K) {
+    // PAL gives each label K candidate positions — a strictly larger solution
+    // space than fixed anchors, so its optimum must be computed over all
+    // candidates (with the candidates of one label mutually exclusive), or a PAL
+    // run would legitimately exceed the single-anchor ceiling.
+    if (items0.n===0 || items0.n*K>120000) return { ok:false, weight:0 };   // guard BEFORE expanding
+    const items = K>1 ? expandCandidates(items0,K) : items0;
+    const n=items.n;
+    const cell=32, gw=Math.ceil(VW/cell), gh=Math.ceil(VH/cell), grid=Array.from({length:gw*gh},()=>[]);
+    const cells=(i,fn)=>{let a=(items.x0[i]/cell)|0,b=(items.x1[i]/cell)|0,c=(items.y0[i]/cell)|0,d=(items.y1[i]/cell)|0;
+        if(a<0)a=0; if(c<0)c=0; if(b>=gw)b=gw-1; if(d>=gh)d=gh-1;
+        for(let y=c;y<=d;y++)for(let x=a;x<=b;x++)fn(y*gw+x);};
+    for(let i=0;i<n;i++)cells(i,c=>grid[c].push(i));
+    const hit=overlapFn(model);   // label AABB grid is a valid broadphase for every model
+    const adj=new Array(n), st=new Int32Array(n).fill(-1);
+    for(let i=0;i<n;i++){const L=[];cells(i,c=>{for(const j of grid[c]){if(j===i||st[j]===i)continue;st[j]=i;
+        // same owning label → mutually exclusive candidates; else geometric test
+        if(K>1&&items.idx[i]===items.idx[j]){L.push(j);continue;}
+        if(hit(items,i,j))L.push(j);}});adj[i]=L;}
+    if(K>1){ // candidates of one label may be far apart and miss the grid broadphase
+        const byLabel=new Map();
+        for(let i=0;i<n;i++){const g=items.idx[i];let a=byLabel.get(g);if(!a){a=[];byLabel.set(g,a);}a.push(i);}
+        for(const g of byLabel.values()) for(const i of g) for(const j of g) if(i!==j&&!adj[i].includes(j)) adj[i].push(j);
+    }
+    const wt=items.weight, order=[...Array(n).keys()].sort((a,b)=>priorityKey(items.score[a],wt[a],true)-priorityKey(items.score[b],wt[b],true));
+    const on=new Uint8Array(n); let W=0;
+    for(const i of order){let ok=true;for(const j of adj[i])if(on[j]){ok=false;break;}if(ok){on[i]=1;W+=wt[i];}}
+    const rand=mulberry32(0x1a2b3c4d); let best=W, iters=Math.min(2_000_000,n*300), T=50, cool=Math.pow(0.5/T,1/iters);
+    for(let t=0;t<iters;t++){const i=(rand()*n)|0,a=adj[i];if(on[i]){if(rand()<Math.exp(-wt[i]/T)){on[i]=0;W-=wt[i];}}else{let ev=0;for(const j of a)if(on[j])ev+=wt[j];const d=wt[i]-ev;if(d>0||rand()<Math.exp(d/T)){for(const j of a)if(on[j]){on[j]=0;W-=wt[j];}on[i]=1;W+=wt[i];}}if(W>best)best=W;T*=cool;}
+    return { ok:true, weight:best };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMPOSABLE PIECES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── ORDERINGS: fill `order` (Int32Array) with the attempt order, return length ──
+function makeOrdering(cfg) {
+    if (cfg.ordering==='none') return {
+        run(items,keyBuf,orderBuf,prev){ for(let i=0;i<items.n;i++)orderBuf[i]=i; return items.n; }
+    };
+    if (cfg.ordering==='sort') return {
+        run(items,key,order,prev){ const n=items.n; for(let i=0;i<n;i++){order[i]=i;key[i]=priorityKey(items.score[i],items.weight[i],prev[items.idx[i]]);} const v=order.subarray(0,n); v.sort((a,b)=>key[a]-key[b]); return n; }
+    };
+    if (cfg.ordering==='radix') return {
+        run(items,key,order,prev){ const n=items.n; let lo=Infinity,hi=-Infinity; for(let i=0;i<n;i++){const k=priorityKey(items.score[i],items.weight[i],prev[items.idx[i]]);key[i]=k;if(k<lo)lo=k;if(k>hi)hi=k;} const scale=1048575/((hi-lo)||1); const q=this._q||(this._q=new Int32Array(order.length)); for(let i=0;i<n;i++)q[i]=((key[i]-lo)*scale)|0; const tmp=this._t||(this._t=new Int32Array(order.length)); let src=order,dst=tmp; for(let i=0;i<n;i++)src[i]=i; const cnt=this._c||(this._c=new Int32Array(1024)); for(let sh=0;sh<20;sh+=10){cnt.fill(0);for(let i=0;i<n;i++)cnt[(q[src[i]]>>sh)&1023]++;let s=0;for(let b=0;b<1024;b++){const c=cnt[b];cnt[b]=s;s+=c;}for(let i=0;i<n;i++){const d=(q[src[i]]>>sh)&1023;dst[cnt[d]++]=src[i];}const t=src;src=dst;dst=t;} if(src!==order)order.set(src.subarray(0,n)); return n; }
+    };
+    // bucket
+    const K=cfg.buckets, buckets=Array.from({length:K},()=>[]);
+    return {
+        run(items,key,order,prev){ const n=items.n; let lo=Infinity,hi=-Infinity; for(let i=0;i<n;i++){const k=priorityKey(items.score[i],items.weight[i],prev[items.idx[i]]);key[i]=k;if(k<lo)lo=k;if(k>hi)hi=k;} const scale=(K-1)/((hi-lo)||1); let mn=K,mx=-1; for(let i=0;i<n;i++){let b=((key[i]-lo)*scale)|0;if(b<0)b=0;else if(b>=K)b=K-1;buckets[b].push(i);if(b<mn)mn=b;if(b>mx)mx=b;} let p=0; for(let b=mn;b<=mx;b++){const bk=buckets[b];for(let j=0;j<bk.length;j++)order[p++]=bk[j];bk.length=0;} return p; }
+    };
+}
+
+// ── bitmap primitives ────────────────────────────────────────────────────────
+function regionSet(bm,wpr,x0,y0,x1,y1){const wA=x0>>5,wB=x1>>5,mA=(0xffffffff<<(x0&31))>>>0,mB=(0xffffffff>>>(31-(x1&31)));for(let y=y0;y<=y1;y++){const r=y*wpr;if(wA===wB)bm[r+wA]|=mA&mB;else{bm[r+wA]|=mA;for(let w=wA+1;w<wB;w++)bm[r+w]=0xffffffff;bm[r+wB]|=mB;}}}
+function regionEmpty(bm,wpr,x0,y0,x1,y1){const wA=x0>>5,wB=x1>>5,mA=(0xffffffff<<(x0&31))>>>0,mB=(0xffffffff>>>(31-(x1&31)));for(let y=y0;y<=y1;y++){const r=y*wpr;if(wA===wB){if((bm[r+wA]&mA&mB)!==0)return false;}else{if((bm[r+wA]&mA)!==0)return false;for(let w=wA+1;w<wB;w++)if(bm[r+w]!==0)return false;if((bm[r+wB]&mB)!==0)return false;}}return true;}
+function popc(v){v=v-((v>>>1)&0x55555555);v=(v&0x33333333)+((v>>>2)&0x33333333);return(((v+(v>>>4))&0x0f0f0f0f)*0x01010101)>>>24;}
+function regionCount(bm,wpr,x0,y0,x1,y1){const wA=x0>>5,wB=x1>>5,mA=(0xffffffff<<(x0&31))>>>0,mB=(0xffffffff>>>(31-(x1&31)));let n=0;for(let y=y0;y<=y1;y++){const r=y*wpr;if(wA===wB)n+=popc(bm[r+wA]&mA&mB);else{n+=popc(bm[r+wA]&mA);for(let w=wA+1;w<wB;w++)n+=popc(bm[r+w]);n+=popc(bm[r+wB]&mB);}}return n;}
+// Occlusion test that never counts more than it must. Walk row by row and stop
+// as soon as the answer is decided in EITHER direction:
+//   occupied > limit                      → deny  (already too covered)
+//   occupied + rows-still-to-come ≤ limit → accept (cannot possibly exceed)
+// Exact same predicate as counting the whole box, at a fraction of the reads.
+function regionOccludedWithin(bm,wpr,x0,y0,x1,y1,limit){
+    const wA=x0>>5,wB=x1>>5,mA=(0xffffffff<<(x0&31))>>>0,mB=(0xffffffff>>>(31-(x1&31)));
+    const perRow=x1-x0+1;
+    let n=0, remaining=perRow*(y1-y0+1);
+    for(let y=y0;y<=y1;y++){
+        const r=y*wpr;
+        if(wA===wB)n+=popc(bm[r+wA]&mA&mB);
+        else{n+=popc(bm[r+wA]&mA);for(let w=wA+1;w<wB;w++)n+=popc(bm[r+w]);n+=popc(bm[r+wB]&mB);}
+        remaining-=perRow;
+        if(n>limit)return false;              // decided: too occluded
+        if(n+remaining<=limit)return true;    // decided: cannot exceed the limit
+    }
+    return n<=limit;
+}
+
+// ── scanline decomposition of a primitive at raster resolution ───────────────
+// Both raster occupancies (flat bitmap, binary pyramid) consume the SAME spans,
+// so "count vs binary structure" is the only difference between them — never the
+// geometry. cb(y,x0,x1) returning false aborts and makes the walk return false.
+//
+// Spans are CONSERVATIVE: the x-extent is taken over the whole row band [y,y+1],
+// not sampled at the row centre, so a thin diagonal sliver can never slip
+// between two scanlines and leave the footprint under-covered.
+function quadSpans(qx,qy,base,shift,dx,dy,W,H,cb){
+    const inv=1/(1<<shift);
+    const xs=[(qx[base]+dx)*inv,(qx[base+1]+dx)*inv,(qx[base+2]+dx)*inv,(qx[base+3]+dx)*inv];
+    const ys=[(qy[base]+dy)*inv,(qy[base+1]+dy)*inv,(qy[base+2]+dy)*inv,(qy[base+3]+dy)*inv];
+    let minY=1e9,maxY=-1e9;
+    for(let k=0;k<4;k++){if(ys[k]<minY)minY=ys[k];if(ys[k]>maxY)maxY=ys[k];}
+    const y0=Math.max(0,Math.floor(minY)), y1=Math.min(H-1,Math.ceil(maxY));
+    for(let y=y0;y<=y1;y++){
+        const yt=y, yb=y+1; let lo=1e9,hi=-1e9;
+        for(let e=0;e<4;e++){
+            const ax=xs[e],ay=ys[e],bx=xs[(e+1)&3],by=ys[(e+1)&3];
+            if((ay<=yt&&by>yt)||(by<=yt&&ay>yt)){const x=ax+(bx-ax)*(yt-ay)/(by-ay);if(x<lo)lo=x;if(x>hi)hi=x;}
+            if((ay<=yb&&by>yb)||(by<=yb&&ay>yb)){const x=ax+(bx-ax)*(yb-ay)/(by-ay);if(x<lo)lo=x;if(x>hi)hi=x;}
+            if(ay>=yt&&ay<=yb){if(ax<lo)lo=ax;if(ax>hi)hi=ax;}
+        }
+        if(hi<lo)continue;
+        const x0=Math.max(0,Math.floor(lo)), x1=Math.min(W-1,Math.ceil(hi));
+        if(x0>x1)continue;
+        if(cb(y,x0,x1)===false)return false;
+    }
+    return true;
+}
+// disc spans — the raster counterpart of a MapLibre collision circle
+function circleSpans(cx,cy,r,shift,W,H,cb){
+    const inv=1/(1<<shift), mx=cx*inv, my=cy*inv, mr=r*inv;
+    const y0=Math.max(0,Math.floor(my-mr)), y1=Math.min(H-1,Math.ceil(my+mr));
+    for(let y=y0;y<=y1;y++){
+        // widest point of the disc within the row band [y,y+1]
+        const d=Math.max(0, Math.max(my-(y+1), y-my));
+        const h2=mr*mr-d*d; if(h2<0)continue;
+        const h=Math.sqrt(h2);
+        const x0=Math.max(0,Math.floor(mx-h)), x1=Math.min(W-1,Math.ceil(mx+h));
+        if(x0>x1)continue;
+        if(cb(y,x0,x1)===false)return false;
+    }
+    return true;
+}
+
+// ── OCCUPANCIES ──────────────────────────────────────────────────────────────
+// Uniform interface. `prev` = was this label rendered last frame; only then may
+// the occlusion tolerance apply (hysteresis). New labels are always strict.
+//   testRect / markRect      (x0,y0,x1,y1,prev)
+//   testCircle / markCircle  (cx,cy,r,prev)
+//   testQuad / markQuad      (qx,qy,base,prev,dx,dy)   — raster only
+function makeOccupancy(cfg) {
+    const occ = cfg.occupancy;
+
+    // ── geometric stores: keep both an AABB and (optionally) a circle per prim.
+    //    circle↔circle uses the exact distance test, anything else uses AABBs.
+    if (occ==='brute' || occ==='grid') {
+        const isGrid = occ==='grid', cell=cfg.gridCell, tol=cfg.occlusionTol;
+        let gw,gh,grid, px0,py0,px1,py1,pcx,pcy,pr,pIsC,cnt,capN, seen, stamp=0;
+        const growIfNeeded=()=>{ if(cnt<capN)return;
+            const nc=capN*2, g=a=>{const b=new a.constructor(nc);b.set(a);return b;};
+            px0=g(px0);py0=g(py0);px1=g(px1);py1=g(py1);pcx=g(pcx);pcy=g(pcy);pr=g(pr);pIsC=g(pIsC);seen=g(seen);capN=nc; };
+        const hits=(p,x0,y0,x1,y1,cx,cy,r,isC)=>{
+            if(isC&&pIsC[p]){ const dx=pcx[p]-cx, dy=pcy[p]-cy, rr=pr[p]+r; return dx*dx+dy*dy<rr*rr; }
+            return x0<=px1[p]&&x1>=px0[p]&&y0<=py1[p]&&y1>=py0[p];
+        };
+        const add=(x0,y0,x1,y1,cx,cy,r,isC)=>{
+            growIfNeeded(); const id=cnt++;
+            px0[id]=x0;py0[id]=y0;px1[id]=x1;py1[id]=y1;pcx[id]=cx;pcy[id]=cy;pr[id]=r;pIsC[id]=isC?1:0;
+            if(isGrid){ let a=(x0/cell)|0,b=(x1/cell)|0,c=(y0/cell)|0,d=(y1/cell)|0;
+                if(a<0)a=0; if(c<0)c=0; if(b>=gw)b=gw-1; if(d>=gh)d=gh-1;
+                for(let gy=c;gy<=d;gy++)for(let gx=a;gx<=b;gx++)grid[gy*gw+gx].push(id); }
+        };
+        // limit < 0 → binary (any hit rejects). limit >= 0 → occlusion tolerance:
+        // accumulate covered area and reject once it exceeds the limit. The store
+        // only ever holds NON-overlapping placed primitives, so summing pairwise
+        // intersections is exact rather than an over-count. A grid entry can be
+        // visited from several cells, hence the stamp.
+        const query=(x0,y0,x1,y1,cx,cy,r,isC,limit)=>{
+            const binary = limit<0; let covered=0; stamp++;
+            const reject=(p)=>{
+                if(seen[p]===stamp)return false; seen[p]=stamp;
+                if(!hits(p,x0,y0,x1,y1,cx,cy,r,isC))return false;
+                if(binary)return true;
+                const ix=Math.min(x1,px1[p])-Math.max(x0,px0[p]);
+                const iy=Math.min(y1,py1[p])-Math.max(y0,py0[p]);
+                if(ix>0&&iy>0)covered+=ix*iy;
+                return covered>limit;
+            };
+            if(!isGrid){ for(let p=0;p<cnt;p++) if(reject(p)) return false; return true; }
+            let a=(x0/cell)|0,b=(x1/cell)|0,c=(y0/cell)|0,d=(y1/cell)|0;
+            if(a<0)a=0; if(c<0)c=0; if(b>=gw)b=gw-1; if(d>=gh)d=gh-1;
+            for(let gy=c;gy<=d;gy++)for(let gx=a;gx<=b;gx++){ const bk=grid[gy*gw+gx];
+                for(let k=0;k<bk.length;k++) if(reject(bk[k])) return false; }
+            return true;
+        };
+        const lim=(prev,x0,y0,x1,y1)=> (prev&&tol>0) ? tol*Math.max(1,(x1-x0))*Math.max(1,(y1-y0)) : -1;
+        // a primitive fully outside the viewport occupies nothing and conflicts
+        // with nothing — raster occupancies clamp it away, so these must too
+        return { supportsQuad:false,
+            reset(cap){ capN=Math.max(1024,cap);
+                px0=new Float32Array(capN);py0=new Float32Array(capN);px1=new Float32Array(capN);py1=new Float32Array(capN);
+                pcx=new Float32Array(capN);pcy=new Float32Array(capN);pr=new Float32Array(capN);pIsC=new Uint8Array(capN);
+                seen=new Int32Array(capN);cnt=0;stamp=0;
+                if(isGrid){gw=Math.ceil(VW/cell);gh=Math.ceil(VH/cell);grid=Array.from({length:gw*gh},()=>[]);} },
+            clear(){ cnt=0; if(isGrid)for(let g=0;g<grid.length;g++)grid[g].length=0; },
+            testRect(x0,y0,x1,y1,prev){ return !onScreen(x0,y0,x1,y1) || query(x0,y0,x1,y1,0,0,0,false,lim(prev,x0,y0,x1,y1)); },
+            markRect(x0,y0,x1,y1){ if(onScreen(x0,y0,x1,y1)) add(x0,y0,x1,y1,0,0,0,false); },
+            testCircle(cx,cy,r,prev){ return !onScreen(cx-r,cy-r,cx+r,cy+r) || query(cx-r,cy-r,cx+r,cy+r,cx,cy,r,true,lim(prev,cx-r,cy-r,cx+r,cy+r)); },
+            markCircle(cx,cy,r){ if(onScreen(cx-r,cy-r,cx+r,cy+r)) add(cx-r,cy-r,cx+r,cy+r,cx,cy,r,true); },
+        };
+    }
+    if (occ==='rtree') {
+        // An R-tree indexes AABBs, so circles enter by their bounding box — but
+        // the leaf test is an exact circle↔circle distance check. Without that
+        // narrow phase the R-tree would be strictly stricter than grid/brute and
+        // the occupancy axis would be comparing collision fidelity, not structure.
+        const t=new RTree(9), tol=cfg.occlusionTol;
+        const lim=(prev,x0,y0,x1,y1)=> (prev&&tol>0) ? tol*Math.max(1,(x1-x0))*Math.max(1,(y1-y0)) : -1;
+        return { supportsQuad:false,
+            reset(){t.clear();}, clear(){t.clear();},
+            testRect(x0,y0,x1,y1,prev){ if(!onScreen(x0,y0,x1,y1))return true;
+                const L=lim(prev,x0,y0,x1,y1);
+                return L<0 ? !t.collides(x0,y0,x1,y1,null) : t.within(x0,y0,x1,y1,null,L); },
+            markRect(x0,y0,x1,y1){if(onScreen(x0,y0,x1,y1))t.insert(x0,y0,x1,y1,null);},
+            testCircle(cx,cy,r,prev){ if(!onScreen(cx-r,cy-r,cx+r,cy+r))return true;
+                const L=lim(prev,cx-r,cy-r,cx+r,cy+r);
+                return L<0 ? !t.collides(cx-r,cy-r,cx+r,cy+r,{cx,cy,r}) : t.within(cx-r,cy-r,cx+r,cy+r,{cx,cy,r},L); },
+            markCircle(cx,cy,r){if(onScreen(cx-r,cy-r,cx+r,cy+r))t.insert(cx-r,cy-r,cx+r,cy+r,{cx,cy,r});},
+        };
+    }
+
+    // ── raster: bitmap (count, supports occlusion tolerance) or pyramid (binary)
+    const shift=Math.round(Math.log2(cfg.downscale)), m=(1<<shift)-1;
+    if (occ==='bitmap') {
+        const tol=cfg.occlusionTol; let W,H,wpr,bits;
+        // hysteresis: only an already-rendered label may survive partial occlusion.
+        // A new label always needs a fully empty region and early-exits.
+        const spanTest=(walk,tl)=>{
+            if(tl<=0) return walk((y,a,b)=>regionEmpty(bits,wpr,a,y,b,y));
+            let o=0,t=0;
+            walk((y,a,b)=>{ o+=regionCount(bits,wpr,a,y,b,y); t+=b-a+1; return true; });
+            return t===0 || o/t<=tl;
+        };
+        return { supportsQuad:true,
+            reset(){W=Math.max(1,Math.ceil(VW/cfg.downscale));H=Math.max(1,Math.ceil(VH/cfg.downscale));wpr=(W+31)>>5;bits=new Uint32Array(wpr*H);},
+            clear(){bits.fill(0);},
+            testRect(x0,y0,x1,y1,prev){const a=x0>>shift,b=Math.min(W-1,(x1+m)>>shift),c=y0>>shift,d=Math.min(H-1,(y1+m)>>shift);
+                const tl=prev?tol:0;
+                if(tl<=0)return regionEmpty(bits,wpr,a,c,b,d);
+                return regionOccludedWithin(bits,wpr,a,c,b,d,tl*(b-a+1)*(d-c+1));},
+            markRect(x0,y0,x1,y1){regionSet(bits,wpr,x0>>shift,y0>>shift,Math.min(W-1,(x1+m)>>shift),Math.min(H-1,(y1+m)>>shift));},
+            testCircle(cx,cy,r,prev){return spanTest(cb=>circleSpans(cx,cy,r,shift,W,H,cb), prev?tol:0);},
+            markCircle(cx,cy,r){circleSpans(cx,cy,r,shift,W,H,(y,a,b)=>{regionSet(bits,wpr,a,y,b,y);return true;});},
+            testQuad(qx,qy,base,prev,dx,dy){return spanTest(cb=>quadSpans(qx,qy,base,shift,dx,dy,W,H,cb), prev?tol:0);},
+            markQuad(qx,qy,base,dx,dy){quadSpans(qx,qy,base,shift,dx,dy,W,H,(y,a,b)=>{regionSet(bits,wpr,a,y,b,y);return true;});},
+        };
+    }
+    // ── Word-summary hierarchy ───────────────────────────────────────────────
+    // A packed bitmap already tests 32 cells per word compare, so a hierarchy is
+    // only worth having if its branching factor beats 32. A quadtree's is 4 — it
+    // merely halves the loop per level, which loses to just reading words. Here
+    // ONE summary bit covers one whole WORD × 4 rows (branching 128), so every
+    // level is tested with the same packed-word compare and a single read can
+    // clear a 1024×16 region. Levels are conservative: a set summary bit only
+    // means "look finer", never a hit, so exactness always comes from level 0.
+    if (occ==='summary') {
+        const tol=cfg.occlusionTol, sinv=1/(1<<shift);
+        let W,H,w0,B0,W1,H1,w1,B1,W2,H2,w2,B2;
+        const coarseEmpty=(a,c,b,d)=>            // cheap conservative accept test
+            regionEmpty(B2,w2,a>>10,c>>4,b>>10,d>>4) || regionEmpty(B1,w1,a>>5,c>>2,b>>5,d>>2);
+        const setSpan=(a,y,b)=>{ regionSet(B0,w0,a,y,b,y);
+            regionSet(B1,w1,a>>5,y>>2,b>>5,y>>2); regionSet(B2,w2,a>>10,y>>4,b>>10,y>>4); };
+        return { supportsQuad:true,
+            reset(){ W=Math.max(1,Math.ceil(VW/cfg.downscale)); H=Math.max(1,Math.ceil(VH/cfg.downscale));
+                w0=(W+31)>>5; B0=new Uint32Array(w0*H);
+                W1=Math.ceil(W/32); H1=Math.ceil(H/4);  w1=(W1+31)>>5; B1=new Uint32Array(w1*H1);
+                W2=Math.ceil(W/1024); H2=Math.ceil(H/16); w2=(W2+31)>>5; B2=new Uint32Array(w2*H2); },
+            clear(){ B0.fill(0); B1.fill(0); B2.fill(0); },
+            testRect(x0,y0,x1,y1,prev){const a=x0>>shift,b=Math.min(W-1,(x1+m)>>shift),c=y0>>shift,d=Math.min(H-1,(y1+m)>>shift);
+                if(coarseEmpty(a,c,b,d))return true;
+                // level 0 IS a bitmap, so a count-based tolerance works here too
+                if(prev&&tol>0) return regionOccludedWithin(B0,w0,a,c,b,d,tol*(b-a+1)*(d-c+1));
+                return regionEmpty(B0,w0,a,c,b,d);},
+            markRect(x0,y0,x1,y1){const a=x0>>shift,b=Math.min(W-1,(x1+m)>>shift),c=y0>>shift,d=Math.min(H-1,(y1+m)>>shift);
+                regionSet(B0,w0,a,c,b,d); regionSet(B1,w1,a>>5,c>>2,b>>5,d>>2); regionSet(B2,w2,a>>10,c>>4,b>>10,d>>4);},
+            testCircle(cx,cy,r){
+                const a=Math.max(0,Math.floor((cx-r)*sinv)), b=Math.min(W-1,Math.ceil((cx+r)*sinv));
+                const c=Math.max(0,Math.floor((cy-r)*sinv)), d=Math.min(H-1,Math.ceil((cy+r)*sinv));
+                if(a>b||c>d)return true;
+                if(coarseEmpty(a,c,b,d))return true;
+                return circleSpans(cx,cy,r,shift,W,H,(y,p,q)=>regionEmpty(B0,w0,p,y,q,y));},
+            markCircle(cx,cy,r){circleSpans(cx,cy,r,shift,W,H,(y,p,q)=>{setSpan(p,y,q);return true;});},
+            testQuad(qx,qy,base,prev,dx,dy){
+                let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
+                for(let k=0;k<4;k++){const X=qx[base+k]+dx,Y=qy[base+k]+dy;if(X<mnx)mnx=X;if(X>mxx)mxx=X;if(Y<mny)mny=Y;if(Y>mxy)mxy=Y;}
+                const a=Math.max(0,Math.floor(mnx*sinv)), b=Math.min(W-1,Math.ceil(mxx*sinv));
+                const c=Math.max(0,Math.floor(mny*sinv)), d=Math.min(H-1,Math.ceil(mxy*sinv));
+                if(a>b||c>d)return true;
+                if(coarseEmpty(a,c,b,d))return true;
+                return quadSpans(qx,qy,base,shift,dx,dy,W,H,(y,p,q)=>regionEmpty(B0,w0,p,y,q,y));},
+            markQuad(qx,qy,base,dx,dy){quadSpans(qx,qy,base,shift,dx,dy,W,H,(y,p,q)=>{setSpan(p,y,q);return true;});},
+        };
+    }
+
+    // Binary pyramid. Consumes the SAME spans as the bitmap, so the only
+    // difference is the structure (early-exit quadtree vs flat scan) — never the
+    // geometry. It stores no counts, so occlusion tolerance cannot apply: always
+    // strict. Spans are tested/marked one scanline at a time, which keeps the
+    // coarse-level pruning while staying exact for rotated and curved footprints.
+    const pyrTol=cfg.occlusionTol; const maxLevels=cfg.pyrLevels; let levels,L,PW,PH;
+    const inv=1/(1<<shift);
+    const setAll=(a,c,b,d)=>{for(let k=0;k<L;k++){const lv=levels[k];regionSet(lv.bits,lv.wpr,a>>k,c>>k,b>>k,d>>k);}};
+    // Coarse levels may be marked CONSERVATIVELY (a set coarse cell only means
+    // "descend further"), so a non-rectangular footprint writes exact spans to
+    // level 0 and just its bounding box to levels 1..L-1. Marking a coarse cell
+    // whose children are all clear costs one wasted descent, never a false hit.
+    const setCoarse=(a,c,b,d)=>{for(let k=1;k<L;k++){const lv=levels[k];regionSet(lv.bits,lv.wpr,a>>k,c>>k,b>>k,d>>k);}};
+    // Exactness needs per-scanline tests, but a 1-row strip gives the quadtree
+    // nothing to prune while still paying the recursion. So try the whole
+    // bounding box on the hierarchy first: if that is empty the footprint is
+    // certainly empty (footprint ⊆ bbox) and we accept without touching a span.
+    // Only when the bbox is dirty do we fall back to exact level-0 spans.
+    const spanTestExact=(walk)=>{ const l0=levels[0]; return walk((y,a,b)=>regionEmpty(l0.bits,l0.wpr,a,y,b,y)); };
+    return { supportsQuad:true,
+        reset(){PW=Math.max(1,Math.ceil(VW/cfg.downscale));PH=Math.max(1,Math.ceil(VH/cfg.downscale));levels=[];let lw=PW,lh=PH;for(let k=0;;k++){levels.push({wpr:(lw+31)>>5,bits:new Uint32Array(((lw+31)>>5)*lh)});if((lw<=1&&lh<=1)||k+1>=maxLevels)break;lw=(lw+1)>>1;lh=(lh+1)>>1;}L=levels.length;},
+        clear(){for(let k=0;k<L;k++)levels[k].bits.fill(0);},
+        testRect(x0,y0,x1,y1,prev){const a=x0>>shift,b=Math.min(PW-1,(x1+m)>>shift),c=y0>>shift,d=Math.min(PH-1,(y1+m)>>shift);
+            if(prev&&pyrTol>0){const l0=levels[0];  // level 0 is a bitmap → countable
+                if(descend(levels,L-1,a,c,b,d))return true;
+                return regionOccludedWithin(l0.bits,l0.wpr,a,c,b,d,pyrTol*(b-a+1)*(d-c+1));}
+            return descend(levels,L-1,a,c,b,d);},
+        markRect(x0,y0,x1,y1){const a=x0>>shift,b=Math.min(PW-1,(x1+m)>>shift),c=y0>>shift,d=Math.min(PH-1,(y1+m)>>shift);setAll(a,c,b,d);},
+        testCircle(cx,cy,r){
+            // floor/ceil, NOT >>: the shift truncates toward zero, so for a
+            // negative coordinate it disagrees with the span walker's Math.floor
+            // and the coarse box can omit an occupied row — which silently turns
+            // into a wrong accept.
+            const a=Math.max(0,Math.floor((cx-r)*inv)), b=Math.min(PW-1,Math.ceil((cx+r)*inv));
+            const c=Math.max(0,Math.floor((cy-r)*inv)), d=Math.min(PH-1,Math.ceil((cy+r)*inv));
+            if(a>b||c>d) return true;
+            if(descend(levels,L-1,a,c,b,d)) return true;             // coarse accept
+            return spanTestExact(cb=>circleSpans(cx,cy,r,shift,PW,PH,cb));
+        },
+        markCircle(cx,cy,r){
+            const l0=levels[0]; let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
+            circleSpans(cx,cy,r,shift,PW,PH,(y,a,b)=>{regionSet(l0.bits,l0.wpr,a,y,b,y);
+                if(a<mnx)mnx=a; if(b>mxx)mxx=b; if(y<mny)mny=y; if(y>mxy)mxy=y; return true;});
+            if(mxx>=mnx) setCoarse(mnx,mny,mxx,mxy);
+        },
+        testQuad(qx,qy,base,prev,dx,dy){
+            let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
+            for(let k=0;k<4;k++){const X=qx[base+k]+dx,Y=qy[base+k]+dy;if(X<mnx)mnx=X;if(X>mxx)mxx=X;if(Y<mny)mny=Y;if(Y>mxy)mxy=Y;}
+            const a=Math.max(0,Math.floor(mnx*inv)), b=Math.min(PW-1,Math.ceil(mxx*inv));
+            const c=Math.max(0,Math.floor(mny*inv)), d=Math.min(PH-1,Math.ceil(mxy*inv));
+            if(a>b||c>d) return true;
+            if(descend(levels,L-1,a,c,b,d)) return true;             // coarse accept
+            return spanTestExact(cb=>quadSpans(qx,qy,base,shift,dx,dy,PW,PH,cb));
+        },
+        markQuad(qx,qy,base,dx,dy){
+            const l0=levels[0]; let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
+            quadSpans(qx,qy,base,shift,dx,dy,PW,PH,(y,a,b)=>{regionSet(l0.bits,l0.wpr,a,y,b,y);
+                if(a<mnx)mnx=a; if(b>mxx)mxx=b; if(y<mny)mny=y; if(y>mxy)mxy=y; return true;});
+            if(mxx>=mnx) setCoarse(mnx,mny,mxx,mxy);
+        },
+    };
+}
+// Descend the pyramid coarse→fine, skipping cells that are clear. At the LEAF
+// the region must be scanned word-parallel (regionEmpty) rather than bit by bit:
+// testing one bit per iteration throws away the 32× word parallelism the flat
+// bitmap gets, which costs far more than the coarse pruning saves. With this,
+// levels=1 degenerates to exactly the flat bitmap, as it should.
+function descend(levels,k,x0,y0,x1,y1){
+    if(k===0){ const lv=levels[0]; return regionEmpty(lv.bits,lv.wpr,x0,y0,x1,y1); }
+    const lv=levels[k],bits=lv.bits,wpr=lv.wpr,cx0=x0>>k,cx1=x1>>k,cy0=y0>>k,cy1=y1>>k;
+    const wA=cx0>>5, wB=cx1>>5;
+    const mA=(0xffffffff<<(cx0&31))>>>0, mB=(0xffffffff>>>(31-(cx1&31)));
+    for(let cy=cy0;cy<=cy1;cy++){
+        const row=cy*wpr;
+        // Walk the coarse row WORD BY WORD and skip empty words 32 cells at a
+        // time, then visit only the set bits. Testing every coarse cell
+        // individually is what made shallow pyramids (levels=2) catastrophic:
+        // a box still spans area/4^k cells there, so per-cell iteration lost to
+        // the flat bitmap's whole-word reads by a wide margin.
+        for(let w=wA;w<=wB;w++){
+            let word=bits[row+w];
+            if(word===0)continue;
+            if(w===wA)word&=mA;
+            if(w===wB)word&=mB;
+            while(word){
+                const low=word&(-word);
+                const cx=(w<<5)+(31-Math.clz32(low));
+                const a=Math.max(x0,cx<<k),b=Math.min(x1,((cx+1)<<k)-1);
+                const c=Math.max(y0,cy<<k),d=Math.min(y1,((cy+1)<<k)-1);
+                if(!descend(levels,k-1,a,c,b,d))return false;
+                word^=low;
+            }
+        }
+    }
+    return true;
+}
+
+// compact dynamic R-tree (insert + boolean overlap query)
+class RTree {
+    constructor(mx=9){this._m=mx;this.clear();}
+    clear(){this.root=this._n(true);}
+    _n(l){return{c:[],leaf:l,minX:1/0,minY:1/0,maxX:-1/0,maxY:-1/0};}
+    _e(a,b){if(b.minX<a.minX)a.minX=b.minX;if(b.minY<a.minY)a.minY=b.minY;if(b.maxX>a.maxX)a.maxX=b.maxX;if(b.maxY>a.maxY)a.maxY=b.maxY;}
+    _rc(nd){nd.minX=1/0;nd.minY=1/0;nd.maxX=-1/0;nd.maxY=-1/0;for(const c of nd.c)this._e(nd,c);}
+    _en(x,it){const nx=Math.min(x.minX,it.minX),ny=Math.min(x.minY,it.minY),xx=Math.max(x.maxX,it.maxX),xy=Math.max(x.maxY,it.maxY);return(xx-nx)*(xy-ny)-(x.maxX-x.minX)*(x.maxY-x.minY);}
+    // `c` = optional circle {cx,cy,r} for an exact leaf narrow-phase; when both
+    // the query and the stored leaf are circles, use the distance test.
+    collides(x0,y0,x1,y1,c){const r=this.root;if(x0>r.maxX||x1<r.minX||y0>r.maxY||y1<r.minY)return false;const st=[r];while(st.length){const nd=st.pop();for(const ch of nd.c){if(x0<=ch.maxX&&x1>=ch.minX&&y0<=ch.maxY&&y1>=ch.minY){if(!nd.leaf){st.push(ch);continue;}if(c&&ch.c){const dx=ch.c.cx-c.cx,dy=ch.c.cy-c.cy,rr=ch.c.r+c.r;if(dx*dx+dy*dy>=rr*rr)continue;}return true;}}}return false;}
+    // occlusion-tolerance variant: accumulate covered area, stop once over limit.
+    // Stored items never overlap each other, so the sum is exact.
+    within(x0,y0,x1,y1,c,limit){const r=this.root;if(x0>r.maxX||x1<r.minX||y0>r.maxY||y1<r.minY)return true;
+        const st=[r];let covered=0;
+        while(st.length){const nd=st.pop();
+            for(const ch of nd.c){
+                if(!(x0<=ch.maxX&&x1>=ch.minX&&y0<=ch.maxY&&y1>=ch.minY))continue;
+                if(!nd.leaf){st.push(ch);continue;}
+                if(c&&ch.c){const dx=ch.c.cx-c.cx,dy=ch.c.cy-c.cy,rr=ch.c.r+c.r;if(dx*dx+dy*dy>=rr*rr)continue;}
+                const ix=Math.min(x1,ch.maxX)-Math.max(x0,ch.minX), iy=Math.min(y1,ch.maxY)-Math.max(y0,ch.minY);
+                if(ix>0&&iy>0)covered+=ix*iy;
+                if(covered>limit)return false;
+            }}
+        return true;}
+    insert(x0,y0,x1,y1,c){const it={minX:x0,minY:y0,maxX:x1,maxY:y1,c:c||null};const s=this._ins(this.root,it);if(s){const o=this.root;this.root=this._n(false);this.root.c.push(o,s);this._rc(this.root);}}
+    _ins(nd,it){this._e(nd,it);if(nd.leaf){nd.c.push(it);return nd.c.length>this._m?this._sp(nd):null;}let best=nd.c[0],be=1/0;for(const c of nd.c){const e=this._en(c,it);if(e<be){be=e;best=c;}}const s=this._ins(best,it);if(s){nd.c.push(s);return nd.c.length>this._m?this._sp(nd):null;}return null;}
+    _sp(nd){const byX=(nd.maxX-nd.minX)>=(nd.maxY-nd.minY);nd.c.sort(byX?(a,b)=>(a.minX+a.maxX)-(b.minX+b.maxX):(a,b)=>(a.minY+a.maxY)-(b.minY+b.maxY));const r=this._n(nd.leaf);r.c=nd.c.splice(nd.c.length>>1);this._rc(nd);this._rc(r);return r;}
+}
+
+// ── PAL candidate offsets (box moves so anchor sits at 8 positions) ──
+const PAL_POS=[[0,0],[-1,-1],[-1,0],[0,-1],[-0.5,-1],[-0.5,0],[0,-0.5],[-1,-0.5]];
+// PAL places a label somewhere other than its anchor, so the chosen offset must
+// be written back into the item geometry — otherwise the ceiling, the overlap
+// metric and the preview would all score the label where it is NOT.
+function shiftLabel(it,i,dx,dy){
+    it.x0[i]+=dx; it.x1[i]+=dx; it.y0[i]+=dy; it.y1[i]+=dy;
+    it.sax0[i]+=dx; it.sax1[i]+=dx; it.say0[i]+=dy; it.say1[i]+=dy;
+    it.cax0[i]+=dx; it.cax1[i]+=dx; it.cay0[i]+=dy; it.cay1[i]+=dy;
+    const b=i*4; for(let k=0;k<4;k++){ it.cx[b+k]+=dx; it.cy[b+k]+=dy; }
+    const o=it.segOff[i], n=it.segN[i];
+    for(let s=0;s<n;s++){
+        it.sgx[o+s]+=dx; it.sgy[o+s]+=dy;
+        it.sx0[o+s]+=dx; it.sx1[o+s]+=dx; it.sy0[o+s]+=dy; it.sy1[o+s]+=dy;
+        const q=(o+s)*4; for(let k=0;k<4;k++){ it.sqx[q+k]+=dx; it.sqy[q+k]+=dy; }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ASSEMBLE A VARIANT FROM A CONFIG, and MEASURE it
+// ═════════════════════════════════════════════════════════════════════════════
+function makeVariant(cfg, cap) {
+    const ordering = makeOrdering(cfg);
+    const occ = makeOccupancy(cfg);
+    occ.reset(cap*MAXSEG);
+    const key=new Float64Array(cap), order=new Int32Array(cap);
+    const prev=new Uint8Array(cap), lastDec=new Uint8Array(cap);
+    const K = cfg.placement==='pal' ? cfg.palK : 1;
+
+    // Place label i with its footprint offset by (dx,dy). The approximation is
+    // chosen by the LABEL's own kind, so a configuration can mix — e.g. boxes for
+    // point labels and circle chains for roads, as MapLibre does.
+    // All-or-nothing: every primitive must fit before any is marked.
+    function tryAt(items,i,pv,dx,dy){
+        const curvedLabel = items.curved[i]===1;
+        const shape = curvedLabel ? cfg.curvedShape : cfg.straightShape;
+        // A label whose own geometry is off screen is not placeable; otherwise an
+        // off-screen footprint rasterises to zero rows, reads back "empty", and
+        // would be placed for free.
+        const FBOX = curvedLabel ? 'ca' : 'sa';
+        if(!onScreen(items[FBOX+'x0'][i]+dx, items[FBOX+'y0'][i]+dy,
+                     items[FBOX+'x1'][i]+dx, items[FBOX+'y1'][i]+dy)) return false;
+        if (shape==='aabb' || shape==='cAabb') {
+            const P = shape==='cAabb' ? 'ca' : 'sa';
+            const x0=items[P+'x0'][i]+dx, y0=items[P+'y0'][i]+dy, x1=items[P+'x1'][i]+dx, y1=items[P+'y1'][i]+dy;
+            const cx0=Math.max(0,x0|0), cy0=Math.max(0,y0|0), cx1=Math.min(VW-1,x1|0), cy1=Math.min(VH-1,y1|0);
+            if(cx0>cx1||cy0>cy1)return false;
+            if(!occ.testRect(cx0,cy0,cx1,cy1,pv))return false;
+            occ.markRect(cx0,cy0,cx1,cy1); return true;
+        }
+        if (shape==='pixel') {
+            if(!occ.testQuad(items.cx,items.cy,i*4,pv,dx,dy))return false;
+            occ.markQuad(items.cx,items.cy,i*4,dx,dy); return true;
+        }
+        const o=items.segOff[i], n=items.segN[i];
+        if (shape==='cPixel') {
+            for(let s=0;s<n;s++) if(!occ.testQuad(items.sqx,items.sqy,(o+s)*4,pv,dx,dy))return false;
+            for(let s=0;s<n;s++) occ.markQuad(items.sqx,items.sqy,(o+s)*4,dx,dy);
+            return true;
+        }
+        if (shape==='circle') {
+            for(let s=0;s<n;s++) if(!occ.testCircle(items.sgx[o+s]+dx,items.sgy[o+s]+dy,items.sgr[o+s],pv))return false;
+            for(let s=0;s<n;s++) occ.markCircle(items.sgx[o+s]+dx,items.sgy[o+s]+dy,items.sgr[o+s]);
+            return true;
+        }
+        // chain of segment rectangles. A segment that falls entirely outside the
+        // viewport is skipped, not treated as a failure — the rest still places.
+        for(let s=0;s<n;s++){
+            const a=Math.max(0,(items.sx0[o+s]+dx)|0), b=Math.min(VW-1,(items.sx1[o+s]+dx)|0);
+            const c=Math.max(0,(items.sy0[o+s]+dy)|0), d=Math.min(VH-1,(items.sy1[o+s]+dy)|0);
+            if(a>b||c>d)continue;
+            if(!occ.testRect(a,c,b,d,pv))return false;
+        }
+        for(let s=0;s<n;s++){
+            const a=Math.max(0,(items.sx0[o+s]+dx)|0), b=Math.min(VW-1,(items.sx1[o+s]+dx)|0);
+            const c=Math.max(0,(items.sy0[o+s]+dy)|0), d=Math.min(VH-1,(items.sy1[o+s]+dy)|0);
+            if(a>b||c>d)continue;
+            occ.markRect(a,c,b,d);
+        }
+        return true;
+    }
+
+    return {
+        prev, lastDecision:lastDec,
+        place(items) {
+            occ.clear(); lastDec.fill(0);
+            const nOrder = ordering.run(items, key, order, prev);
+            let rendered=0;
+            for (let s=0;s<nOrder;s++) {
+                const i=order[s], id=items.idx[i], pv=prev[id];
+                const w=items.x1[i]-items.x0[i], h=items.y1[i]-items.y0[i];
+                let placed=false;
+                for (let k=0;k<K && !placed;k++){
+                    const dx=K===1?0:(PAL_POS[k][0]*w)|0, dy=K===1?0:(PAL_POS[k][1]*h)|0;
+                    if (tryAt(items,i,pv,dx,dy)){ placed=true; if(dx||dy) shiftLabel(items,i,dx,dy); }
+                }
+                if (placed){ rendered++; lastDec[id]=1; }
+                prev[id]=placed?1:0;
+            }
+            return rendered;
+        }
+    };
+}
+
+// full-res overlap count in the given collision model. AABB grid is the
+// broadphase (every model's primitives sit inside the label AABB).
+function overlapCount(items, lastDec, model) {
+    const cell=32, gw=Math.ceil(VW/cell), gh=Math.ceil(VH/cell), grid=new Map();
+    const boxes=[]; for(let i=0;i<items.n;i++) if(lastDec[items.idx[i]]===1) boxes.push(i);
+    const cells=(i,fn)=>{let a=(items.x0[i]/cell)|0,b=(items.x1[i]/cell)|0,c=(items.y0[i]/cell)|0,d=(items.y1[i]/cell)|0;if(b>=gw)b=gw-1;if(d>=gh)d=gh-1;for(let y=c;y<=d;y++)for(let x=a;x<=b;x++)fn(y*gw+x);};
+    for(const i of boxes)cells(i,c=>{let a=grid.get(c);if(!a){a=[];grid.set(c,a);}a.push(i);});
+    const narrow=overlapFn(model);
+    let ov=0, cleanW=0;
+    for(const i of boxes){let hit=false;cells(i,c=>{if(hit)return;for(const j of grid.get(c)){if(j===i)continue;if(narrow(items,i,j)){hit=true;return;}}});if(hit)ov++;else cleanW+=items.weight[i];}
+    return { overlaps:ov, cleanWeight:cleanW, placed:boxes.length };
+}
+
+// measure one config over the camera path → metrics. `ceilings` = Map(modelKey → {w,ok})
+function measureConfig(cfg, dataset, cam, items, cfgObj, frames, ceilings) {
+    const mk = modelKey(cfg);
+    const ce = ceilings.get(ceilKey(cfg)) || { w:0, ok:false };
+    const v = makeVariant(cfg, cfgObj.labelCap);
+    const world = cfgObj.world;
+    let samples=[], flips=0, flipFrames=0;
+    const cap=cfgObj.labelCap;
+    const prevDec = new Uint8Array(cap), prevCand=new Uint8Array(cap), curCand=new Uint8Array(cap);
+    // ── hysteresis instrumentation ──
+    // run[]  = how many consecutive frames this label has been continuously visible
+    // on/off = flips counted separately: a label vanishing is far more noticeable
+    //          than one appearing, so they are not the same defect
+    const run=new Int32Array(cap); let dwellSum=0, dwellN=0, onFlips=0, offFlips=0, visSum=0;
+    // one warm pass
+    for (let f=0;f<frames;f++){ setCameraForFrame(cam,f,frames,world); prepareFrame(cam,dataset,cfgObj.cfg,items); v.place(items); }
+    prevCand.fill(0);
+    for (let f=0;f<frames;f++){
+        setCameraForFrame(cam,f,frames,world); prepareFrame(cam,dataset,cfgObj.cfg,items);
+        const t0=performance.now(); v.place(items); samples.push(performance.now()-t0);
+        curCand.fill(0); for(let i=0;i<items.n;i++)curCand[items.idx[i]]=1;
+        let vis=0;
+        for(let i=0;i<items.n;i++){
+            const id=items.idx[i], now=v.lastDecision[id];
+            if(now)vis++;
+            if(f>0&&prevCand[id]){
+                if(now&&!prevDec[id])onFlips++;
+                else if(!now&&prevDec[id]){ offFlips++; if(run[id]>0){dwellSum+=run[id];dwellN++;} }
+            }
+            run[id] = now ? run[id]+1 : 0;
+        }
+        visSum+=vis;
+        if(f>0){ flips+=onFlips+offFlips-(flips?0:0); flipFrames++; }
+        prevDec.set(v.lastDecision); prevCand.set(curCand);
+    }
+    flips=onFlips+offFlips;
+    samples.sort((a,b)=>a-b);
+    const mean=samples.reduce((a,b)=>a+b,0)/samples.length;
+    // quality on reference frame, COLD (no hysteresis carry-over)
+    setCameraForFrame(cam,frames-1,frames,world); prepareFrame(cam,dataset,cfgObj.cfg,items);
+    v.prev.fill(0); v.place(items);
+    const q = overlapCount(items, v.lastDecision, INK_MODEL);
+    // Collider waste on the reference frame. Only labels FULLY on screen count:
+    // an edge label's collider is clipped to the viewport while its ink is not,
+    // which would report a collider smaller than the label it covers.
+    let colA=0, trueA=0, colC=0, trueC=0;
+    let prims=0, primsN=0, primsC=0, primsCN=0, cells=0;
+    const dsq = RASTER.has(cfg.occupancy) ? cfg.downscale*cfg.downscale : 1;
+    for(let i=0;i<items.n;i++){
+        if(v.lastDecision[items.idx[i]]!==1)continue;
+        if(items.x0[i]<=0||items.y0[i]<=0||items.x1[i]>=VW-1||items.y1[i]>=VH-1)continue;
+        const ca=colliderArea(items,i,cfg), ta=trueArea(items,i), np=primCount(items,i,cfg);
+        colA+=ca; trueA+=ta;
+        prims+=np; primsN++;
+        cells+=ca/dsq;                       // grid cells the collider occupies
+        if(items.curved[i]){ colC+=ca; trueC+=ta; primsC+=np; primsCN++; }
+    }
+    const avgVisible = visSum/frames;
+    return {
+        cfg, model:mk, mean, p95:samples[(samples.length*0.95)|0],
+        placed:q.placed, overlaps:q.overlaps, ceilOk:ce.ok,
+        cleanPct: ce.w>0 ? q.cleanWeight/ce.w*100 : 0,
+        flicker: flipFrames>0 ? flips/flipFrames : 0,
+        // hysteresis: churn normalised by how many labels are on screen, so
+        // configs that simply show fewer labels don't look artificially stable
+        churn: (flipFrames>0&&avgVisible>0) ? (flips/flipFrames)/avgVisible*100 : 0,
+        vanish: flipFrames>0 ? offFlips/flipFrames : 0,
+        appear: flipFrames>0 ? onFlips/flipFrames : 0,
+        dwell: dwellN>0 ? dwellSum/dwellN : frames,
+        avgVisible,
+        waste: trueA>0 ? colA/trueA : 1,
+        wasteCurved: trueC>0 ? colC/trueC : 1,
+        prims: primsN>0 ? prims/primsN : 1,
+        primsCurved: primsCN>0 ? primsC/primsCN : 1,
+        cells: primsN>0 ? cells/primsN : 0,
+        cleanWeight: q.cleanWeight,
+    };
+}
+
+// least-squares slope, used for both scaling fits
+function fitSlope(xs,ys){
+    const n=xs.length; if(n<2)return 0;
+    const mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+    let sxy=0,sxx=0; for(let i=0;i<n;i++){ sxy+=(xs[i]-mx)*(ys[i]-my); sxx+=(xs[i]-mx)**2; }
+    return sxx?sxy/sxx:0;
+}
+// Re-run one config on a different-sized scene. Timing plus cold quality only —
+// everything else (hysteresis, waste) is reported at the primary size.
+function probeConfig(cfg, c, frames){
+    const v=makeVariant(cfg, c.cfgObj.labelCap), W=c.cfgObj.world;
+    for(let f=0;f<3;f++){ setCameraForFrame(c.cam,f,frames,W); prepareFrame(c.cam,c.dataset,c.cfgObj.cfg,c.items); v.place(c.items); }
+    const t=[];
+    for(let f=0;f<frames;f++){
+        setCameraForFrame(c.cam,f,frames,W); prepareFrame(c.cam,c.dataset,c.cfgObj.cfg,c.items);
+        const t0=performance.now(); v.place(c.items); t.push(performance.now()-t0);
+    }
+    setCameraForFrame(c.cam,frames-1,frames,W); prepareFrame(c.cam,c.dataset,c.cfgObj.cfg,c.items);
+    v.prev.fill(0); v.place(c.items);
+    const q=overlapCount(c.items, v.lastDecision, INK_MODEL);
+    const ce=c.ceilings.get(ceilKey(cfg))||{w:0};
+    return { ms:t.reduce((a,b)=>a+b,0)/t.length, pct: ce.w>0 ? q.cleanWeight/ce.w*100 : 0, placed:q.placed };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONFIG ENUMERATION (only valid, non-redundant combinations)
+// ═════════════════════════════════════════════════════════════════════════════
+function enumerateConfigs(single) {
+    const pick = (axisSet, values) => single ? [values.find(v=>axisSet.has(v.id))?.id ?? values[0].id] : values.filter(v=>axisSet.has(v.id)).map(v=>v.id);
+    const pickP = (name) => { const arr=[...selP[name]]; return arr.length? (single?[arr[0]]:arr) : [PARAM_VALUES[name][0]]; };
+    const orderings=pick(sel.ordering,AXES.ordering), occs=pick(sel.occupancy,AXES.occupancy);
+    const places=pick(sel.placement,AXES.placement);
+    const sShapes=pick(sel.straightShape,AXES.straightShape), cShapes=pick(sel.curvedShape,AXES.curvedShape);
+    const out=[];
+    for (const ordering of orderings) for (const occupancy of occs) for (const placement of places) {
+        const isRaster=RASTER.has(occupancy);
+        const sV = sShapes.filter(s=>isRaster || !SHAPE_NEEDS_RASTER.has(s));
+        const cV = cShapes.filter(s=>isRaster || !SHAPE_NEEDS_RASTER.has(s));
+        if (!sV.length || !cV.length) continue;       // e.g. exact shapes on a grid
+        const dsVals    = isRaster ? pickP('downscale') : [1];
+        const bkVals    = ordering==='bucket' ? pickP('buckets') : [32];
+        const gcVals    = occupancy==='grid' ? pickP('gridCell') : [32];
+        const plVals    = occupancy==='pyramid' ? pickP('pyrLevels') : [4];
+        const ocVals    = occupancy==='bitmap' ? pickP('occlusionTol') : [0];
+        const kVals     = placement==='pal' ? pickP('palK') : [4];
+        for (const straightShape of sV) for (const curvedShape of cV)
+        for (const downscale of dsVals) for (const buckets of bkVals)
+        for (const gridCell of gcVals) for (const pyrLevels of plVals) for (const occlusionTol of ocVals) for (const palK of kVals)
+            out.push({ ordering, occupancy, placement, straightShape, curvedShape, downscale, buckets, gridCell, pyrLevels, occlusionTol, palK });
+    }
+    const seen=new Set(), uniq=[];
+    for (const c of out){ const key=configKey(c); if(!seen.has(key)){seen.add(key);uniq.push(c);} }
+    return uniq;
+}
+function configKey(c){
+    const raster=RASTER.has(c.occupancy);
+    return [c.ordering, c.occupancy, c.placement, modelKey(c),
+        raster?c.downscale:'-',
+        c.ordering==='bucket'?c.buckets:'-',
+        c.occupancy==='grid'?c.gridCell:'-',
+        c.occupancy==='pyramid'?c.pyrLevels:'-',
+        c.occupancy==='bitmap'?c.occlusionTol:'-',
+        c.placement==='pal'?c.palK:'-'].join('·');
+}
+function configLabel(c){
+    const raster=RASTER.has(c.occupancy);
+    const parts=[c.ordering,c.occupancy,`[${SHAPE_LABEL[c.straightShape]}｜${SHAPE_LABEL[c.curvedShape]}]`];
+    if(c.placement==='pal')parts.push('PAL'+c.palK);
+    const p=[];
+    if(c.ordering==='bucket')p.push('K='+c.buckets);
+    if(c.occupancy==='grid')p.push('cell='+c.gridCell);
+    if(c.occupancy==='pyramid')p.push('lvl='+c.pyrLevels);
+    if(c.occupancy==='bitmap')p.push('tol='+c.occlusionTol);
+    if(raster)p.push('ds='+c.downscale);
+    return { main:parts.join(' + '), params:p.join(' ') };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RUN
+// ═════════════════════════════════════════════════════════════════════════════
+const statusEl=document.getElementById('status'), outEl=document.getElementById('output');
+const status=m=>statusEl.innerHTML=m;
+let LAST=null;
+
+async function run(single) {
+    const cfgObj = readScene();
+    const configs = enumerateConfigs(single);
+    if (configs.length===0){ status('No valid combination — pixel-perfect shapes need a raster occupancy (bitmap / pyramid).'); return; }
+    exportSel.clear(); resetFilters();
+    { const bar=document.getElementById('resultbar'); if(bar){ bar.dataset.built=''; bar.innerHTML=''; } }
+    // Label count is a property of the SCENE, not of a configuration. Every
+    // config is ranked once, at the primary size; scaling is then measured as a
+    // METRIC of that config by re-running it at other sizes. (Sweeping N as an
+    // axis would duplicate every config per size and destroy the ranking.)
+    const primary = cfgObj.labels;
+    const sizes = cfgObj.scale
+        ? [...new Set([Math.max(200,Math.round(primary/4)), primary, Math.min(96000,primary*4)])].sort((a,b)=>a-b)
+        : [primary];
+    const ctx = new Map();
+    for (const N of sizes){
+        status(`Building scene — ${N.toLocaleString()} labels…`); await raf();
+        const dataset = buildDataset({ labels:N, world:cfgObj.world, rotate:cfgObj.rotate, curve:cfgObj.curve, curvedShare:cfgObj.curvedShare });
+        const cam = makeCamera();
+        const sceneCfg = { ...cfgObj.cfg, pxPerUnit: 0.5*VW*cam.projectionMatrix.elements[0] };
+        const items = makeItems(N), refItems = makeItems(N);
+        setCameraForFrame(cam, cfgObj.frames-1, cfgObj.frames, cfgObj.world);
+        prepareFrame(cam, dataset, sceneCfg, refItems);
+        // one true-ink ceiling per candidate set, per size — so "% of optimum"
+        // stays comparable across sizes instead of falling just because a denser
+        // scene cannot fit more labels on the same screen
+        const need=new Map();
+        for(const c of configs) if(!need.has(ceilKey(c))) need.set(ceilKey(c), c);
+        const ceilings=new Map(); let ci=0;
+        for (const [key,cfg] of need){
+            ci++; status(`Ceiling ${ci}/${need.size} @ ${N.toLocaleString()} labels…`); await raf();
+            const c=computeCeiling(refItems, INK_MODEL, cfg.placement==='pal'?cfg.palK:1);
+            ceilings.set(key, { w:c.ok?c.weight:0, ok:c.ok });
+        }
+        ctx.set(N, { dataset, cam, items, refItems, ceilings, cfgObj:{ ...cfgObj, cfg:sceneCfg, labels:N, labelCap:N } });
+    }
+
+    const P = ctx.get(primary), rows=[];
+    for (let i=0;i<configs.length;i++){
+        status(`Measuring ${i+1}/${configs.length}: <span class="dim">${configLabel(configs[i]).main} ${configLabel(configs[i]).params}</span>`);
+        if (i%2===0) await raf();
+        rows.push(measureConfig(configs[i], P.dataset, P.cam, P.items, P.cfgObj, cfgObj.frames, P.ceilings));
+    }
+    // scaling as a per-config metric
+    if (sizes.length>1){
+        const pf=Math.min(cfgObj.frames,12);
+        for (let i=0;i<rows.length;i++){
+            status(`Scaling ${i+1}/${rows.length}: <span class="dim">${configLabel(rows[i].cfg).main}</span>`);
+            if (i%2===0) await raf();
+            const r=rows[i], samples=[];
+            for (const N of sizes){
+                samples.push(N===primary
+                    ? { N, ms:r.mean, pct:r.cleanPct, placed:r.placed }
+                    : { N, ...probeConfig(r.cfg, ctx.get(N), pf) });
+            }
+            r.samples=samples;
+            const lx=samples.map(s=>Math.log(s.N)), ly=samples.map(s=>Math.log(Math.max(s.ms,1e-4)));
+            r.scaleExp=fitSlope(lx,ly);
+            // quality drift per doubling of N — does this config lose ground as it densifies?
+            r.qDrift=fitSlope(samples.map(s=>Math.log2(s.N)), samples.map(s=>s.pct));
+        }
+    }
+    const models=[...new Set(configs.map(modelKey))];
+    LAST = { rows, ctx, cfgObj, sizes, primary };
+    activeModel = null; selectedRow = 0;
+    status(`Done — ${configs.length} config${configs.length>1?'s':''} at ${primary.toLocaleString()} labels`
+        + (sizes.length>1 ? ` · scaling probed at ${sizes.map(n=>n.toLocaleString()).join(' / ')}` : ''));
+    render();
+}
+
+function readScene(){
+    const cfg={ ...DefaultLabelConfig, pxPerUnit:1024, fontSizePriorityPower:1, baseFontSize:24, ndcCullMargin:0.2 };
+    return { labels:+document.getElementById('s-labels').value,
+             world:+document.getElementById('s-world').value, frames:+document.getElementById('s-frames').value,
+             rotate:document.getElementById('s-rotate').checked,
+             scale:document.getElementById('s-scale').checked,
+             curve:+document.getElementById('s-curve').value/100,
+             curvedShare:+document.getElementById('s-share').value/100, cfg };
+}
+function raf(){ return new Promise(r=>requestAnimationFrame(()=>r())); }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RENDER RESULTS — tabbed per collision model (they are not comparable raw)
+// ═════════════════════════════════════════════════════════════════════════════
+let sortKey='cleanPct', sortDir=-1, selectedRow=0, activeModel=null;
+function render(){
+    if(!LAST) return;
+    const all=LAST.rows;
+    const models=[...new Set(all.map(r=>r.model))];
+    if (activeModel===null || (activeModel!=='__all' && !models.includes(activeModel)))
+        activeModel = models.length>1 ? '__all' : models[0];
+    let rows = activeModel==='__all' ? all : all.filter(r=>r.model===activeModel);
+    LAST.viewTotal = rows.length;                 // before filtering, for the "N of M" count
+    rows = rows.filter(passesFilters);
+    if (selectedRow>=rows.length) selectedRow=0;
+    LAST.view=rows;
+    ensureResultBar();
+
+    const html=[];
+    if (models.length>1) html.push(renderModelCompare(all, models));
+    if (models.length>1){
+        html.push('<div class="tabs">'+
+            `<div class="tab ${activeModel==='__all'?'on':''}" data-m="__all">All configurations<span class="n">${all.length}</span></div>`+
+            models.map(m=>
+            `<div class="tab ${m===activeModel?'on':''}" data-m="${m}">${modelLabel(m)}<span class="n">${all.filter(r=>r.model===m).length}</span></div>`
+        ).join('')+'</div>');
+    }
+    html.push(`<div class="modelnote">${activeModel==='__all'
+        ? 'Every configuration on one scale. <b>% optimal</b> is measured against a single universal ceiling — the best placement achievable on the labels\' <b>true ink</b> — so pure and hybrid approximations rank directly against each other.'
+        : `<b>${modelLabel(activeModel)}</b> — straight labels approximated by <b>${SHAPE_LABEL[activeModel.split('/')[0]]}</b>, curved ones by <b>${SHAPE_LABEL[activeModel.split('/')[1]]}</b>.`}</div>`);
+
+    const singleRun = all.length===1;
+    if (singleRun){
+        html.push(renderSingle(rows[0]));
+    } else {
+        html.push(renderSweepTable(rows));
+        if (rows.length){
+            html.push('<div class="grid2" style="margin-top:22px">');
+            html.push('<div class="card"><h3>Speed ↔ Quality Pareto</h3><canvas id="pareto" width="560" height="340"></canvas><div class="legend"><span class="swatch" style="background:var(--green)"></span>Pareto-optimal (nothing is both faster & better) · <b>click any point to select that config</b></div></div>');
+            html.push('<div class="card"><h3>Preview — selected config</h3><canvas id="prev" width="560" height="350"></canvas><div class="legend"><span class="swatch" style="background:#56d193"></span>placed &nbsp;<span class="swatch" style="background:#f0964a"></span>overlapping &nbsp;<span class="swatch" style="background:#33405c"></span>culled</div></div>');
+            html.push('</div>');
+            html.push('<h2>Per-axis main effects — which axis moves the needle</h2>');
+            html.push('<div id="maineffects"></div>');
+            html.push('<h2>Hysteresis &amp; temporal stability</h2>');
+            html.push('<div id="hyst"></div>');
+            html.push('<h2>Numeric-parameter correlation (Pearson r vs metric)</h2>');
+            html.push('<div id="corr"></div>');
+            html.push('<h2>Scaling with label count</h2>');
+            html.push('<div id="scaling"></div>');
+        } else {
+            html.push('<div class="hint" style="margin-top:14px">No configuration matches the current filters. Loosen them in the bar above.</div>');
+        }
+    }
+    outEl.innerHTML = html.join('');
+    outEl.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ activeModel=t.dataset.m; selectedRow=0; render(); });
+    if (singleRun){ drawPreview('prev1', rows[0].cfg); }
+    else if (rows.length){
+        // wire the table FIRST, and isolate each analysis panel: one panel
+        // throwing must never take the rest of the page (or sorting) with it
+        wireTable();
+        for (const [name,fn] of [['pareto',drawPareto],['preview',()=>drawPreview('prev',rows[selectedRow].cfg)],
+                                 ['main effects',renderMainEffects],['hysteresis',renderHysteresis],
+                                 ['correlation',renderCorrelation],['scaling',renderScaling]]){
+            try { fn(); } catch(e){ console.error('panel failed:',name,e); }
+        }
+    } else { wireTable(); }
+}
+
+function fmtMs(v){ return v<1 ? v.toFixed(3) : v.toFixed(2); }
+
+function renderSingle(r){
+    const l=configLabel(r.cfg);
+    return `<h2>Single configuration</h2>
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:15px;font-weight:600;color:#eaf0ff">${l.main}</div>
+      <div class="dim" style="margin:2px 0 12px">${l.params||'—'}</div>
+      <table><tr><th>mean ms</th><th>p95 ms</th><th>placed</th><th>overlaps</th><th>% of optimal</th><th>flicker/frame</th></tr>
+      <tr><td class="best">${fmtMs(r.mean)}</td><td>${fmtMs(r.p95)}</td><td>${r.placed}</td><td class="${r.overlaps?'bad':'best'}">${r.overlaps}</td><td>${r.ceilOk?r.cleanPct.toFixed(1)+'%':'—'}</td><td>${r.flicker.toFixed(1)}</td></tr></table>
+    </div>
+    <div class="card"><h3>Preview</h3><canvas id="prev1" width="720" height="450"></canvas>
+      <div class="legend"><span class="swatch" style="background:#56d193"></span>placed &nbsp;<span class="swatch" style="background:#f0964a"></span>overlapping &nbsp;<span class="swatch" style="background:#33405c"></span>culled</div></div>`;
+}
+
+// undefined / NaN metrics (e.g. scaleExp when scaling is off) always sort last
+// instead of poisoning the comparison and leaving the order untouched
+function cmpBy(key,dir){
+    return (a,b)=>{
+        const x=a[key], y=b[key];
+        const bx=(x===undefined||x===null||Number.isNaN(x)), by=(y===undefined||y===null||Number.isNaN(y));
+        if(bx&&by)return 0; if(bx)return 1; if(by)return -1;
+        return (x-y)*dir;
+    };
+}
+function renderSweepTable(rows){
+    const nShown=rows.length, nTotal=LAST.viewTotal||nShown;
+    const countTxt = nShown===nTotal ? `${nTotal} configs` : `${nShown} of ${nTotal} configs (filtered)`;
+    if (!nShown){
+        return `<h2>Sweep results — <span class="dim">${countTxt}</span></h2>`;
+    }
+    const sorted=[...rows].sort(cmpBy(sortKey,sortDir));
+    const bestQ=Math.max(...rows.map(r=>r.cleanPct)), bestMs=Math.min(...rows.map(r=>r.mean));
+    const col=(k,txt)=>`<th data-k="${k}">${txt}${sortKey===k?(sortDir<0?' ▾':' ▴'):''}</th>`;
+    const allSel = rows.every(r=>exportSel.has(configKey(r.cfg)));
+    const body=sorted.map(r=>{
+        const l=configLabel(r.cfg); const gi=rows.indexOf(r); const key=configKey(r.cfg);
+        return `<tr data-i="${gi}" class="${gi===selectedRow?'sel':''}">
+          <td class="expcell"><input type="checkbox" class="exp" data-key="${key}" ${exportSel.has(key)?'checked':''}></td>
+          <td><span class="dim">#${gi}</span> ${l.main} <span class="dim">${l.params}</span></td>
+          <td class="${r.mean===bestMs?'best':''}">${fmtMs(r.mean)}</td>
+          <td>${r.placed}</td>
+          <td class="${r.overlaps?'bad':'best'}">${r.overlaps}</td>
+          <td class="${r.ceilOk&&r.cleanPct>=bestQ-0.05?'best':''}">${r.ceilOk?r.cleanPct.toFixed(1):'—'}</td>
+          <td class="${r.churn<=Math.min(...rows.map(x=>x.churn))+0.05?'best':''}">${r.churn.toFixed(1)}%</td>
+          <td class="${r.scaleExp===undefined?'dim':r.scaleExp>1.6?'bad':r.scaleExp<1.15?'best':''}">${r.scaleExp===undefined?'—':'N^'+r.scaleExp.toFixed(2)}</td>
+        </tr>`;
+    }).join('');
+    return `<h2>Sweep results — <span class="dim">${countTxt} · click a header to sort, a row to preview, a checkbox to add to the export</span></h2>
+      <table id="sweepT"><thead><tr><th class="expcell"><input type="checkbox" id="expAll" ${allSel?'checked':''} title="select/clear all shown"></th><th data-k="_">Configuration</th>${col('mean','mean ms')}${col('placed','placed')}${col('overlaps','overlaps')}${col('cleanPct','% optimal')}${col('churn','churn %')}${col('scaleExp','scales as')}</tr></thead><tbody>${body}</tbody></table>`;
+}
+// One delegated handler on the results container. Attaching listeners to each
+// <th> meant that if ANY panel rendered after the table threw, wiring never ran
+// and the headers silently stopped sorting. Delegation survives that, and
+// survives any panel re-rendering its own subtree.
+function wireTable(){
+    outEl.onclick = (ev)=>{
+        const t = ev.target;
+        // export "select all shown" — toggle every currently visible row
+        if (t && t.id==='expAll'){
+            const keys=(LAST.view||[]).map(r=>configKey(r.cfg));
+            const allSel = keys.every(k=>exportSel.has(k));
+            keys.forEach(k=> allSel ? exportSel.delete(k) : exportSel.add(k));
+            render(); return;
+        }
+        // per-row export checkbox — toggle without a full re-render (keeps scroll)
+        if (t && t.classList && t.classList.contains('exp')){
+            const k=t.dataset.key;
+            if (t.checked) exportSel.add(k); else exportSel.delete(k);
+            updateExportCount(); return;
+        }
+        const th = t.closest && t.closest('#sweepT th[data-k]');
+        if (th){
+            const k=th.dataset.k; if(k==='_')return;
+            if(sortKey===k) sortDir*=-1;
+            // churn & ms sort ascending (lower is better); quality/placed/dwell descending
+            else { sortKey=k; sortDir=(k==='cleanPct'||k==='placed'||k==='dwell')?-1:1; }
+            render(); return;
+        }
+        const tr = t.closest && t.closest('tr[data-i]');
+        if (tr){ selectedRow=+tr.dataset.i; render(); }
+    };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FILTERING + EXPORT
+// ═════════════════════════════════════════════════════════════════════════════
+const exportSel = new Set();                       // configKeys chosen for export
+const filters = { minPct:0, maxMs:Infinity, maxOv:Infinity, maxChurn:Infinity };
+function resetFilters(){ filters.minPct=0; filters.maxMs=Infinity; filters.maxOv=Infinity; filters.maxChurn=Infinity; }
+function passesFilters(r){
+    const pct = r.ceilOk ? r.cleanPct : 0;
+    return pct>=filters.minPct && r.mean<=filters.maxMs && r.overlaps<=filters.maxOv && r.churn<=filters.maxChurn;
+}
+// The bar lives OUTSIDE #output so typing in a filter never loses focus on
+// re-render. Built once per run; only its counts refresh afterwards.
+function ensureResultBar(){
+    const bar=document.getElementById('resultbar'); if(!bar) return;
+    if (!LAST || LAST.rows.length<2){ bar.className=''; bar.innerHTML=''; return; }
+    bar.className='on';
+    if (bar.dataset.built==='1') { updateExportCount(); return; }
+    const num=(id,ph,val)=>`<input type="number" id="${id}" placeholder="${ph}" ${val!==undefined?`value="${val}"`:''} step="any">`;
+    bar.innerHTML =
+        `<div class="rb-row">
+           <span class="rb-f"><b style="color:var(--dim)">FILTER</b></span>
+           <span class="rb-f">% optimal ≥ ${num('f-pct','0')}</span>
+           <span class="rb-f">mean ms ≤ ${num('f-ms','∞')}</span>
+           <span class="rb-f">overlaps ≤ ${num('f-ov','∞')}</span>
+           <span class="rb-f">churn % ≤ ${num('f-churn','∞')}</span>
+           <button class="ghost rb-btn" id="f-clear">clear</button>
+           <span class="rb-sep"></span>
+           <button class="ghost rb-btn" id="exp-all2">select all shown</button>
+           <button class="ghost rb-btn" id="exp-none">clear selection</button>
+           <button class="rb-btn" id="exp-open">Open printable report</button>
+           <button class="ghost rb-btn" id="exp-dl">Download .html</button>
+           <span class="rb-count" id="exp-count"></span>
+         </div>`;
+    const setF=(id,key,dflt)=>{ const el=document.getElementById(id); el.oninput=()=>{
+        const v=el.value.trim(); filters[key]=(v===''?dflt:Number(v)); if(Number.isNaN(filters[key])) filters[key]=dflt; render();
+        document.getElementById(id).focus();   // keep focus after render
+    };};
+    setF('f-pct','minPct',0); setF('f-ms','maxMs',Infinity); setF('f-ov','maxOv',Infinity); setF('f-churn','maxChurn',Infinity);
+    document.getElementById('f-clear').onclick=()=>{ resetFilters(); for(const id of ['f-pct','f-ms','f-ov','f-churn']) document.getElementById(id).value=''; render(); };
+    document.getElementById('exp-all2').onclick=()=>{ (LAST.view||[]).forEach(r=>exportSel.add(configKey(r.cfg))); render(); };
+    document.getElementById('exp-none').onclick=()=>{ exportSel.clear(); render(); };
+    document.getElementById('exp-open').onclick=()=>exportReport(false);
+    document.getElementById('exp-dl').onclick=()=>exportReport(true);
+    bar.dataset.built='1';
+    updateExportCount();
+}
+function updateExportCount(){
+    const el=document.getElementById('exp-count'); if(el) el.textContent = exportSel.size ? `${exportSel.size} selected for export` : 'nothing selected';
+    const allBox=document.getElementById('expAll');
+    if(allBox && LAST.view){ allBox.checked = LAST.view.length>0 && LAST.view.every(r=>exportSel.has(configKey(r.cfg))); }
+}
+
+// ── Build a self-contained, print-friendly HTML report of the selected configs ─
+function exportReport(download){
+    if(!LAST){ return; }
+    const rows = LAST.rows.filter(r=>exportSel.has(configKey(r.cfg)));
+    if(!rows.length){ alert('Select at least one configuration first (checkboxes in the sweep table, or “select all shown”).'); return; }
+    rows.sort((a,b)=> (b.cleanPct||0)-(a.cleanPct||0));
+    // render each preview offscreen → PNG data URL
+    const imgs = rows.map(r=>{ const cv=document.createElement('canvas'); cv.width=680; cv.height=Math.round(680*VH/VW);
+        try { renderPreview(cv,r.cfg); } catch(e){} return cv.toDataURL('image/png'); });
+    const htmlDoc = buildReportHTML(rows, imgs, LAST.cfgObj);
+    if (download){
+        const blob=new Blob([htmlDoc],{type:'text/html'});
+        const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+        a.download=`collision-report-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.html`;
+        a.click(); URL.revokeObjectURL(a.href);
+    } else {
+        const w=window.open('','_blank');
+        if(!w){ alert('Popup blocked — use “Download .html” instead.'); return; }
+        w.document.write(htmlDoc); w.document.close();
+    }
+}
+function buildReportHTML(rows, imgs, cfgObj){
+    const esc=x=>String(x).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    const g=(v,d=1)=>v===undefined||v===null||Number.isNaN(v)?'—':(+v).toFixed(d);
+    const settings = [
+        ['labels (primary)', (cfgObj.labels||0).toLocaleString()],
+        ['scaling sizes', LAST.sizes && LAST.sizes.length>1 ? LAST.sizes.map(n=>n.toLocaleString()).join(', ') : 'single size'],
+        ['world extent', cfgObj.world],
+        ['frames / path', cfgObj.frames],
+        ['rotate labels', cfgObj.rotate?'yes':'no'],
+        ['curved share', Math.round((cfgObj.curvedShare||0)*100)+'%'],
+        ['curvature', g(cfgObj.curve,2)],
+        ['viewport', VW+'×'+VH],
+    ];
+    const metricRows = r=>{
+        const l=configLabel(r.cfg);
+        return [
+            ['mean ms', g(r.mean,3)], ['p95 ms', g(r.p95,3)],
+            ['% of ink optimum', r.ceilOk?g(r.cleanPct)+'%':'—'],
+            ['placed', r.placed], ['true-ink overlaps', r.overlaps],
+            ['flicker / frame', g(r.flicker)], ['churn %', g(r.churn)],
+            ['vanish · appear /f', g(r.vanish)+' · '+g(r.appear)],
+            ['dwell (frames)', g(r.dwell)],
+            ['collider / ink', g(r.waste,2)+'×'],
+            ['prims / road', g(r.primsCurved,1)], ['grid cells / label', g(r.cells,0)],
+            ['scales as', r.scaleExp===undefined?'—':'N^'+g(r.scaleExp,2)],
+            ['quality drift /2×N', r.qDrift===undefined?'—':g(r.qDrift)],
+        ];
+    };
+    const summaryHead = '<tr><th>#</th><th>configuration</th><th>mean ms</th><th>% opt</th><th>placed</th><th>overlaps</th><th>flicker</th><th>collider/ink</th><th>scales</th></tr>';
+    const summaryBody = rows.map((r,i)=>{ const l=configLabel(r.cfg);
+        return `<tr><td>${i+1}</td><td>${esc(l.main)} <span class="d">${esc(l.params)}</span></td>
+          <td>${g(r.mean,3)}</td><td>${r.ceilOk?g(r.cleanPct)+'%':'—'}</td><td>${r.placed}</td>
+          <td class="${r.overlaps?'bad':''}">${r.overlaps}</td><td>${g(r.flicker)}</td><td>${g(r.waste,2)}×</td>
+          <td>${r.scaleExp===undefined?'—':'N^'+g(r.scaleExp,2)}</td></tr>`;}).join('');
+    const cards = rows.map((r,i)=>{ const l=configLabel(r.cfg);
+        const mtable = metricRows(r).map(([k,v])=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join('');
+        return `<section class="card">
+            <h3>#${i+1} · ${esc(l.main)}</h3>
+            <div class="params">${esc(l.params)||'—'}</div>
+            <div class="cardgrid">
+              <img src="${imgs[i]}" alt="placement preview">
+              <table class="metrics">${mtable}</table>
+            </div>
+            <div class="cap">green = placed · orange = overlapping · faint = culled · dark outline = the label's true ink drawn over its collider</div>
+        </section>`;}).join('');
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Collision Configurator — Report</title>
+    <style>
+      *{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a2233;background:#f4f6fb;margin:0;padding:32px;line-height:1.5}
+      h1{font-size:22px;margin:0 0 4px} .sub{color:#667;margin:0 0 20px;font-size:13px}
+      .toolbar{position:sticky;top:0;background:#f4f6fb;padding:8px 0 14px;margin-bottom:8px}
+      button{font:inherit;padding:8px 16px;border:none;border-radius:6px;background:#2f6fd8;color:#fff;cursor:pointer}
+      h2{font-size:15px;margin:26px 0 10px;border-bottom:2px solid #dde3ee;padding-bottom:4px}
+      table{border-collapse:collapse;width:100%;font-size:12.5px} th,td{border:1px solid #e2e7f0;padding:5px 9px;text-align:left}
+      th{background:#eef2fa;font-weight:600} .d{color:#889} td.bad{color:#c0392b;font-weight:600}
+      .settings td.k,.metrics td.k{color:#667;width:52%} .metrics td.v{font-variant-numeric:tabular-nums;font-weight:600}
+      .card{background:#fff;border:1px solid #e2e7f0;border-radius:10px;padding:16px;margin:14px 0;break-inside:avoid;page-break-inside:avoid}
+      .card h3{margin:0 0 2px;font-size:14px} .params{color:#667;font-size:12px;margin-bottom:10px;font-family:ui-monospace,monospace}
+      .cardgrid{display:grid;grid-template-columns:1fr 260px;gap:16px;align-items:start}
+      .cardgrid img{width:100%;border:1px solid #cbd3e2;border-radius:6px;display:block}
+      .metrics{font-size:12px} .cap{color:#889;font-size:11px;margin-top:8px}
+      @media print{ body{background:#fff;padding:0} .toolbar{display:none} .card{border-color:#ccc} }
+      @media (max-width:640px){ .cardgrid{grid-template-columns:1fr} }
+    </style></head><body>
+    <div class="toolbar"><button onclick="window.print()">Save as PDF / Print</button></div>
+    <h1>Collision Configurator — Benchmark Report</h1>
+    <p class="sub">${rows.length} configuration${rows.length>1?'s':''} · generated ${esc(new Date().toLocaleString())}</p>
+    <h2>Benchmark settings</h2>
+    <table class="settings">${settings.map(([k,v])=>`<tr><td class="k">${k}</td><td>${esc(v)}</td></tr>`).join('')}</table>
+    <h2>Summary — all selected configurations</h2>
+    <table>${summaryHead}${summaryBody}</table>
+    <h2>Per-configuration detail</h2>
+    ${cards}
+    </body></html>`;
+}
+
+// ── Model comparison: how much screen area each collision model WASTES, and
+//    what that buys. This is the AABB-vs-the-rest view: an AABB around a rotated
+//    or curved label reserves several times the area its glyphs actually ink, and
+//    that reserved-but-empty space is exactly what blocks neighbouring labels.
+function renderModelCompare(all, models){
+    const best={};
+    for(const m of models){ const rs=all.filter(r=>r.model===m);
+        best[m]=rs.reduce((a,b)=>b.cleanPct>a.cleanPct?b:a, rs[0]); }
+    const ranked=[...models].sort((a,b)=>best[b].cleanPct-best[a].cleanPct);
+    const ref=best[ranked.find(m=>m==='aabb/cAabb')]||best[ranked[ranked.length-1]];
+    const maxW=Math.max(...ranked.map(m=>best[m].waste),1);
+    const rows=ranked.map((m,i)=>{ const r=best[m], p=m.split('/');
+        const gain=ref&&ref.placed>0 ? ((r.placed/ref.placed-1)*100) : 0;
+        return `<tr class="${i===0?'sel':''}">
+          <td>${i===0?'<b>▸</b> ':''}<b>${SHAPE_LABEL[p[0]]}</b> <span class="dim">for point labels ·</span> <b>${SHAPE_LABEL[p[1]]}</b> <span class="dim">for roads</span></td>
+          <td>${r.placed}</td>
+          <td class="${gain>0?'best':''}">${r===ref?'—':(gain>=0?'+':'')+gain.toFixed(0)+'%'}</td>
+          <td class="${i===0?'best':''}">${r.ceilOk?r.cleanPct.toFixed(1)+'%':'—'}</td>
+          <td><span class="bar" style="display:inline-block;vertical-align:middle;width:${(r.waste/maxW*80).toFixed(0)}px;background:${r.waste>2?'var(--red)':r.waste>1.4?'var(--orange)':'var(--green)'}"></span>
+              &nbsp;${r.waste.toFixed(2)}×</td>
+          <td>${r.wasteCurved.toFixed(2)}×</td>
+          <td>${r.primsCurved.toFixed(1)}</td>
+          <td>${Math.round(r.cells).toLocaleString()}</td>
+          <td>${fmtMs(r.mean)}</td>
+        </tr>`;}).join('');
+    return `<h2>Which approximation combination wins</h2>
+      <table><thead><tr><th>straight labels ｜ curved labels</th><th>placed</th><th>vs all-AABB</th>
+        <th>% of true-ink optimum</th><th>collider / ink</th><th>…on roads</th>
+        <th>prims / road</th><th>cells / label</th><th>mean ms</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="legend">Best configuration for each <b>combination</b> of approximations, ranked on one universal scale: the share of the
+        <b>true-ink optimum</b> it delivers. Because point labels and roads are approximated independently, mixed strategies appear here too —
+        boxes for points with a circle chain for roads is what MapLibre actually ships.
+        <b>collider / ink</b> is reserved area ÷ inked area (1.00× is a perfect fit; everything above is reserved but never drawn, which is
+        what blocks neighbours). The last two columns are the <i>cost</i> side of that fit:
+        <b>prims / road</b> is how many pieces a curved label is cut into (1 for a single box, one per segment for a chain — the chain buys
+        tightness by inserting and testing more pieces), and <b>cells / label</b> is how much of the occupancy grid the collider actually
+        writes at the current downscale. Note that a looser fit is not automatically cheaper in cells: one big box reserves more area than an
+        exact chain, so it touches <i>more</i> grid cells while using fewer primitives.</div>`;
+}
+
+// ── Scaling as a PER-CONFIG METRIC. Every configuration is ranked once, at the
+//    primary label count; here each one is re-run at ¼N and 4N so the growth of
+//    ms with N becomes a property of the config, comparable across the sweep.
+// Hysteresis / temporal stability is a first-class concern: a config that shows
+// one more label but strobes is worse than one showing one fewer and holding
+// still. The headline metric is CHURN — flips per frame as a share of labels on
+// screen — which (unlike a raw flip count) does not reward simply showing fewer
+// labels. Vanish is separated from appear because a label disappearing is far
+// more noticeable than one arriving.
+function renderHysteresis(){
+    const host=document.getElementById('hyst'); if(!host)return;
+    const rows=LAST.view||[];
+    if(!rows.length){ host.innerHTML='<div class="hint">No configuration to show.</div>'; return; }
+    const f=(v,d=1)=>v===undefined||v===null||Number.isNaN(v)?'—':(+v).toFixed(d);
+    const bestChurn=Math.min(...rows.map(r=>r.churn));
+    const sorted=[...rows].sort((a,b)=>a.churn-b.churn);       // most stable first
+    const tolOf=r=> (RASTER.has(r.cfg.occupancy)||['grid','rtree','brute'].includes(r.cfg.occupancy)) ? r.cfg.occlusionTol : '—';
+    const body=sorted.map(r=>{ const l=configLabel(r.cfg); const gi=rows.indexOf(r);
+        return `<tr data-i="${gi}" class="${gi===selectedRow?'sel':''}">
+          <td><span class="dim">#${gi}</span> ${l.main} <span class="dim">${l.params}</span></td>
+          <td>${tolOf(r)}</td>
+          <td>${f(r.avgVisible,0)}</td>
+          <td class="${r.churn<=bestChurn+0.05?'best':''}">${f(r.churn)}%</td>
+          <td class="${r.vanish>r.appear*1.5?'bad':''}">${f(r.vanish)}</td>
+          <td>${f(r.appear)}</td>
+          <td>${f(r.dwell)}</td>
+          <td>${r.ceilOk?f(r.cleanPct)+'%':'—'}</td>
+        </tr>`;}).join('');
+    host.innerHTML = `<table id="hystT"><thead><tr>
+        <th>configuration</th><th>occl. tol</th><th>on screen</th><th>churn %</th>
+        <th>vanish/f</th><th>appear/f</th><th>dwell</th><th>% optimal</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="legend">
+        <b>churn %</b> = flips per frame as a share of labels on screen — the normalised stability score (lower is better; it does <em>not</em>
+        reward showing fewer labels, which a raw flip count would). <b>vanish</b> is split from <b>appear</b> because a label disappearing is far
+        more jarring than one arriving; red flags a config that drops labels far more often than it adds them. <b>dwell</b> = mean frames a label
+        stays continuously visible. Raise <span class="kbd">occlusion tolerance</span> to trade a little placement quality for stability.</div>`;
+    host.querySelectorAll('#hystT tbody tr').forEach(tr=>tr.onclick=()=>{selectedRow=+tr.dataset.i;render();});
+}
+
+function renderScaling(){
+    const host=document.getElementById('scaling'); if(!host)return;
+    const rows=LAST.view, sizes=LAST.sizes;
+    if(!sizes||sizes.length<2||!rows.some(r=>r.samples)){
+        host.innerHTML='<div class="hint">Enable <b>Measure scaling</b> in the Scene panel and re-run to get a growth exponent for every configuration.</div>';
+        return;
+    }
+    const withS=rows.filter(r=>r.samples).slice().sort((a,b)=>a.scaleExp-b.scaleExp);
+    const head=sizes.map(n=>`<th>${n>=1000?(n/1000)+'k':n}</th>`).join('');
+    const body=withS.map(r=>{
+        const l=configLabel(r.cfg), e=r.scaleExp;
+        const cls=e>1.6?'bad':e<1.15?'best':'';
+        const gi=rows.indexOf(r);
+        return `<tr data-i="${gi}" class="${gi===selectedRow?'sel':''}">
+            <td><span class="dim">#${gi}</span> ${l.main} <span class="dim">${l.params}</span></td>
+            ${r.samples.map(x=>`<td>${fmtMs(x.ms)}</td>`).join('')}
+            <td class="${cls}">N<sup>${e.toFixed(2)}</sup></td>
+            <td class="${r.qDrift<-1?'bad':''}">${r.qDrift>=0?'+':''}${r.qDrift.toFixed(1)}</td>
+            <td class="dim">${r.samples.map(x=>x.placed).join(' / ')}</td>
+        </tr>`;}).join('');
+    host.innerHTML=`<table id="scaleT"><thead><tr><th>configuration — mean ms at N labels</th>${head}
+        <th>time growth</th><th>quality drift</th><th>placed</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="legend">
+        <b>time growth</b> is the fitted exponent of <b>ms ∝ N<sup>a</sup></b> across the sizes above: a≈1 is linear in the label count,
+        a≫1 degrades super-linearly and will fall over on dense data. <b>quality drift</b> is the change in % of optimum per <i>doubling</i>
+        of N — negative means that configuration loses ground as the scene densifies, which is the interaction a single-size run cannot reveal.
+        Both are properties of the configuration, so they sort and correlate alongside every other metric.
+        Watch <b>placed</b> flatten while N grows: once the screen is full the extra labels are pure cost, which is why the ordering step
+        (it touches every candidate) dominates at scale while the occupancy structure (it only touches labels that get tested) matters less.</div>`;
+    host.querySelectorAll('#scaleT tbody tr').forEach(tr=>tr.onclick=()=>{selectedRow=+tr.dataset.i;render();});
+}
+
+// Pareto: ms (x, log) vs %optimal (y). Points are clickable → selects the config.
+let PARETO_PTS=[];
+function drawPareto(){
+    const cv=document.getElementById('pareto'); if(!cv)return; const ctx=cv.getContext('2d');
+    const rows=LAST.view; ctx.clearRect(0,0,cv.width,cv.height);
+    const pad=40, W=cv.width-pad*2, H=cv.height-pad*2;
+    const msVals=rows.map(r=>Math.max(r.mean,0.001)); const minMs=Math.min(...msVals), maxMs=Math.max(...msVals);
+    const lminX=Math.log(minMs), lmaxX=Math.log(maxMs)||1;
+    const maxQ=Math.max(...rows.map(r=>r.cleanPct),1);
+    const X=r=>pad+(Math.log(Math.max(r.mean,0.001))-lminX)/((lmaxX-lminX)||1)*W;
+    const Y=r=>pad+H-(r.cleanPct/maxQ)*H;
+    ctx.strokeStyle='#252f47'; ctx.beginPath(); ctx.moveTo(pad,pad); ctx.lineTo(pad,pad+H); ctx.lineTo(pad+W,pad+H); ctx.stroke();
+    ctx.fillStyle='#5a6484'; ctx.font='10px Consolas';
+    ctx.fillText('% of optimal →', pad-30, pad-8);
+    ctx.fillText('mean ms (log) →', pad+W-90, pad+H+24);
+    const idx=rows.map((_,i)=>i).sort((a,b)=>rows[a].mean-rows[b].mean);
+    let bestQ=-1; const paretoSet=new Set();
+    for(const i of idx){ if(rows[i].cleanPct>bestQ+1e-9){paretoSet.add(i);bestQ=rows[i].cleanPct;} }
+    PARETO_PTS=rows.map((r,i)=>({x:X(r),y:Y(r),i}));
+    rows.forEach((r,i)=>{ const on=paretoSet.has(i), s=i===selectedRow;
+        ctx.fillStyle=on?'#56d193':'#3a4a6a'; ctx.beginPath(); ctx.arc(X(r),Y(r),s?6:on?4:3,0,7); ctx.fill();
+        if(s){ctx.strokeStyle='#4f9dff';ctx.lineWidth=2;ctx.stroke();ctx.lineWidth=1;} });
+    // number the Pareto-front points so they can be found in the table
+    ctx.fillStyle='#8fe3b8'; ctx.font='9px Consolas';
+    for(const i of paretoSet) ctx.fillText('#'+i, X(rows[i])+6, Y(rows[i])-5);
+    const pl=[...paretoSet].sort((a,b)=>rows[a].mean-rows[b].mean);
+    ctx.strokeStyle='rgba(86,209,147,0.5)'; ctx.beginPath();
+    pl.forEach((i,k)=>{const r=rows[i];k?ctx.lineTo(X(r),Y(r)):ctx.moveTo(X(r),Y(r));}); ctx.stroke();
+    // click → nearest point within 14px
+    cv.onclick=(ev)=>{
+        const b=cv.getBoundingClientRect();
+        const mx=(ev.clientX-b.left)*(cv.width/b.width), my=(ev.clientY-b.top)*(cv.height/b.height);
+        let bi=-1, bd=14*14;
+        for(const p of PARETO_PTS){ const dx=p.x-mx, dy=p.y-my, d=dx*dx+dy*dy; if(d<bd){bd=d;bi=p.i;} }
+        if(bi>=0){ selectedRow=bi; render(); }
+    };
+}
+
+// main effects: for each axis, average metric grouped by that axis's value
+function renderMainEffects(){
+    const host=document.getElementById('maineffects'); if(!host)return;
+    const rows=LAST.view;
+    const axesToShow=[
+        ['ordering','Ordering'],['occupancy','Occupancy'],['placement','Placement'],
+        ['downscale','Downscale (raster)'],['buckets','Buckets'],['gridCell','Grid cell'],
+        ['pyrLevels','Pyramid levels'],['occlusionTol','Occlusion tol.'],['palK','PAL K'],
+    ];
+    const blocks=[];
+    for (const [axis,title] of axesToShow){
+        const relevant = rows.filter(r=>axisRelevant(r.cfg,axis));
+        const groups=new Map();
+        for(const r of relevant){ const v=r.cfg[axis]; if(!groups.has(v))groups.set(v,[]); groups.get(v).push(r); }
+        if (groups.size<2) continue;
+        const entries=[...groups.entries()].map(([v,rs])=>({v, q:avg(rs,'cleanPct'), ms:avg(rs,'mean'), ov:avg(rs,'overlaps')}));
+        entries.sort((a,b)=>b.q-a.q);
+        const maxQ=Math.max(...entries.map(e=>e.q),1), maxMs=Math.max(...entries.map(e=>e.ms),0.001);
+        const bars=entries.map(e=>`
+          <div class="bar-row"><span class="dim">${e.v}</span>
+            <span><span class="bar" style="display:block;width:${(e.q/maxQ*100).toFixed(1)}%;background:linear-gradient(90deg,#2f6fd8,#56d193)"></span>
+                  <span class="bar" style="display:block;margin-top:2px;width:${(e.ms/maxMs*100).toFixed(1)}%;background:#3a4a6a"></span></span>
+            <span>${e.q.toFixed(0)}%</span></div>`).join('');
+        blocks.push(`<div class="card"><h3>${title}</h3>${bars}
+          <div class="legend">top bar = % optimal · bottom bar = mean ms (relative)</div></div>`);
+    }
+    host.className='grid2'; host.innerHTML = blocks.join('') || '<div class="hint">Nothing varied in this tab — select several values on an axis and re-run.</div>';
+}
+function avg(rs,k){ return rs.reduce((a,r)=>a+r[k],0)/rs.length; }
+function axisRelevant(c,axis){
+    if(axis==='buckets')return c.ordering==='bucket';
+    if(axis==='gridCell')return c.occupancy==='grid';
+    if(axis==='pyrLevels')return c.occupancy==='pyramid';
+    if(axis==='occlusionTol')return c.occupancy==='bitmap';
+    if(axis==='palK')return c.placement==='pal';
+    if(axis==='downscale')return RASTER.has(c.occupancy);
+    return true;
+}
+
+// Pearson correlation of each numeric parameter against each metric
+function renderCorrelation(){
+    const host=document.getElementById('corr'); if(!host)return;
+    const rows=LAST.view;
+    const params=['downscale','buckets','gridCell','pyrLevels','occlusionTol','palK'];
+    const lines=[];
+    for(const p of params){
+        const rel=rows.filter(r=>axisRelevant(r.cfg,p));
+        const vals=new Set(rel.map(r=>r.cfg[p]));
+        if(rel.length<3||vals.size<2)continue;
+        const col=(k,neg)=>{const v=pearson(rel.map(r=>r.cfg[p]),rel.map(r=>r[k]));
+            const s=v>=0?'+':''; const good=neg?v<0:v>0;
+            const c=Math.abs(v)>0.6?(good?'var(--green)':'var(--red)'):'inherit';
+            return `<td style="color:${c}">${s}${v.toFixed(2)}</td>`;};
+        lines.push(`<tr><td>${p} <span class="dim">(${[...vals].sort((a,b)=>a-b).join(', ')})</span></td>`+
+            col('cleanPct',false)+col('mean',true)+col('overlaps',true)+
+            col('churn',true)+col('dwell',false)+col('scaleExp',true)+
+            `<td class="dim">${rel.length}</td></tr>`);
+    }
+    host.innerHTML = lines.length
+        ? `<table><thead><tr><th>parameter</th><th>r vs % optimal</th><th>r vs ms</th><th>r vs overlaps</th>
+             <th>r vs churn</th><th>r vs dwell</th><th>r vs scaling</th><th>n</th></tr></thead><tbody>${lines.join('')}</tbody></table>
+           <div class="legend">r → +1 means the metric rises with the parameter; −1 means it falls. |r| &gt; 0.6 is highlighted,
+             green when that direction is <i>desirable</i> (more quality/dwell, less time/overlap/churn) and red when it is not.
+             Sweeping <span class="kbd">occlusion tolerance</span> should show it buying stability (negative vs churn, positive vs dwell)
+             at some cost in % optimal — that trade is the whole point of the parameter.</div>`
+        : '<div class="hint">Sweep at least two values of a numeric parameter to get correlations.</div>';
+}
+function pearson(x,y){
+    const n=x.length, mx=x.reduce((a,b)=>a+b,0)/n, my=y.reduce((a,b)=>a+b,0)/n;
+    let sxy=0,sxx=0,syy=0;
+    for(let i=0;i<n;i++){const dx=x[i]-mx,dy=y[i]-my;sxy+=dx*dy;sxx+=dx*dx;syy+=dy*dy;}
+    const d=Math.sqrt(sxx*syy); return d===0?0:sxy/d;
+}
+
+// ── preview: draws each model with its own primitives ────────────────────────
+function drawPreview(canvasId, cfg){ const cv=document.getElementById(canvasId); if(cv) renderPreview(cv, cfg); }
+// Draw a config's placement onto ANY canvas — used both for the on-screen
+// preview and for the exported report's per-config thumbnails.
+function renderPreview(cv, cfg){
+    const ctx=cv.getContext('2d');
+    const { dataset, cam, items, cfgObj } = LAST.ctx.get(LAST.primary);
+    setCameraForFrame(cam, cfgObj.frames-1, cfgObj.frames, cfgObj.world);
+    prepareFrame(cam, dataset, cfgObj.cfg, items);
+    const mk=modelKey(cfg);
+    const v=makeVariant(cfg, cfgObj.labelCap); v.prev.fill(0); v.place(items);
+    const q=overlapCount(items, v.lastDecision, INK_MODEL);
+    const cell=32, gw=Math.ceil(VW/cell), gh=Math.ceil(VH/cell), grid=new Map();
+    const boxes=[]; for(let i=0;i<items.n;i++) if(v.lastDecision[items.idx[i]]===1) boxes.push(i);
+    const cells=(i,fn)=>{let a=(items.x0[i]/cell)|0,b=(items.x1[i]/cell)|0,c=(items.y0[i]/cell)|0,d=(items.y1[i]/cell)|0;if(b>=gw)b=gw-1;if(d>=gh)d=gh-1;for(let y=c;y<=d;y++)for(let x=a;x<=b;x++)fn(y*gw+x);};
+    for(const i of boxes)cells(i,c=>{let a=grid.get(c);if(!a){a=[];grid.set(c,a);}a.push(i);});
+    const narrow=overlapFn(INK_MODEL);
+    const ov=new Set();
+    for(const i of boxes){let hit=false;cells(i,c=>{if(hit)return;for(const j of grid.get(c)){if(j===i)continue;if(narrow(items,i,j)){hit=true;return;}}});if(hit)ov.add(i);}
+    const sx=cv.width/VW, sy=cv.height/VH;
+    ctx.fillStyle='#0a0e17'; ctx.fillRect(0,0,cv.width,cv.height);
+    const poly=(qx,qy,base)=>{ctx.beginPath();ctx.moveTo(qx[base]*sx,qy[base]*sy);for(let k=1;k<4;k++)ctx.lineTo(qx[base+k]*sx,qy[base+k]*sy);ctx.closePath();ctx.fill();};
+    const box=(p,i)=>ctx.fillRect(items[p+'x0'][i]*sx,items[p+'y0'][i]*sy,
+        Math.max(1,(items[p+'x1'][i]-items[p+'x0'][i])*sx),Math.max(1,(items[p+'y1'][i]-items[p+'y0'][i])*sy));
+    // the collider drawn is the one this config applies to THAT label's kind
+    const paint=(i)=>{
+        const sh = items.curved[i] ? cfg.curvedShape : cfg.straightShape;
+        if (sh==='pixel'){ poly(items.cx,items.cy,i*4); return; }
+        if (sh==='aabb'){ box('sa',i); return; }
+        if (sh==='cAabb'){ box('ca',i); return; }
+        const o=items.segOff[i], n=items.segN[i];
+        if (sh==='circle'){ for(let s=0;s<n;s++){ctx.beginPath();ctx.ellipse(items.sgx[o+s]*sx,items.sgy[o+s]*sy,items.sgr[o+s]*sx,items.sgr[o+s]*sy,0,0,7);ctx.fill();} return; }
+        if (sh==='rect'){ for(let s=0;s<n;s++)ctx.fillRect(items.sx0[o+s]*sx,items.sy0[o+s]*sy,Math.max(1,(items.sx1[o+s]-items.sx0[o+s])*sx),Math.max(1,(items.sy1[o+s]-items.sy0[o+s])*sy)); return; }
+        for(let s=0;s<n;s++) poly(items.sqx,items.sqy,(o+s)*4);   // cPixel
+    };
+    const dec=v.lastDecision;
+    ctx.fillStyle='rgba(51,64,92,0.4)';
+    for(let i=0;i<items.n;i++){ if(dec[items.idx[i]]!==1) paint(i); }
+    for(const i of boxes){ ctx.fillStyle=ov.has(i)?'rgba(240,150,70,0.85)':'rgba(86,209,147,0.9)'; paint(i); }
+    // superpose the label's TRUE inked footprint on top of the collider, so the
+    // wasted (reserved but unused) area is directly visible
+    let colA=0,trueA=0;
+    const straightShape = cfg.straightShape;
+    ctx.strokeStyle='rgba(10,14,23,0.95)'; ctx.lineWidth=1; ctx.fillStyle='rgba(10,14,23,0.55)';
+    for(const i of boxes){
+        if(items.x0[i]>0&&items.y0[i]>0&&items.x1[i]<VW-1&&items.y1[i]<VH-1){   // skip clipped edge labels
+            colA+=colliderArea(items,i,cfg); trueA+=trueArea(items,i); }
+        // a straight label's ink is its single quad; a curved one's is its chain
+        if(!items.curved[i]){ const b=i*4;
+            ctx.beginPath(); ctx.moveTo(items.cx[b]*sx,items.cy[b]*sy);
+            for(let k=1;k<4;k++)ctx.lineTo(items.cx[b+k]*sx,items.cy[b+k]*sy);
+            ctx.closePath(); ctx.fill(); ctx.stroke(); continue; }
+        const o=items.segOff[i], n=items.segN[i];
+        for(let s=0;s<n;s++){ const b=(o+s)*4;
+            ctx.beginPath(); ctx.moveTo(items.sqx[b]*sx,items.sqy[b]*sy);
+            for(let k=1;k<4;k++)ctx.lineTo(items.sqx[b+k]*sx,items.sqy[b+k]*sy);
+            ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+    }
+    ctx.fillStyle='#9fb0d0'; ctx.font='11px Consolas';
+    ctx.fillText(`${boxes.length} placed · ${q.overlaps} overlapping · ${modelLabel(mk)} · collider ${(trueA>0?colA/trueA:1).toFixed(2)}x inked area`, 6, 14);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UI WIRING
+// ═════════════════════════════════════════════════════════════════════════════
+function buildChips(hostId, axis){
+    const host=document.getElementById(hostId);
+    host.innerHTML = AXES[axis].map(o=>`<span class="chip ${sel[axis].has(o.id)?'on':''}" data-id="${o.id}">${o.label}</span>`).join('');
+    host.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
+        const id=c.dataset.id;
+        if(sel[axis].has(id)){ if(sel[axis].size>1) sel[axis].delete(id); } else sel[axis].add(id);
+        buildChips(hostId,axis); updateCount();
+    });
+}
+function buildParamVals(pId, name){
+    const host=document.getElementById(pId);
+    host.innerHTML = PARAM_VALUES[name].map(v=>`<span class="v ${selP[name].has(v)?'on':''}" data-v="${v}">${v}</span>`).join('');
+    host.querySelectorAll('.v').forEach(el=>el.onclick=()=>{
+        const v=+el.dataset.v;
+        if(selP[name].has(v)){ if(selP[name].size>1) selP[name].delete(v); } else selP[name].add(v);
+        buildParamVals(pId,name); updateCount();
+    });
+}
+function updateCount(){
+    const n=enumerateConfigs(false).length;
+    const models=new Set(enumerateConfigs(false).map(modelKey)).size;
+    document.getElementById('comboCount').textContent =
+        n ? `${n} configuration${n>1?'s':''} in the sweep · ${models} collision model${models>1?'s (tabbed)':''}`
+          : 'No valid combination (pixel-perfect shapes need bitmap / pyramid)';
+}
+['ordering','occupancy','placement','straightShape','curvedShape'].forEach(a=>buildChips('ax-'+a,a));
+Object.keys(PARAM_VALUES).forEach(p=>buildParamVals('p-'+p,p));
+for (const id of ['labels','world','frames']){
+    const el=document.getElementById('s-'+id), out=document.getElementById('s-'+id+'-v');
+    el.oninput=()=>{ out.textContent=el.value; };
+}
+{
+    const el=document.getElementById('s-curve'), out=document.getElementById('s-curve-v');
+    el.oninput=()=>{ out.textContent=(el.value/100).toFixed(2); };
+    const sh=document.getElementById('s-share'), shOut=document.getElementById('s-share-v');
+    sh.oninput=()=>{ shOut.textContent=sh.value+'%'; };
+}
+document.getElementById('runOne').onclick   = ()=>run(true);
+document.getElementById('runSweep').onclick = ()=>run(false);
+updateCount();
+</script>
+</body>
+</html>

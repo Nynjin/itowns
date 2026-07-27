@@ -127,6 +127,7 @@ class VectorTilesSource extends TMSSource {
                         id: layer.id,
                         order,
                         filterExpression: featureFilter(layer.filter),
+                        filterSpec: layer.filter || null, // raw JSON for worker serialization
                     });
                 }
             });

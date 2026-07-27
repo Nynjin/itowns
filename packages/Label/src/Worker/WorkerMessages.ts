@@ -60,8 +60,7 @@ export interface LabelDelta {
 
 export type MainToWorker =
     | { type: 'INIT';          baseFontSize: number; fadeDurationMs: number;
-                               downscale: number; coarseScale: number;
-                               acceptableOcclusion: number; maxOcclusion: number;
+                               downscale: number; pyramidLevels: number;
                                collisionBuckets: number; ndcCullMargin: number;
                                renderPenaltyMultiplier: number; fontSizePriorityPower: number;
                                pxPerUnit: number }

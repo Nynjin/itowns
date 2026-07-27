@@ -154,11 +154,13 @@ export class LabelBatch {
             LABEL_TEXELS,
             config.maxDataTextureWidth,
             config.dataTextureCapacityMultiplier,
+            config.initialLabelCapacity,
         );
         this._glyphDataBuffer = new InstancedDataTexture(
             GLYPH_TEXELS,
             config.maxDataTextureWidth,
             config.dataTextureCapacityMultiplier,
+            config.initialGlyphCapacity,
         );
 
         const base = new PlaneGeometry(1, 1);

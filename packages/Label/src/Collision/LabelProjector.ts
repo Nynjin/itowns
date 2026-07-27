@@ -7,6 +7,14 @@ export interface ScreenAABB {
     y0: number;
     x1: number;
     y1: number;
+    /**
+     * Area (in cells) of the label's box BEFORE clamping to the viewport. Equals
+     * the on-screen area when fully visible, larger when part of the label is
+     * clipped by a screen edge. Lets callers compute the off-screen fraction
+     * `(fullArea − onScreenArea) / fullArea` to cull mostly-clipped labels. Not
+     * used by LabelCollisionEngine's placement decision — purely informational.
+     */
+    fullArea: number;
 }
 
 /**
@@ -159,16 +167,19 @@ export class LabelProjector {
             if (py > maxY) maxY = py;
         }
 
-        const x0 = Math.max(0, Math.floor(minX));
-        const x1 = Math.min(W - 1, Math.ceil(maxX));
-        const y0 = Math.max(0, Math.floor(minY));
-        const y1 = Math.min(H - 1, Math.ceil(maxY));
+        const ux0 = Math.floor(minX), ux1 = Math.ceil(maxX);
+        const uy0 = Math.floor(minY), uy1 = Math.ceil(maxY);
+        const x0 = Math.max(0, ux0);
+        const x1 = Math.min(W - 1, ux1);
+        const y0 = Math.max(0, uy0);
+        const y1 = Math.min(H - 1, uy1);
         if (x0 > x1 || y0 > y1) return false;
 
         out.x0 = x0;
         out.y0 = y0;
         out.x1 = x1;
         out.y1 = y1;
+        out.fullArea = (ux1 - ux0 + 1) * (uy1 - uy0 + 1);
         return true;
     }
 }
