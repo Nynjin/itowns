@@ -1,4 +1,23 @@
 import type { GlyphInfo } from '../Shaping/GlyphRun';
+import type { BoundsMode, OccupancyMethod, SortMethod } from '../Types/LabelConfig';
+
+/**
+ * The collision-algorithm fields that can be changed at runtime via RECONFIGURE
+ * (and are forwarded on INIT). A subset of LabelManagerConfig.
+ */
+export interface CollisionConfigPatch {
+    sortMethod?:              SortMethod;
+    occupancyMethod?:         OccupancyMethod;
+    boundsMode?:              BoundsMode;
+    gridCell?:                number;
+    occlusionTol?:            number;
+    downscale?:               number;
+    pyramidLevels?:           number;
+    collisionBuckets?:        number;
+    renderPenaltyMultiplier?: number;
+    fontSizePriorityPower?:   number;
+    ndcCullMargin?:           number;
+}
 
 // ── Serialised label sent on ADD_LABELS ──────────────────────────────────────
 
@@ -63,7 +82,11 @@ export type MainToWorker =
                                downscale: number; pyramidLevels: number;
                                collisionBuckets: number; ndcCullMargin: number;
                                renderPenaltyMultiplier: number; fontSizePriorityPower: number;
-                               pxPerUnit: number }
+                               pxPerUnit: number;
+                               sortMethod: SortMethod; occupancyMethod: OccupancyMethod;
+                               boundsMode: BoundsMode; gridCell: number; occlusionTol: number }
+    // Runtime collision-algorithm change (ordering / occupancy / bounds / params).
+    | { type: 'RECONFIGURE';   config: CollisionConfigPatch }
     | { type: 'ADD_LABELS';    labels: SerialisedLabel[] }
     | { type: 'UPDATE_LABELS'; updates: LabelDelta[] }
     | { type: 'REMOVE_LABELS'; ids: string[] }

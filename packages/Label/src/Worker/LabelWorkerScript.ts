@@ -134,6 +134,12 @@ self.onmessage = (event: MessageEvent<MainToWorker>) => {
             break;
         }
 
+        case 'RECONFIGURE': {
+            Object.assign(config, msg.config);
+            collision?.reconfigure(msg.config);
+            break;
+        }
+
         case 'ADD_LABELS': {
             const layoutResults: WorkerToMain & { type: 'LAYOUT_DONE' } = { type: 'LAYOUT_DONE', results: [] };
 

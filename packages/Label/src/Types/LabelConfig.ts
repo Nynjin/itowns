@@ -1,3 +1,28 @@
+/**
+ * Priority-ordering strategy for the collision pass.
+ *   'bucket' — O(n) depth-bucket scatter (approximate within a bucket)
+ *   'radix'  — O(n·d) LSD radix sort (exact order, no comparisons)
+ * The full O(n log n) comparison sort is intentionally not offered here.
+ */
+export type SortMethod = 'bucket' | 'radix';
+
+/**
+ * Screen-occupancy structure used to test/claim placed label footprints.
+ *   'grid'    — uniform hash grid over exact AABBs (no rasterisation, AABB only)
+ *   'bitmap'  — flat packed-bit raster (count-based, supports occlusion tolerance)
+ *   'pyramid' — binary quadtree pyramid (early-exit; tolerance on AABB only)
+ *   'summary' — word-summary bit hierarchy (branching 128; tolerance via level 0)
+ */
+export type OccupancyMethod = 'grid' | 'bitmap' | 'pyramid' | 'summary';
+
+/**
+ * Footprint model tested against the occupancy.
+ *   'aabb' — screen-space axis-aligned bounding box (cheapest)
+ *   'quad' — the exact rotated 4-corner quad (rotation-aware; raster occupancy only)
+ * Curved (per-glyph) footprints are not implemented.
+ */
+export type BoundsMode = 'aabb' | 'quad';
+
 export interface LabelManagerConfig {
     pxPerUnit: number;
     globeAlignment?: boolean;
@@ -47,13 +72,21 @@ export interface LabelManagerConfig {
      */
     coldLabelCacheSize: number;
 
-    // Collision occupancy (binary quadtree pyramid — see PyramidOccupancy)
+    /**
+     * Viewport -> raster downscale for the raster occupancies ('bitmap',
+     * 'summary', 'pyramid'); must be a power of 2. 1 = one bit per screen pixel,
+     * which is the benchmarked default: coarser rasters are faster but reject
+     * labels they should accept (the footprint is dilated by up to one cell per
+     * side), measured at -3 to -4 % placement at 1 against -23 to -24 % at 8.
+     * Ignored by 'grid'.
+     */
     downscale: number;
     /**
      * Depth of the binary occupancy pyramid. 1 = flat early-exit bitmap; deeper
      * prunes large empty regions faster but adds descent overhead on tiny boxes.
      * The sweet spot depends on `downscale` and typical label size (≈4 at full
      * resolution, shallower when heavily downscaled).
+     * Only used by occupancyMethod='pyramid'.
      */
     pyramidLevels: number;
     /**
@@ -73,8 +106,32 @@ export interface LabelManagerConfig {
      * zoom jump.  Set to Infinity to disable.
      */
     fastMoveFraction: number;
-    /** Number of depth-sort buckets used during collision evaluation. */
+    /** Number of depth-sort buckets used during collision evaluation (sortMethod='bucket'). */
     collisionBuckets: number;
+
+    // Algorithm selectors (see LabelCollisionEngine.reconfigure / manager.setCollisionConfig).
+    // Defaults are the benchmarked configuration: radix + bitmap + AABB, tolerance 0.1.
+    // The historical behaviour was bucket + pyramid + AABB, strict (occlusionTol 0).
+    /** Priority-ordering strategy. See {@link SortMethod}. */
+    sortMethod: SortMethod;
+    /** Screen-occupancy structure. See {@link OccupancyMethod}. */
+    occupancyMethod: OccupancyMethod;
+    /** Footprint model tested against the occupancy. See {@link BoundsMode}. */
+    boundsMode: BoundsMode;
+    /**
+     * Cell size (full-resolution screen px) for occupancyMethod='grid'. Larger
+     * cells = fewer, fatter buckets. Ignored by the raster occupancies.
+     */
+    gridCell: number;
+    /**
+     * Occlusion tolerance in [0,1): the fraction of an already-rendered label's
+     * footprint that may be covered and still keep it visible (hysteresis). 0 =
+     * strict/binary (any overlap rejects). Only applies to labels that were
+     * rendered last frame — a new label always needs a clear footprint.
+     * Support by occupancy: grid (AABB), bitmap (AABB+quad), summary (AABB+quad),
+     * pyramid (AABB only — the quad path is binary and ignores this).
+     */
+    occlusionTol: number;
 
     // Projector
     ndcCullMargin: number;
@@ -135,11 +192,26 @@ export const DefaultLabelConfig: LabelManagerConfig = {
     hotLabelCacheSize: 512,
     coldLabelCacheSize: 2048,
 
-    downscale: 8,
+    downscale: 1,
     pyramidLevels: 4,
     stationaryThreshold: 0.05,
     fastMoveFraction: 10,
     collisionBuckets: 256,
+
+    // Benchmarked configuration, for the three axes this engine implements:
+    // radix 20-bit ordering (2 passes of 10) + full-resolution bitmap occupancy
+    // + AABB bounds + occlusion tolerance 0.1. Measured against the previous
+    // defaults (bucket + pyramid /8, strict) on 6 000 labels at 1920x1080:
+    // ~2x faster and ~1.8x more labels placed, at slightly higher churn.
+    // NOTE the benchmark's best configuration also uses a PER-GLYPH AABB chain
+    // for line (curved) labels, which this engine does not implement — it tests
+    // one footprint per label. The remaining ~12 points of quality in
+    // docs/label-collision-algorithms.html chapter 11 are behind that feature.
+    sortMethod: 'radix',
+    occupancyMethod: 'bitmap',
+    boundsMode: 'aabb',
+    gridCell: 32,
+    occlusionTol: 0.1,
 
     ndcCullMargin: 0.2,
 

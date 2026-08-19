@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MapLibre — collision &amp; prioritisation screenshots</title>
+<link rel="stylesheet" href="../node_modules/maplibre-gl/dist/maplibre-gl.css">
+<style>
+    html,body{margin:0;padding:0;height:100%;background:#0f1420;overflow:hidden;
+        font-family:'Inter',-apple-system,'Segoe UI',sans-serif}
+    #map{position:fixed;inset:0}
+    .maplibregl-ctrl-attrib{font-size:10px}
+
+    #hud{position:fixed;top:14px;left:14px;z-index:10;width:344px;
+        background:rgba(16,21,33,.93);backdrop-filter:blur(10px);
+        border:1px solid rgba(120,140,180,.28);border-radius:10px;
+        color:#d7dceb;font-size:12.5px;line-height:1.5;
+        box-shadow:0 8px 32px rgba(0,0,0,.45);max-height:calc(100vh - 28px);overflow-y:auto}
+    #hud.hidden{display:none}
+    .hd{padding:11px 14px 9px;border-bottom:1px solid rgba(120,140,180,.16);
+        font-weight:700;font-size:12px;letter-spacing:.03em;display:flex;
+        align-items:center;justify-content:space-between;position:sticky;top:0;
+        background:rgba(16,21,33,.97)}
+    .hd .hint{font-weight:400;font-size:10.5px;color:#7f8aa3}
+    .sec{padding:11px 14px;border-bottom:1px solid rgba(120,140,180,.16)}
+    .sec:last-child{border-bottom:0}
+    .lbl{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;
+        color:#6b7690;margin-bottom:7px}
+
+    .tg{display:flex;align-items:center;gap:9px;padding:7px 9px;margin-bottom:6px;
+        border:1px solid rgba(120,140,180,.22);border-radius:7px;cursor:pointer;
+        background:rgba(30,38,56,.5);user-select:none;transition:.12s}
+    .tg:last-child{margin-bottom:0}
+    .tg:hover{border-color:rgba(120,140,180,.42)}
+    .tg .sw{width:32px;height:18px;border-radius:9px;background:#39425c;
+        position:relative;flex:0 0 auto;transition:.15s}
+    .tg .sw::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;
+        border-radius:50%;background:#8b96b0;transition:.15s}
+    .tg.on .sw{background:#2f6fd8}
+    .tg.on .sw::after{left:16px;background:#fff}
+    .tg .tx{flex:1}
+    .tg .tx b{display:block;font-size:12.5px;color:#e6ebf7}
+    .tg .tx i{font-style:normal;font-size:10.5px;color:#7f8aa3}
+    .tg .key{font-size:10px;color:#5c6780;border:1px solid rgba(120,140,180,.3);
+        border-radius:4px;padding:1px 5px;font-family:ui-monospace,monospace}
+
+    select,button{font-family:inherit;font-size:12px;background:#1c2438;color:#d7dceb;
+        border:1px solid rgba(120,140,180,.28);border-radius:6px;padding:6px 9px;cursor:pointer}
+    select{width:100%}
+    button:hover{border-color:rgba(120,140,180,.5)}
+    button.pri{background:#2f6fd8;border-color:#2f6fd8;color:#fff;font-weight:600}
+
+    .cam{font-family:ui-monospace,'Fira Code',monospace;font-size:11.5px;
+        background:#12182a;border:1px solid rgba(120,140,180,.2);border-radius:6px;
+        padding:9px 10px;color:#9fb4dd;white-space:pre;overflow-x:auto;line-height:1.65}
+    .row{display:flex;gap:6px;margin-top:7px}
+    .row button{flex:1}
+    #copied{color:#56d193;font-size:11px;margin-left:6px;opacity:0;transition:.2s}
+    #copied.show{opacity:1}
+    #stat{font-size:11px;color:#7f8aa3;padding:9px 14px;line-height:1.7}
+    #stat b{color:#ffb454;font-variant-numeric:tabular-nums}
+    #stat .ok{color:#56d193}
+    #reveal{position:fixed;bottom:14px;left:14px;z-index:10;display:none;
+        background:rgba(16,21,33,.9);border:1px solid rgba(120,140,180,.28);
+        border-radius:7px;color:#8b96b0;font-size:11px;padding:6px 10px}
+    #reveal.show{display:block}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="hud">
+    <div class="hd"><span>Collision &amp; prioritisation</span><span class="hint">H hides UI</span></div>
+
+    <div class="sec">
+        <div class="lbl">Label placement</div>
+        <div class="tg on" id="tg-collision">
+            <div class="sw"></div>
+            <div class="tx"><b>Collision detection</b><i>off → every label and icon draws, overlapping</i></div>
+            <span class="key">C</span>
+        </div>
+        <div class="tg on" id="tg-sort">
+            <div class="sw"></div>
+            <div class="tx"><b>Prioritisation</b><i>off → symbol layers shuffled, importance ignored</i></div>
+            <span class="key">S</span>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="lbl">Basemap</div>
+        <select id="style">
+            <option value="liberty">OpenFreeMap Liberty — OSM Bright, full POI icons</option>
+            <option value="planign">IGN Plan — richest (153 symbol layers)</option>
+            <option value="colorful">VersaTiles Colorful</option>
+            <option value="positron">CARTO Positron — minimal, few icons</option>
+        </select>
+        <div class="tg" id="tg-sat" style="margin-top:8px">
+            <div class="sw"></div>
+            <div class="tx"><b>Satellite underlay</b><i>IGN orthophoto, style's labels kept on top</i></div>
+            <span class="key">O</span>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="lbl">Camera <span style="text-transform:none;letter-spacing:0">— move the map, then copy</span></div>
+        <div class="cam" id="cam">…</div>
+        <div class="row">
+            <button class="pri" id="copy">Copy as START</button>
+            <button id="reset">Reset</button>
+        </div>
+        <span id="copied">copied</span>
+    </div>
+
+    <div id="stat">
+        symbol layers <b id="nlayers">–</b> · with icons <b id="nicons">–</b><br>
+        priority tiers <b id="nkeys">–</b> <span id="keynote"></span>
+    </div>
+</div>
+
+<div id="reveal">press <b>H</b> to show the panel</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// START CAMERA — paste a copied block here to open at that exact view.
+// Pitched well forward rather than near-nadir: at high pitch the far field
+// compresses and labels pile into the top of the frame, which is what makes the
+// collision-off screenshot dramatic instead of subtle.
+// ═══════════════════════════════════════════════════════════════════════════
+const START = {
+    center: [2.3488, 48.8534],   // Paris — same area as label_bench.html
+    zoom:   14.2,
+    bearing: 18,
+    pitch:  62,
+};
+
+// Rich, key-free vector styles. Positron is kept only as a deliberate contrast:
+// it has 27 symbol layers but just 5 with icons, which is why it looks bare.
+const STYLES = {
+    liberty:  { url: 'https://tiles.openfreemap.org/styles/liberty',  name: 'OpenFreeMap Liberty' },
+    planign:  { url: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json', name: 'IGN Plan' },
+    colorful: { url: 'https://tiles.versatiles.org/assets/styles/colorful/style.json', name: 'VersaTiles Colorful' },
+    positron: { url: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json', name: 'CARTO Positron' },
+};
+
+const ORTHO_WMTS = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0'
+                 + '&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM'
+                 + '&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+
+const ML_JS = '../node_modules/maplibre-gl/dist/maplibre-gl-csp-dev.js';
+const ML_WK = '../node_modules/maplibre-gl/dist/maplibre-gl-csp-worker.js';
+
+let map = null;
+let symbolLayerIds = [];
+const priorityKey = new Map();      // layer id → derived key, for the readout
+const state = { collision: true, sort: true, style: 'liberty', sat: false };
+
+function loadMapLibre() {
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = ML_JS;
+        s.onload = () => {
+            try { window.maplibregl.setWorkerUrl(ML_WK); } catch { /* non-csp build */ }
+            resolve();
+        };
+        s.onerror = () => reject(new Error('maplibre-gl not found — run npm install'));
+        document.head.appendChild(s);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DERIVING A PRIORITY
+//
+// None of these styles ships a `symbol-sort-key` — checked: 0 of 25 in Liberty,
+// 0 of 153 in Plan IGN, 0 of 27 in Positron. So there is nothing to toggle off,
+// and a prioritisation switch that only clears an existing key would do nothing
+// at all. A meaningful priority has to be synthesised.
+//
+// Text size is the right proxy and is schema-independent: every basemap ever
+// authored draws important things larger. So the sort key is the negated
+// representative text size — bigger text gets a lower key, and MapLibre places
+// lower keys first. A city label therefore claims its space before a café icon,
+// which is exactly the behaviour the toggle is meant to demonstrate.
+//
+// text-size comes in several shapes and all of them appear in these styles:
+//   14                                            plain number
+//   ["interpolate",["linear"],["zoom"],0,10,8,14] expression
+//   {"stops":[[13,10],[15,13]]}                   legacy stops object
+//
+// The values must be read as OUTPUTS, not as "every number in there". An
+// interpolate expression interleaves inputs and outputs — in the example above
+// 0 and 8 are zoom levels while 10 and 14 are the sizes — so a naive sweep of
+// numeric literals silently ranks layers by zoom stop. That mistake put a few
+// icon layers at size 180–200 and would have inverted the whole priority order,
+// handing café pins precedence over district names.
+// ═══════════════════════════════════════════════════════════════════════════
+function sizeOutputs(v, out) {
+    if (typeof v === 'number') { out.push(v); return out; }
+    if (Array.isArray(v)) {
+        const op = v[0];
+        if (op === 'interpolate' || op === 'interpolate-hcl' || op === 'interpolate-lab') {
+            for (let i = 4; i < v.length; i += 2) { sizeOutputs(v[i], out); }   // skip inputs
+        } else if (op === 'step') {
+            sizeOutputs(v[2], out);
+            for (let i = 4; i < v.length; i += 2) { sizeOutputs(v[i], out); }
+        } else if (op === 'match') {
+            for (let i = 3; i < v.length - 1; i += 2) { sizeOutputs(v[i], out); }
+            sizeOutputs(v[v.length - 1], out);
+        } else if (op === 'case') {
+            for (let i = 2; i < v.length; i += 2) { sizeOutputs(v[i], out); }
+            sizeOutputs(v[v.length - 1], out);
+        } else {
+            for (const x of v) { if (typeof x === 'number') { out.push(x); } }
+        }
+        return out;
+    }
+    if (v && typeof v === 'object' && Array.isArray(v.stops)) {
+        for (const s of v.stops) { if (Array.isArray(s)) { sizeOutputs(s[1], out); } }
+    }
+    return out;
+}
+function representativeSize(layout) {
+    if (!layout) { return null; }
+    const text = sizeOutputs(layout['text-size'], []).filter(n => n > 0 && n <= 64);
+    if (text.length) { return Math.max(...text); }
+    // icon-only layer: icon-size is a multiplier (~0.5–2), scaled into a
+    // pixel-ish range so it ranks sensibly against font sizes
+    const icon = sizeOutputs(layout['icon-size'], []).filter(n => n > 0 && n <= 8);
+    if (icon.length) { return Math.max(...icon) * 10; }
+    return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WHAT ACTUALLY SETS PRIORITY IN MAPLIBRE
+//
+// Not symbol-sort-key — or rather, not only. Checked against the bundled
+// source: PauseablePlacement.continuePlacement starts at
+// `_currentPlacementIndex = order.length - 1` and counts DOWN, so layers are
+// placed from the TOP of the style downward and the topmost layer wins every
+// conflict. Cross-layer priority is therefore LAYER ORDER.
+//
+// symbol-sort-key only orders features inside one layer's bucket. Because a
+// basemap puts each feature class in its own layer (place-city, place-town,
+// poi-level-1 …), clearing the sort keys changes almost nothing visible — the
+// city layer still sits above the POI layer and still wins. A prioritisation
+// toggle that only touches sort keys looks completely inert, which is exactly
+// what it did before this was checked.
+//
+// So switching prioritisation off has to permute the SYMBOL LAYER ORDER as
+// well. The permutation is a seeded shuffle rather than a reversal: "no
+// priority" means arbitrary order, not inverted order — and seeding keeps the
+// before/after screenshots reproducible. Non-symbol layers keep their exact
+// slots so the basemap art is untouched; only the symbol layers are permuted
+// among the positions they already occupied.
+// ═══════════════════════════════════════════════════════════════════════════
+function mulberry32(s) {
+    let a = s >>> 0;
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+let baseStyle = null;      // raw fetched JSON for the selected basemap
+
+function composeStyle() {
+    let layers = baseStyle.layers.slice();
+
+    if (!state.sort) {
+        const slots = [];
+        for (let i = 0; i < layers.length; i++) { if (layers[i].type === 'symbol') { slots.push(i); } }
+        const picked = slots.map(i => layers[i]);
+        const rnd = mulberry32(0x5EED);
+        for (let i = picked.length - 1; i > 0; i--) {
+            const j = (rnd() * (i + 1)) | 0;
+            const t = picked[i]; picked[i] = picked[j]; picked[j] = t;
+        }
+        slots.forEach((slot, k) => { layers[slot] = picked[k]; });
+    }
+
+    // within-layer ordering: derived key when prioritising, a flat tie when not
+    layers = layers.map(l => l.type !== 'symbol' ? l : ({
+        ...l,
+        layout: { ...(l.layout || {}),
+            'symbol-sort-key': state.sort ? (-(representativeSize(l.layout) ?? 0)) : 0 },
+    }));
+
+    let sources = baseStyle.sources;
+    if (state.sat) {
+        // Orthophoto underneath, the style's own symbol layers on top. Everything
+        // that is not a symbol is dropped so imagery is not buried under fills.
+        sources = { ...baseStyle.sources, __ortho: {
+            type: 'raster', tiles: [ORTHO_WMTS], tileSize: 256, maxzoom: 19,
+            attribution: '&copy; IGN / G&eacute;oplateforme',
+        } };
+        layers = [
+            { id: '__ortho-raster', type: 'raster', source: '__ortho' },
+            // a white halo keeps dark basemap text legible over photography
+            ...layers.filter(l => l.type === 'symbol').map(l => ({ ...l, paint: {
+                ...(l.paint || {}), 'text-halo-color': '#fff', 'text-halo-width': 1.6,
+            } })),
+        ];
+    }
+    return { ...baseStyle, sources, layers, projection: { type: 'globe' } };
+}
+
+async function loadBase(kind) {
+    baseStyle = await fetch(STYLES[kind].url).then(r => r.json());
+}
+
+// ── the two toggles ───────────────────────────────────────────────────────
+// COLLISION. Four layout properties drive MapLibre's placement. `allow-overlap`
+// makes a symbol draw despite conflicts; `ignore-placement` additionally stops
+// it reserving space against others. Both are needed — with only allow-overlap
+// the symbols still block each other and the pile-up comes out half-hearted.
+function applyCollision(on) {
+    for (const id of symbolLayerIds) {
+        try {
+            map.setLayoutProperty(id, 'text-allow-overlap',    !on);
+            map.setLayoutProperty(id, 'icon-allow-overlap',    !on);
+            map.setLayoutProperty(id, 'text-ignore-placement', !on);
+            map.setLayoutProperty(id, 'icon-ignore-placement', !on);
+        } catch { /* layer has no text or no icon — fine */ }
+    }
+}
+
+// PRIORITISATION is applied by rebuilding the style (composeStyle), because it
+// has to change layer ORDER and that is not a per-layer property. setStyle
+// diffs against the current style, so tiles and glyphs are retained.
+
+// ── camera readout ────────────────────────────────────────────────────────
+const camEl = document.getElementById('cam');
+function camBlock() {
+    const c = map.getCenter();
+    return 'const START = {\n'
+         + `    center: [${c.lng.toFixed(5)}, ${c.lat.toFixed(5)}],\n`
+         + `    zoom:   ${map.getZoom().toFixed(2)},\n`
+         + `    bearing: ${map.getBearing().toFixed(1)},\n`
+         + `    pitch:  ${map.getPitch().toFixed(1)},\n`
+         + '};';
+}
+const updateCam = () => { camEl.textContent = camBlock(); };
+
+// ── style (re)load ────────────────────────────────────────────────────────
+function captureLayers() {
+    const layers = map.getStyle().layers.filter(l => l.type === 'symbol');
+    symbolLayerIds = layers.map(l => l.id);
+    priorityKey.clear();
+    let withIcons = 0;
+    for (const l of layers) {
+        if (l.layout && l.layout['icon-image']) { withIcons++; }
+        const size = representativeSize(l.layout);
+        if (size !== null) { priorityKey.set(l.id, -size); }   // bigger text → placed first
+    }
+    document.getElementById('nlayers').textContent = symbolLayerIds.length;
+    document.getElementById('nicons').textContent  = withIcons;
+    document.getElementById('nkeys').textContent   = priorityKey.size;
+    document.getElementById('keynote').innerHTML   = priorityKey.size
+        ? '<span class="ok">derived from text size</span>'
+        : '<span style="color:#e0605f">none — toggle will be inert</span>';
+}
+
+let restyling = false;
+async function reloadStyle(refetch) {
+    if (restyling) { return; }
+    restyling = true;
+    try {
+        if (refetch) { await loadBase(state.style); }
+        const keep = { center: map.getCenter(), zoom: map.getZoom(),
+                       bearing: map.getBearing(), pitch: map.getPitch() };
+        map.setStyle(composeStyle());
+        await new Promise(r => map.once('styledata', r));
+        map.jumpTo(keep);
+        try { map.setProjection({ type: 'globe' }); } catch { /* older build */ }
+        captureLayers();
+        applyCollision(state.collision);   // collision stays a live layout tweak
+    } finally { restyling = false; }
+}
+
+(async function main() {
+    await loadMapLibre();
+    await loadBase(state.style);
+    map = new window.maplibregl.Map({
+        container: 'map',
+        style: composeStyle(),
+        center: START.center, zoom: START.zoom,
+        bearing: START.bearing, pitch: START.pitch,
+        maxPitch: 85,
+        attributionControl: { compact: true },
+        fadeDuration: 0,          // deterministic frames — no mid-capture cross-fade
+    });
+    map.addControl(new window.maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+
+    await new Promise(r => map.once('load', r));
+    try { map.setProjection({ type: 'globe' }); } catch { /* older build */ }
+    captureLayers();
+    applyCollision(state.collision);
+    updateCam();
+    map.on('move', updateCam);
+
+    const tgC = document.getElementById('tg-collision');
+    const tgS = document.getElementById('tg-sort');
+    const tgO = document.getElementById('tg-sat');
+    const flipCollision = () => { state.collision = !state.collision; tgC.classList.toggle('on', state.collision); applyCollision(state.collision); };
+    const flipSort      = () => { state.sort = !state.sort;           tgS.classList.toggle('on', state.sort);      reloadStyle(false); };
+    const flipSat       = () => { state.sat = !state.sat;             tgO.classList.toggle('on', state.sat);       reloadStyle(false); };
+    tgC.addEventListener('click', flipCollision);
+    tgS.addEventListener('click', flipSort);
+    tgO.addEventListener('click', flipSat);
+
+    document.getElementById('style').addEventListener('change', e => { state.style = e.target.value; reloadStyle(true); });
+    document.getElementById('reset').addEventListener('click', () => map.jumpTo(START));
+    document.getElementById('copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(camBlock()); } catch { /* clipboard blocked */ }
+        const c = document.getElementById('copied');
+        c.classList.add('show'); setTimeout(() => c.classList.remove('show'), 1100);
+    });
+
+    const hud = document.getElementById('hud'), reveal = document.getElementById('reveal');
+    window.addEventListener('keydown', e => {
+        if (e.target.tagName === 'SELECT' || e.metaKey || e.ctrlKey) { return; }
+        const k = e.key.toLowerCase();
+        if (k === 'c') { flipCollision(); }
+        else if (k === 's') { flipSort(); }
+        else if (k === 'o') { flipSat(); }
+        else if (k === 'h') {
+            const hide = !hud.classList.contains('hidden');
+            hud.classList.toggle('hidden', hide);
+            reveal.classList.toggle('show', hide);
+        }
+    });
+})().catch(err => {
+    document.getElementById('cam').textContent = String((err && err.message) || err);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iTowns — Bounds Granularity Benchmark</title>
+
+<!--
+    BOUNDS-GRANULARITY BENCHMARK (no view, no GPU, no renderer)
+    =============================================================
+    Isolates ONE axis that collision_bench.html and label_bench.html don't:
+    given the SAME occupancy structure (bitmap, shared across every row) and
+    the SAME labels, how do five ways of turning a label's *glyph run* into
+    a collider compare — crossed along two independent axes?
+
+        granularity:  full label  →  segmented (K groups)  →  per-glyph (N)
+        shape:        AABB (axis-aligned)  vs  quad (oriented to the group)
+
+        Full-label AABB    — one axis-aligned box over the whole label
+        Segmented AABB     — K axis-aligned boxes, one per group (below)
+        Per-glyph AABB     — N axis-aligned boxes, one per glyph
+        Segmented quad     — K ORIENTED quads, one per group of consecutive
+                              glyphs, where a group closes as soon as EITHER
+                              (a) its position deviates more than
+                              `Seg. tolerance` px from the straight line
+                              through the group's start — the standard
+                              "straight enough" test curve-flattening and
+                              Douglas-Peucker line simplification both use (a
+                              single distance tolerance, not an angle — a
+                              fixed angle causes very different real
+                              deviation depending on curve radius, a fixed
+                              px tolerance does not; baseline jitter —
+                              ascenders/descenders, rendering noise every
+                              real line of text has, not curvature — is
+                              deliberately excluded from this test) OR (b) it
+                              reaches `Seg. max glyphs`. (a) only ever fires
+                              on real curvature — a straight run's deviation
+                              is always exactly 0 — so (b) is what actually
+                              subdivides straight text; without it a straight
+                              label would collapse into one full-label quad,
+                              which is no tighter than full-label AABB, just
+                              rotated with it.
+        Exact quad (chain) — N ORIENTED quads, one per glyph, always — the
+                              true ground truth for BOTH straight and curved,
+                              since a real label's ink is never one solid
+                              rectangle (glyphs have gaps between them and
+                              different widths/heights — see GlyphInfo.w/h
+                              in packages/Label/src/Shaping/GlyphRun.ts,
+                              which real proportional fonts populate
+                              per-character, same as this bench's charMetrics)
+
+    There is no "full quad" row: one oriented quad over a whole straight run
+    is just the K=1 case of segmented quad with a large tolerance, and using
+    it as ground truth (an earlier version of this bench did, for straight
+    labels) was the bug that prompted the granularity/shape split above — a
+    single rotated box is NOT the same shape as its glyphs' actual ink, it's
+    an approximation exactly as coarse in kind as full-label AABB, just
+    rotated. Exact quad always means the per-glyph chain now, full stop.
+
+    Two separate costs are measured, not just one:
+      BUILD — turning cached per-glyph offsets/sizes (glyph.offset, glyph.w/h,
+              exactly the shape prod's GlyphInstance uses) into screen-space
+              geometry under a shared per-frame rigid transform.
+      TEST  — the occupancy test/mark call(s) on the shared bitmap.
+
+    BUILD COST comes down to one thing: how many corners get transformed per
+    frame, which is decided by whether a mode can reuse geometry pre-baked at
+    generation time (as real prod code does — see LabelProjector._localCornersOf).
+
+      full-label AABB   4 corners for a STRAIGHT label (one cached local box,
+                        O(1) regardless of glyph count), but 4·N for a curved
+                        one — no single rigid box exists there, so it has to
+                        walk every glyph to find the extent.
+      segmented AABB  ⎫ 4·K both ways: each group's box is pre-baked once
+      segmented quad  ⎭ (segmentCorners), so neither ever touches individual
+                        glyphs at build time. K = ceil(N / Seg. max glyphs) for
+                        straight text, more where curvature splits earlier.
+      per-glyph AABB  ⎫ 4·N always, straight or curved — no reuse possible,
+      exact quad      ⎭ the whole point of both is per-glyph geometry.
+
+    So the two segmented rows are the cheapest to build of anything that isn't
+    a single box, and on CURVED labels they beat even full-label AABB (4·K vs
+    its 4·N) while being far tighter than it. That is the payoff of grouping,
+    and it only exists because grouping happens once — an earlier version of
+    this bench rebuilt segmented AABB from raw glyph corners every frame
+    (4·N transforms to emit K boxes), which made it the slowest builder here
+    AND less accurate than per-glyph AABB: strictly dominated, a point on the
+    curve with no reason to exist. Now it is the fast, loose end of the
+    grouped family and per-glyph/exact are the slow, tight end.
+
+    Every mode is checked against the exact-quad (per-glyph chain) decision
+    each frame (same priority order, same bitmap) to report how often a
+    cheaper bounds model disagrees with the true footprint — the accuracy
+    half of the trade-off.
+-->
+
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+        background: #0f1420; color: #d7dceb;
+        font-family: 'Consolas', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 13px; line-height: 1.6;
+        padding: 24px; max-width: 1180px; margin: 0 auto 80px;
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    h1 small { display: block; font-size: 13px; font-weight: 400; color: #8b96b0; margin-top: 6px; }
+    h2 { font-size: 15px; font-weight: 700; margin: 28px 0 10px; color: #4f9dff; }
+    p { color: #b9c6e8; margin-bottom: 10px; }
+    .note {
+        border-left: 3px solid #4f9dff; background: #161d2e;
+        padding: 10px 14px; margin: 12px 0; border-radius: 0 6px 6px 0;
+        font-size: 12px; color: #b9c6e8; line-height: 1.7;
+    }
+    .panel {
+        background: #161d2e; border: 1px solid #2a3450; border-radius: 6px;
+        padding: 14px 16px; margin: 14px 0;
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+    .field { display: flex; flex-direction: column; gap: 3px; }
+    .field label { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #6b7690; }
+    .field input {
+        background: #0f1420; border: 1px solid #2a3450; color: #d7dceb;
+        border-radius: 4px; padding: 5px 8px; font-family: inherit; font-size: 12px; width: 84px;
+    }
+    button.btn {
+        background: #1c2438; border: 1px solid #2a3450; color: #d7dceb;
+        border-radius: 4px; padding: 8px 16px; font-family: inherit; font-size: 12px;
+        cursor: pointer;
+    }
+    button.btn:hover { background: #232d47; }
+    button.btn.primary { background: rgba(79,157,255,0.18); border-color: rgba(79,157,255,0.45); color: #9cc4ff; }
+    button.btn.primary:hover { background: rgba(79,157,255,0.28); }
+    button.btn:disabled { opacity: .4; cursor: not-allowed; }
+    #status { margin-left: auto; font-size: 11px; color: #6b7690; letter-spacing: .05em; }
+
+    table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 12px; }
+    th, td { border: 1px solid #2a3450; padding: 6px 10px; text-align: right; font-variant-numeric: tabular-nums; }
+    th { background: #1c2438; font-weight: 600; color: #8b96b0; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+    td:first-child, th:first-child { text-align: left; }
+    tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+    .best  { color: #56d193; font-weight: 700; }
+    .worst { color: #e0605f; }
+    .dim   { color: #6b7690; }
+    .tag { font-size: 10px; padding: 1px 7px; border-radius: 3px; margin-left: 6px; }
+    .tag.gt { background: rgba(199,125,255,0.18); color: #c77dff; }
+</style>
+</head>
+<body>
+
+<h1>Bounds Granularity Benchmark
+<small>Full / segmented / per-glyph AABB, segmented / exact quad (ground truth) — same bitmap, same labels, straight vs curved</small>
+</h1>
+
+<div class="panel">
+    <div class="controls">
+        <div class="field"><label>Labels</label><input id="cfg-count" type="number" min="10" step="100" value="2000"></div>
+        <div class="field"><label>Frames</label><input id="cfg-frames" type="number" min="10" step="10" value="60"></div>
+        <div class="field"><label>Min glyphs</label><input id="cfg-glyphmin" type="number" min="1" step="1" value="4"></div>
+        <div class="field"><label>Max glyphs</label><input id="cfg-glyphmax" type="number" min="1" step="1" value="20"></div>
+        <div class="field"><label>Viewport W</label><input id="cfg-vw" type="number" min="200" step="100" value="1920"></div>
+        <div class="field"><label>Viewport H</label><input id="cfg-vh" type="number" min="200" step="100" value="1080"></div>
+        <div class="field"><label>Downscale</label><input id="cfg-downscale" type="number" min="1" step="1" value="1"></div>
+        <div class="field"><label>Curve radius (px)</label><input id="cfg-curverad" type="number" min="40" step="20" value="220"></div>
+        <div class="field" title="Max perpendicular deviation (px, local/unscaled units) a glyph's position may drift from the straight line through the segment's start before it splits into a new segment. The standard 'straight enough' test (same criterion Douglas-Peucker line simplification and Bezier flattening use — a single distance tolerance, not an angle). Only fires on curvature — a straight run has 0 deviation regardless of this value, so it alone can't split straight text (see Seg. max glyphs).">
+            <label>Seg. tolerance (px)</label><input id="cfg-segtol" type="number" min="0" step="0.5" value="3"></div>
+        <div class="field" title="Hard cap on glyphs per segment — whichever splitting rule fires first wins. This is what actually subdivides a STRAIGHT run (deviation is always 0 there, so without this cap a straight label collapses to one full-label-sized box/quad, wasting exactly the space you're trying to avoid). 1 = same granularity as per-glyph AABB / exact quad. Large = effectively uncapped (curvature alone decides).">
+            <label>Seg. max glyphs</label><input id="cfg-segmaxglyphs" type="number" min="1" step="1" value="3"></div>
+        <div class="field"><label>Seed</label><input id="cfg-seed" type="number" min="1" step="1" value="1"></div>
+        <button class="btn primary" id="btn-run">▶ Run comparison</button>
+        <button class="btn" id="btn-export" disabled>⬇ Export JSON</button>
+        <span id="status">READY</span>
+    </div>
+</div>
+
+<div id="results"></div>
+
+<script type="module">
+// ── deterministic RNG (mulberry32) ──────────────────────────────────────────
+function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function rng() {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// ── synthetic glyph metrics: deterministic per character, no rng dependency
+// so the same word always yields the same run regardless of call order ──────
+const CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ éàèùâêîôûç';
+function charMetrics(ch, fontSizePx) {
+    const c = ch.codePointAt(0);
+    const w = (0.42 + (c % 11) / 11 * 0.28) * fontSizePx;   // 0.42em..0.70em
+    const h = (0.62 + (c % 5)  / 5  * 0.22) * fontSizePx;   // 0.62em..0.84em
+    const advance = w + 0.07 * fontSizePx;
+    const baselineJitter = (((c % 7) - 3) / 3) * 0.06 * fontSizePx; // ascender/descender wobble
+    return { w, h, advance, baselineJitter };
+}
+function randomWord(rng, minLen, maxLen) {
+    const len = minLen + Math.floor(rng() * (maxLen - minLen + 1));
+    let s = '';
+    for (let i = 0; i < len; i++) { s += CHARS[Math.floor(rng() * CHARS.length)]; }
+    return s;
+}
+
+// ── label generation ─────────────────────────────────────────────────────────
+// Each label gets, once (not per frame):
+//   - a glyph run: per-glyph {cx,cy,halfW,halfH} in label-local px (mirrors
+//     prod's GlyphInstance: glyph.offset is the glyph quad CENTER, glyph.w/h
+//     its size — see packages/Label/src/Shaping/TextLayout.ts)
+//   - localCorners: the 4 corners of ONE box spanning the whole run — only
+//     valid as an exact footprint for STRAIGHT labels (see LabelProjector's
+//     _localCornersOf cache, which this mirrors)
+//   - glyphCorners: the 4 corners of EVERY glyph's own quad, already rotated
+//     into place for curved labels (each glyph carries its own tangent
+//     rotation) — straight labels also get this so per-glyph modes cost the
+//     same regardless of dataset type
+//   - worldX/worldY/worldAngle: a static placement + a fixed rotation
+//     ("regular straight label (rotated)") so AABBs are never trivially axis-aligned
+function generateLabel(id, rng, curved, cfg) {
+    const fontSizePx = 14 + Math.floor(rng() * 10); // 14..24px
+    const word = randomWord(rng, cfg.glyphMin, cfg.glyphMax);
+    const glyphs = [];
+    for (const ch of word) { glyphs.push(charMetrics(ch, fontSizePx)); }
+
+    let totalWidth = 0;
+    for (const g of glyphs) { totalWidth += g.advance; }
+    const totalHeight = fontSizePx * 0.95;
+
+    // curveCy tracks each glyph's position on the underlying curve WITHOUT its
+    // baselineJitter (ascender/descender wobble — a per-glyph rendering detail
+    // every real line of text has, straight or curved, and not a curvature
+    // signal). Segmentation's deviation test uses curveCy, not cy, so jitter
+    // alone can never split a straight run — only actual curvature does.
+    const glyphCenters = []; // {cx, cy, curveCy, halfW, halfH, tangent}
+    if (!curved) {
+        let x = 0;
+        for (const g of glyphs) {
+            const cx = x + g.w / 2;
+            const cy = g.baselineJitter;
+            glyphCenters.push({ cx, cy, curveCy: 0, halfW: g.w / 2, halfH: g.h / 2, tangent: 0 });
+            x += g.advance;
+        }
+    } else {
+        const R = cfg.curveRadius;
+        const totalAngle = totalWidth / R;
+        let s = 0;
+        for (const g of glyphs) {
+            const mid = s + g.advance / 2;
+            const a = (mid / totalWidth) * totalAngle - totalAngle / 2; // centre the arc
+            const cx = R * Math.sin(a);
+            const curveCy = R * (1 - Math.cos(a));
+            const cy = curveCy + g.baselineJitter;
+            glyphCenters.push({ cx, cy, curveCy, halfW: g.w / 2, halfH: g.h / 2, tangent: a });
+            s += g.advance;
+        }
+    }
+
+    // localCorners: 4 corners of the WHOLE run's bounding box, centred like a
+    // real label.bounds box would be. Exact for straight labels; an
+    // approximation (like prod's own full-AABB) for curved ones.
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const gc of glyphCenters) {
+        minX = Math.min(minX, gc.cx - gc.halfW); maxX = Math.max(maxX, gc.cx + gc.halfW);
+        minY = Math.min(minY, gc.cy - gc.halfH); maxY = Math.max(maxY, gc.cy + gc.halfH);
+    }
+    const localCorners = new Float32Array([minX, minY, maxX, minY, maxX, maxY, minX, maxY]);
+
+    // Per-glyph corners, rotated by the glyph's own tangent (0 for straight).
+    const glyphCorners = new Float32Array(glyphCenters.length * 8);
+    for (let i = 0; i < glyphCenters.length; i++) {
+        const gc = glyphCenters[i];
+        const ca = Math.cos(gc.tangent), sa = Math.sin(gc.tangent);
+        const local = [-gc.halfW, -gc.halfH, gc.halfW, -gc.halfH, gc.halfW, gc.halfH, -gc.halfW, gc.halfH];
+        for (let k = 0; k < 4; k++) {
+            const lx = local[k * 2], ly = local[k * 2 + 1];
+            glyphCorners[i * 8 + k * 2]     = gc.cx + lx * ca - ly * sa;
+            glyphCorners[i * 8 + k * 2 + 1] = gc.cy + lx * sa + ly * ca;
+        }
+    }
+
+    const n = glyphCenters.length;
+
+    // ── straight-enough segmentation, TWO independent split rules ───────────
+    // A glyph stays in the current segment until EITHER rule fires:
+    //
+    //   deviation — perpendicular distance (local px) of the glyph from the
+    //               straight line through the segment's start, along the
+    //               start's own tangent direction, exceeds cfg.segmentTol.
+    //               The Douglas-Peucker / Bezier-flattening criterion (a
+    //               distance tolerance, not an angle — scale-correct, unlike
+    //               an angle test where the same few degrees means very
+    //               different real deviation on a tight curve vs a gentle
+    //               one). curveCy (not cy) is used deliberately: it excludes
+    //               each glyph's baselineJitter (ascender/descender wobble —
+    //               rendering noise every real line of text has, not a
+    //               curvature signal). This rule ONLY fires on real
+    //               curvature — a straight run's curveCy is 0 for every
+    //               glyph, so deviation is always exactly 0 there,
+    //               regardless of the tolerance.
+    //   glyph cap — the segment has reached cfg.segmentMaxGlyphs glyphs.
+    //               This is what actually subdivides a STRAIGHT run: without
+    //               it, deviation alone never fires for straight text, so
+    //               the whole label would collapse into one full-label-sized
+    //               box/quad — exactly the "wastes a lot of space" problem a
+    //               single AABB has, just relabelled "segmented." With the
+    //               cap active, a straight label always gets
+    //               ceil(glyphCount / segmentMaxGlyphs) segments, tunable via
+    //               a parameter that has real effect in straight mode too —
+    //               not one that goes inert the moment curvature is zero.
+    //
+    // A curved label still benefits from BOTH: gentle curves ride the glyph
+    // cap same as straight text; tight curves split earlier on deviation,
+    // whichever comes first (see buildSegmentedQuad / buildSegmentedAABB).
+    const segTol = cfg.segmentTol;
+    const segMaxGlyphs = cfg.segmentMaxGlyphs;
+    // Grouping is generation-time only — no build* function reads segRanges per
+    // frame (they all consume the pre-baked segmentCorners below instead), so a
+    // plain array is fine here.
+    const segRanges = []; // flat [start0,count0, start1,count1, ...]
+    {
+        let segStart = 0;
+        for (let i = 1; i <= n; i++) {
+            const atEnd = i === n;
+            let split = atEnd || (i - segStart) >= segMaxGlyphs;
+            if (!split) {
+                const g0 = glyphCenters[segStart], gi = glyphCenters[i];
+                const ca0 = Math.cos(g0.tangent), sa0 = Math.sin(g0.tangent);
+                const dx = gi.cx - g0.cx, dy = gi.curveCy - g0.curveCy; // curveCy: jitter excluded on purpose
+                const deviation = Math.abs(-dx * sa0 + dy * ca0); // perpendicular to g0's tangent line
+                split = deviation > segTol;
+            }
+            if (split) {
+                segRanges.push(segStart, i - segStart);
+                segStart = i;
+            }
+        }
+    }
+    const numSegments = segRanges.length / 2;
+    // Per-segment ORIENTED box, tilted to the segment's own average tangent —
+    // NOT a plain axis-aligned min/max in the curve's base frame. An
+    // axis-aligned box there is aligned to the label's overall coordinate
+    // frame, not to the direction the segment's glyphs actually point, so on
+    // a curve it comes out visibly mis-oriented (loose, wrong inclination)
+    // for every segment except one centred exactly on tangent=0. Fix: for
+    // each segment, de-rotate its glyph corners into a frame aligned with the
+    // segment's own tangent, take the AABB THERE (now correctly oriented),
+    // then rotate that box back — a small oriented-bounding-box computation,
+    // done once at generation time (not per frame, so its cost is free).
+    const segmentCorners = new Float32Array(numSegments * 8);
+    for (let s = 0; s < numSegments; s++) {
+        const start = segRanges[s * 2], count = segRanges[s * 2 + 1];
+        const mid = start + (count - 1) / 2;
+        const segAngle = (glyphCenters[Math.floor(mid)].tangent + glyphCenters[Math.ceil(mid)].tangent) / 2;
+        const ca = Math.cos(segAngle), sa = Math.sin(segAngle);
+
+        let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+        for (let i = start; i < start + count; i++) {
+            for (let k = 0; k < 4; k++) {
+                // glyphCorners are already placed + tilted by each glyph's OWN
+                // tangent — de-rotate by -segAngle to express them relative to
+                // this segment's chosen orientation instead of the base frame.
+                const wx = glyphCorners[i * 8 + k * 2], wy = glyphCorners[i * 8 + k * 2 + 1];
+                const lx = wx * ca + wy * sa, ly = -wx * sa + wy * ca;
+                if (lx < sMinX) { sMinX = lx; } if (lx > sMaxX) { sMaxX = lx; }
+                if (ly < sMinY) { sMinY = ly; } if (ly > sMaxY) { sMaxY = ly; }
+            }
+        }
+        // box corners in the segment's own (de-rotated) frame, rotated back
+        // by +segAngle into the label's base frame
+        const local = [sMinX, sMinY, sMaxX, sMinY, sMaxX, sMaxY, sMinX, sMaxY];
+        for (let k = 0; k < 4; k++) {
+            const lx = local[k * 2], ly = local[k * 2 + 1];
+            segmentCorners[s * 8 + k * 2]     = lx * ca - ly * sa;
+            segmentCorners[s * 8 + k * 2 + 1] = lx * sa + ly * ca;
+        }
+    }
+
+    return {
+        id,
+        glyphCount: n,
+        numSegments,
+        // segmentCorners (the pre-baked per-group oriented box) is what BOTH
+        // segmented builders consume per frame — segRanges is generation-time
+        // scaffolding only and deliberately not exposed.
+        localCorners, glyphCorners, segmentCorners,
+        importance: rng(),
+        worldX: rng() * cfg.viewportW,
+        worldY: rng() * cfg.viewportH,
+        worldAngle: (rng() - 0.5) * 0.9, // static per-label rotation, up to ~±25°
+
+        // ── scratch buffers, allocated ONCE per label (this is "common work",
+        // like layoutText() computing bounds/glyphs once in prod) — every
+        // build* function below only WRITES into these every frame, it never
+        // allocates. This is what makes the per-frame timings honest: the
+        // measured cost is pure arithmetic, not garbage collection pressure.
+        _glyphQuadX: new Float64Array(n * 4), _glyphQuadY: new Float64Array(n * 4), // per-glyph exact-chain corners
+        _segQuadX: new Float64Array(numSegments * 4), _segQuadY: new Float64Array(numSegments * 4), // segmented-quad corners
+        _boxX0: new Float64Array(n), _boxY0: new Float64Array(n),           // per-glyph AABB output
+        _boxX1: new Float64Array(n), _boxY1: new Float64Array(n),
+        _segBoxX0: new Float64Array(numSegments), _segBoxY0: new Float64Array(numSegments), // segmented-AABB output
+        _segBoxX1: new Float64Array(numSegments), _segBoxY1: new Float64Array(numSegments),
+    };
+}
+
+function generateDataset(count, curved, cfg, rng) {
+    const labels = [];
+    for (let i = 0; i < count; i++) { labels.push(generateLabel(i, rng, curved, cfg)); }
+    labels.sort((a, b) => b.importance - a.importance); // fixed priority order, shared by every mode
+    return labels;
+}
+
+// ── shared per-frame rigid "camera": pan + rotate + breathe-zoom, identical
+// across every mode/run so only the bounds model differs ───────────────────
+function frameCamera(frameIdx, frames, cfg) {
+    const t = frameIdx / frames;
+    return {
+        panX: Math.sin(t * Math.PI * 2) * cfg.viewportW * 0.06,
+        panY: Math.cos(t * Math.PI * 1.3) * cfg.viewportH * 0.06,
+        angle: Math.sin(t * Math.PI * 2 * 0.5) * 0.35,
+        scale: 1 + Math.sin(t * Math.PI * 2 * 0.7) * 0.25,
+    };
+}
+
+// ── bitmap occupancy: rect (AABB) + quad (scanline), shared by every mode ──
+function makeBitmap(vw, vh, downscale) {
+    const shift = Math.round(Math.log2(downscale));
+    const W = Math.max(1, Math.ceil(vw / downscale)), H = Math.max(1, Math.ceil(vh / downscale));
+    const wpr = (W + 31) >> 5;
+    let bits = new Uint32Array(wpr * H);
+    const m = (1 << shift) - 1;
+
+    function regionSet(x0, y0, x1, y1) {
+        const wA = x0 >> 5, wB = x1 >> 5;
+        const mA = (0xffffffff << (x0 & 31)) >>> 0, mB = (0xffffffff >>> (31 - (x1 & 31)));
+        for (let y = y0; y <= y1; y++) {
+            const r = y * wpr;
+            if (wA === wB) { bits[r + wA] |= mA & mB; } else {
+                bits[r + wA] |= mA;
+                for (let w = wA + 1; w < wB; w++) { bits[r + w] = 0xffffffff; }
+                bits[r + wB] |= mB;
+            }
+        }
+    }
+    function regionEmpty(x0, y0, x1, y1) {
+        const wA = x0 >> 5, wB = x1 >> 5;
+        const mA = (0xffffffff << (x0 & 31)) >>> 0, mB = (0xffffffff >>> (31 - (x1 & 31)));
+        for (let y = y0; y <= y1; y++) {
+            const r = y * wpr;
+            if (wA === wB) { if ((bits[r + wA] & mA & mB) !== 0) { return false; } } else {
+                if ((bits[r + wA] & mA) !== 0) { return false; }
+                for (let w = wA + 1; w < wB; w++) { if (bits[r + w] !== 0) { return false; } }
+                if ((bits[r + wB] & mB) !== 0) { return false; }
+            }
+        }
+        return true;
+    }
+    // `off` indexes into a flat (possibly multi-quad) qx/qy buffer — this quad's
+    // 4 corners are qx[off..off+3]/qy[off..off+3]. Downscale is applied inline
+    // per corner (no pre-copy into a shifted array — that copy has no prod
+    // equivalent and would inflate the quad TEST cost for no real reason).
+    function quadSpans(qx, qy, off, cb) {
+        const inv = 1 / (1 << shift);
+        let minY = 1e9, maxY = -1e9;
+        for (let k = 0; k < 4; k++) { const y = qy[off + k] * inv; if (y < minY) { minY = y; } if (y > maxY) { maxY = y; } }
+        const y0 = Math.max(0, Math.floor(minY)), y1 = Math.min(H - 1, Math.ceil(maxY));
+        for (let y = y0; y <= y1; y++) {
+            const yt = y, yb = y + 1; let lo = 1e9, hi = -1e9;
+            for (let e = 0; e < 4; e++) {
+                const ax = qx[off + e] * inv, ay = qy[off + e] * inv;
+                const ne = off + ((e + 1) & 3);
+                const bx = qx[ne] * inv, by = qy[ne] * inv;
+                if ((ay <= yt && by > yt) || (by <= yt && ay > yt)) { const x = ax + (bx - ax) * (yt - ay) / (by - ay); if (x < lo) { lo = x; } if (x > hi) { hi = x; } }
+                if ((ay <= yb && by > yb) || (by <= yb && ay > yb)) { const x = ax + (bx - ax) * (yb - ay) / (by - ay); if (x < lo) { lo = x; } if (x > hi) { hi = x; } }
+                if (ay >= yt && ay <= yb) { if (ax < lo) { lo = ax; } if (ax > hi) { hi = ax; } }
+            }
+            if (hi < lo) { continue; }
+            const x0 = Math.max(0, Math.floor(lo)), x1 = Math.min(W - 1, Math.ceil(hi));
+            if (x0 > x1) { continue; }
+            if (cb(y, x0, x1) === false) { return false; }
+        }
+        return true;
+    }
+
+    return {
+        clear() { bits.fill(0); },
+        testRect(x0, y0, x1, y1) {
+            const a = x0 >> shift, b = Math.min(W - 1, (x1 + m) >> shift), c = y0 >> shift, d = Math.min(H - 1, (y1 + m) >> shift);
+            if (a > b || c > d) { return true; }
+            return regionEmpty(a, c, b, d);
+        },
+        markRect(x0, y0, x1, y1) {
+            const a = x0 >> shift, b = Math.min(W - 1, (x1 + m) >> shift), c = y0 >> shift, d = Math.min(H - 1, (y1 + m) >> shift);
+            if (a > b || c > d) { return; }
+            regionSet(a, c, b, d);
+        },
+        testQuad(qx, qy, off = 0) {
+            return quadSpans(qx, qy, off, (y, a, b) => regionEmpty(a, y, b, y));
+        },
+        markQuad(qx, qy, off = 0) {
+            quadSpans(qx, qy, off, (y, a, b) => { regionSet(a, y, b, y); return true; });
+        },
+    };
+}
+
+// ── builders: glyph-run + camera → screen geometry ──────────────────────────
+// Every builder writes into the label's pre-allocated scratch buffers (see
+// generateLabel) — zero heap allocation anywhere in the timed region (not
+// even a small transform object — ca/sa/tx/ty/scale are computed as plain
+// locals, inlined in each function below). The rotation (ca/sa) and
+// translation (tx/ty) implied by `cam` are per-LABEL-per-FRAME constants —
+// computed ONCE per function call and reused across every corner, instead of
+// recomputed per corner (a real cost difference, not just style: for an
+// N-glyph label that's 1 cos/sin pair instead of 4·N).
+
+// Straight labels: O(1) — 4 cached local corners, transformed, reduced to an
+// AABB. Curved labels: O(glyphCount) — no single rigid box exists, so every
+// glyph corner must be walked to find the bbox.
+function buildFullAABB(label, cam, curved) {
+    const angle = label.worldAngle + cam.angle;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const tx = label.worldX + cam.panX, ty = label.worldY + cam.panY, scale = cam.scale;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const pts = curved ? label.glyphCorners : label.localCorners;
+    for (let i = 0; i < pts.length; i += 2) {
+        const lx = pts[i], ly = pts[i + 1];
+        const sx = (lx * ca - ly * sa) * scale + tx;
+        const sy = (lx * sa + ly * ca) * scale + ty;
+        if (sx < minX) { minX = sx; } if (sx > maxX) { maxX = sx; }
+        if (sy < minY) { minY = sy; } if (sy > maxY) { maxY = sy; }
+    }
+    return { x0: minX, y0: minY, x1: maxX, y1: maxY };
+}
+
+// Always O(glyphCount): every glyph's own 4 corners → its own AABB. This is
+// the ONLY mode that needs a per-glyph reduction (min/max per glyph, not just
+// once for the whole label) — that reduction, not the corner transform, is
+// what makes it cost more to build than exact-quad below.
+function buildPerGlyphAABB(label, cam) {
+    const angle = label.worldAngle + cam.angle;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const tx = label.worldX + cam.panX, ty = label.worldY + cam.panY, scale = cam.scale;
+    const gc = label.glyphCorners;
+    const n = label.glyphCount;
+    const bx0 = label._boxX0, by0 = label._boxY0, bx1 = label._boxX1, by1 = label._boxY1;
+    for (let i = 0; i < n; i++) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let k = 0; k < 4; k++) {
+            const lx = gc[i * 8 + k * 2], ly = gc[i * 8 + k * 2 + 1];
+            const sx = (lx * ca - ly * sa) * scale + tx;
+            const sy = (lx * sa + ly * ca) * scale + ty;
+            if (sx < minX) { minX = sx; } if (sx > maxX) { maxX = sx; }
+            if (sy < minY) { minY = sy; } if (sy > maxY) { maxY = sy; }
+        }
+        bx0[i] = minX; by0[i] = minY; bx1[i] = maxX; by1[i] = maxY;
+    }
+    return { n, x0: bx0, y0: by0, x1: bx1, y1: by1 };
+}
+
+// The TRUE ground truth, for both straight and curved: one rotated quad PER
+// GLYPH, always — a label's real ink is never one solid rectangle (glyphs
+// have gaps between them and different widths/heights; see GlyphInfo.w/h in
+// prod, which real fonts populate per-character). A single box spanning a
+// whole straight run is an approximation exactly like full-label AABB, just
+// rotated — it is NOT exact, so it no longer gets to shortcut here. (The O(1)
+// shortcut for "straight enough" runs still exists — see buildSegmentedQuad,
+// which earns it honestly instead of hardcoding it as "the straight case.")
+// Always O(glyphCount): same n·4 corner transforms as buildPerGlyphAABB, but
+// no reduction — every transformed corner is written out as-is (the
+// occupancy test needs the real polygon vertices to walk its boundary).
+function buildGlyphChain(label, cam) {
+    const angle = label.worldAngle + cam.angle;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const tx = label.worldX + cam.panX, ty = label.worldY + cam.panY, scale = cam.scale;
+    const gc = label.glyphCorners;
+    const n = label.glyphCount;
+    const qx = label._glyphQuadX, qy = label._glyphQuadY;
+    for (let i = 0; i < n * 4; i++) {
+        const lx = gc[i * 2], ly = gc[i * 2 + 1];
+        qx[i] = (lx * ca - ly * sa) * scale + tx;
+        qy[i] = (lx * sa + ly * ca) * scale + ty;
+    }
+    return { n, qx, qy };
+}
+
+// The middle ground: cut the run into K quads (K = label.numSegments), one
+// per group of consecutive glyphs, where a group closes as soon as either its
+// deviation from a straight line exceeds `segmentTol` OR it reaches
+// `segmentMaxGlyphs` glyphs (computed once at generation time — see
+// generateLabel). A straight label's deviation is always 0, so the glyph cap
+// is what actually splits it: numSegments = ceil(glyphCount / segmentMaxGlyphs),
+// not 1 — a deliberate choice so a straight run gets real subdivision instead
+// of one full-label-sized quad that wastes the same space full-label AABB
+// does, just rotated with it. Each group's box is pre-baked once, so build
+// cost here is O(K) corner transforms, not O(glyphCount) — cheaper whenever
+// K < glyphCount, at the cost of being less than fully exact (see
+// mismatchVsGroundTruth).
+function buildSegmentedQuad(label, cam) {
+    const angle = label.worldAngle + cam.angle;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const tx = label.worldX + cam.panX, ty = label.worldY + cam.panY, scale = cam.scale;
+    const sc = label.segmentCorners;
+    const n = label.numSegments;
+    const qx = label._segQuadX, qy = label._segQuadY;
+    for (let i = 0; i < n * 4; i++) {
+        const lx = sc[i * 2], ly = sc[i * 2 + 1];
+        qx[i] = (lx * ca - ly * sa) * scale + tx;
+        qy[i] = (lx * sa + ly * ca) * scale + ty;
+    }
+    return { n, qx, qy };
+}
+
+// Same K segments as buildSegmentedQuad — same grouping (deviation tolerance
+// + glyph cap), same pre-baked per-segment box (label.segmentCorners) — but
+// each group's box is reduced to a screen-space AABB instead of being kept as
+// an oriented quad. Cheaper to TEST (bitmap.testRect, no scanline walk),
+// looser fit (an AABB around a tilted group has rotation slack the matching
+// oriented quad doesn't).
+//
+// Cost is O(4·K): exactly buildSegmentedQuad's transform work plus a min/max
+// reduction, minus the corner stores. It deliberately does NOT re-walk
+// label.glyphCorners: an earlier version did (3 nested loops, 4·N transforms
+// per frame just to emit K boxes) and that made this the slowest builder of
+// all by a wide margin — while ALSO being less accurate than per-glyph AABB,
+// i.e. strictly dominated, a point on the trade-off curve with no reason to
+// exist. Reusing the pre-baked box is what makes segmented AABB coherent:
+// cheapest build of the grouped/per-glyph family, cheap rect test, tightness
+// between full-label and per-glyph.
+//
+// The bounds are therefore the screen AABB of the segment's oriented box, not
+// of its raw glyphs — a hair looser (the OBB already contains the glyphs, so
+// its screen AABB contains theirs), which is the price of the O(K) build.
+function buildSegmentedAABB(label, cam) {
+    const angle = label.worldAngle + cam.angle;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const tx = label.worldX + cam.panX, ty = label.worldY + cam.panY, scale = cam.scale;
+    const sc = label.segmentCorners;
+    const n = label.numSegments;
+    const bx0 = label._segBoxX0, by0 = label._segBoxY0, bx1 = label._segBoxX1, by1 = label._segBoxY1;
+    for (let s = 0; s < n; s++) {
+        const b = s * 8;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let k = 0; k < 4; k++) {
+            const lx = sc[b + k * 2], ly = sc[b + k * 2 + 1];
+            const sx = (lx * ca - ly * sa) * scale + tx;
+            const sy = (lx * sa + ly * ca) * scale + ty;
+            if (sx < minX) { minX = sx; } if (sx > maxX) { maxX = sx; }
+            if (sy < minY) { minY = sy; } if (sy > maxY) { maxY = sy; }
+        }
+        bx0[s] = minX; by0[s] = minY; bx1[s] = maxX; by1[s] = maxY;
+    }
+    return { n, x0: bx0, y0: by0, x1: bx1, y1: by1 };
+}
+
+// ── one full sweep: run all frames for one mode, against a shared fresh
+// bitmap, returning per-frame per-label placement decisions + timings ──────
+function runMode(kind, labels, curved, cfg, cam0Frames) {
+    const bitmap = makeBitmap(cfg.viewportW, cfg.viewportH, cfg.downscale);
+    let buildMs = 0, testMs = 0;
+    const decisions = new Uint8Array(cfg.frames * labels.length);
+    let placedTotal = 0;
+
+    for (let f = 0; f < cfg.frames; f++) {
+        const cam = cam0Frames[f];
+        bitmap.clear();
+        for (let li = 0; li < labels.length; li++) {
+            const label = labels[li];
+            let placed = false;
+
+            if (kind === 'fullAABB') {
+                const t0 = performance.now();
+                const box = buildFullAABB(label, cam, curved);
+                buildMs += performance.now() - t0;
+                const t1 = performance.now();
+                placed = bitmap.testRect(box.x0, box.y0, box.x1, box.y1);
+                if (placed) { bitmap.markRect(box.x0, box.y0, box.x1, box.y1); }
+                testMs += performance.now() - t1;
+            } else if (kind === 'perGlyphAABB') {
+                const t0 = performance.now();
+                const r = buildPerGlyphAABB(label, cam);
+                buildMs += performance.now() - t0;
+                const t1 = performance.now();
+                placed = true;
+                for (let i = 0; i < r.n; i++) { if (!bitmap.testRect(r.x0[i], r.y0[i], r.x1[i], r.y1[i])) { placed = false; break; } }
+                if (placed) { for (let i = 0; i < r.n; i++) { bitmap.markRect(r.x0[i], r.y0[i], r.x1[i], r.y1[i]); } }
+                testMs += performance.now() - t1;
+            } else if (kind === 'segmentedAABB') { // n = numSegments — same groups as segmentedQuad, tested as rects
+                const t0 = performance.now();
+                const r = buildSegmentedAABB(label, cam);
+                buildMs += performance.now() - t0;
+                const t1 = performance.now();
+                placed = true;
+                for (let i = 0; i < r.n; i++) { if (!bitmap.testRect(r.x0[i], r.y0[i], r.x1[i], r.y1[i])) { placed = false; break; } }
+                if (placed) { for (let i = 0; i < r.n; i++) { bitmap.markRect(r.x0[i], r.y0[i], r.x1[i], r.y1[i]); } }
+                testMs += performance.now() - t1;
+            } else if (kind === 'segmentedQuad') { // n = numSegments (1 for straight, curvature-adaptive otherwise)
+                const t0 = performance.now();
+                const r = buildSegmentedQuad(label, cam);
+                buildMs += performance.now() - t0;
+                const t1 = performance.now();
+                placed = true;
+                for (let i = 0; i < r.n; i++) { if (!bitmap.testQuad(r.qx, r.qy, i * 4)) { placed = false; break; } }
+                if (placed) { for (let i = 0; i < r.n; i++) { bitmap.markQuad(r.qx, r.qy, i * 4); } }
+                testMs += performance.now() - t1;
+            } else { // exactQuad (ground truth) — n = glyphCount, always
+                const t0 = performance.now();
+                const r = buildGlyphChain(label, cam);
+                buildMs += performance.now() - t0;
+                const t1 = performance.now();
+                placed = true;
+                for (let i = 0; i < r.n; i++) { if (!bitmap.testQuad(r.qx, r.qy, i * 4)) { placed = false; break; } }
+                if (placed) { for (let i = 0; i < r.n; i++) { bitmap.markQuad(r.qx, r.qy, i * 4); } }
+                testMs += performance.now() - t1;
+            }
+
+            decisions[f * labels.length + li] = placed ? 1 : 0;
+            if (placed) { placedTotal++; }
+        }
+    }
+
+    return {
+        buildMsPerFrame: buildMs / cfg.frames,
+        testMsPerFrame: testMs / cfg.frames,
+        placedAvg: placedTotal / cfg.frames,
+        decisions,
+    };
+}
+
+function mismatchVsGroundTruth(decisions, ground, frames, n) {
+    let falseAccept = 0, falseReject = 0;
+    for (let i = 0; i < frames * n; i++) {
+        const d = decisions[i], g = ground[i];
+        if (d === 1 && g === 0) { falseAccept++; }
+        else if (d === 0 && g === 1) { falseReject++; }
+    }
+    const total = frames * n;
+    return { falseAcceptPct: 100 * falseAccept / total, falseRejectPct: 100 * falseReject / total };
+}
+
+// ── orchestration ────────────────────────────────────────────────────────────
+function readConfig() {
+    const v = id => +document.getElementById(id).value;
+    return {
+        count: Math.max(1, v('cfg-count')),
+        frames: Math.max(1, v('cfg-frames')),
+        glyphMin: Math.max(1, v('cfg-glyphmin')),
+        glyphMax: Math.max(v('cfg-glyphmin'), v('cfg-glyphmax')),
+        viewportW: Math.max(100, v('cfg-vw')),
+        viewportH: Math.max(100, v('cfg-vh')),
+        downscale: Math.max(1, v('cfg-downscale')),
+        curveRadius: Math.max(20, v('cfg-curverad')),
+        segmentTol: Math.max(0, v('cfg-segtol')),
+        segmentMaxGlyphs: Math.max(1, v('cfg-segmaxglyphs') | 0),
+        seed: v('cfg-seed') || 1,
+    };
+}
+
+const MODES = [
+    { key: 'fullAABB',      label: 'Full-label AABB' },
+    { key: 'segmentedAABB', label: 'Segmented AABB' },
+    { key: 'perGlyphAABB',  label: 'Per-glyph AABB' },
+    { key: 'segmentedQuad', label: 'Segmented quad' },
+    { key: 'exactQuad',     label: 'Exact quad (ground truth)' },
+];
+
+function runComparison(curved, cfg) {
+    const rng = mulberry32(cfg.seed + (curved ? 7 : 0));
+    const labels = generateDataset(cfg.count, curved, cfg, rng);
+    const camFrames = [];
+    for (let f = 0; f < cfg.frames; f++) { camFrames.push(frameCamera(f, cfg.frames, cfg)); }
+
+    // Ground truth first — every other mode is diffed against it.
+    const gt = runMode('exactQuad', labels, curved, cfg, camFrames);
+    const results = { exactQuad: gt };
+    for (const m of MODES) {
+        if (m.key === 'exactQuad') { continue; }
+        results[m.key] = runMode(m.key, labels, curved, cfg, camFrames);
+        Object.assign(results[m.key], mismatchVsGroundTruth(results[m.key].decisions, gt.decisions, cfg.frames, labels.length));
+    }
+
+    const avgGlyphs = labels.reduce((s, l) => s + l.glyphCount, 0) / labels.length;
+    return { results, avgGlyphs, labelCount: labels.length, labels };
+}
+
+function fmt(n, d = 2) { return typeof n === 'number' && isFinite(n) ? n.toFixed(d) : '--'; }
+
+function renderTable(title, tag, { results, avgGlyphs, labelCount }) {
+    const rows = MODES.map(m => {
+        const r = results[m.key];
+        return {
+            label: m.label, isGT: m.key === 'exactQuad',
+            build: r.buildMsPerFrame, test: r.testMsPerFrame,
+            total: r.buildMsPerFrame + r.testMsPerFrame,
+            placed: r.placedAvg,
+            fa: r.falseAcceptPct, fr: r.falseRejectPct,
+        };
+    });
+    const cols = [
+        { k: 'build', t: 'build ms/f', better: 'low' }, { k: 'test', t: 'test ms/f', better: 'low' },
+        { k: 'total', t: 'total ms/f', better: 'low' }, { k: 'placed', t: 'placed avg', better: 'high' },
+        { k: 'fa', t: 'false-accept %', better: 'low' }, { k: 'fr', t: 'false-reject %', better: 'low' },
+    ];
+    const best = {}, worst = {};
+    for (const c of cols) {
+        const vs = rows.map(r => r[c.k]).filter(v => isFinite(v));
+        if (!vs.length) { continue; }
+        best[c.k] = c.better === 'low' ? Math.min(...vs) : Math.max(...vs);
+        worst[c.k] = c.better === 'low' ? Math.max(...vs) : Math.min(...vs);
+    }
+    const head = `<tr><th>Bounds model</th>${cols.map(c => `<th>${c.t}</th>`).join('')}</tr>`;
+    const body = rows.map(r => `<tr><td>${r.label}${r.isGT ? '<span class="tag gt">ground truth</span>' : ''}</td>${
+        cols.map(c => {
+            if (r.isGT && (c.k === 'fa' || c.k === 'fr')) { return `<td class="dim">--</td>`; }
+            const v = r[c.k];
+            const cls = rows.length > 1 && isFinite(v) ? (v === best[c.k] ? 'best' : v === worst[c.k] ? 'worst' : '') : '';
+            return `<td class="${cls}">${fmt(v, c.k === 'placed' ? 1 : 2)}</td>`;
+        }).join('')
+    }</tr>`).join('');
+    return `<h2>${title}</h2>
+        <p class="dim" style="font-size:11px">${labelCount} labels · avg ${avgGlyphs.toFixed(1)} glyphs/label</p>
+        <table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+// ── visual preview ───────────────────────────────────────────────────────────
+// Draws the SAME geometry the benchmark measured — every shape below comes
+// straight out of buildFullAABB/buildPerGlyphAABB/buildSegmentedQuad/
+// buildGlyphChain, just fed a "preview camera" that re-centres one label at a
+// time instead of the real per-frame sweep camera. No separate/duplicated
+// drawing math, so the picture can never silently drift from what was
+// actually timed.
+let _previewJobs = [];
+
+function pickSamples(labels, k = 3) {
+    if (!labels || !labels.length) { return []; }
+    const step = Math.max(1, Math.floor(labels.length / k));
+    const out = [];
+    for (let i = 0; i < labels.length && out.length < k; i += step) { out.push(labels[i]); }
+    return out;
+}
+
+// The label's own rotated extent (via the same buildFullAABB used for timing),
+// recentred at the origin, sized to fit — so the picture is never accidentally
+// clipped or microscopic regardless of fontSize/glyph-count/rotation.
+function fitZoom(label, curved, tileW, tileH, margin) {
+    const box = buildFullAABB(label, { panX: -label.worldX, panY: -label.worldY, angle: 0, scale: 1 }, curved);
+    const w = Math.max(1, box.x1 - box.x0), h = Math.max(1, box.y1 - box.y0);
+    return Math.min(tileW * margin / w, tileH * margin / h, 10);
+}
+
+function renderPreviewSection(title, samples, curved) {
+    const id = 'preview-' + (curved ? 'curved' : 'straight');
+    _previewJobs.push({ id, samples, curved });
+    return `<h2>${title}</h2>
+        <p class="dim" style="font-size:11px">
+            <span style="color:#c77dff">■</span> glyph ink (= exact quad, ground truth) &nbsp;
+            <span style="color:#4f9dff">▭</span> full-label AABB &nbsp;
+            <span style="color:#56d193">▭</span> segmented AABB &nbsp;
+            <span style="color:#ffb454">▭</span> per-glyph AABB &nbsp;
+            <span style="color:#00e5ff">▭</span> segmented quad
+        </p>
+        <canvas id="${id}" width="1080" height="170"
+            style="background:#0a0e17;border:1px solid #2a3450;border-radius:4px;max-width:100%;display:block;"></canvas>`;
+}
+
+function drawQuadPath(ctx, qx, qy, off) {
+    ctx.beginPath();
+    for (let k = 0; k < 4; k++) {
+        const x = qx[off + k], y = qy[off + k];
+        if (k === 0) { ctx.moveTo(x, y); } else { ctx.lineTo(x, y); }
+    }
+    ctx.closePath();
+}
+
+function drawPreviewCanvas(canvas, samples, curved) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!samples.length) { return; }
+    const tileW = w / samples.length;
+
+    for (let s = 0; s < samples.length; s++) {
+        const label = samples[s];
+        const cx = tileW * s + tileW / 2, cy = h / 2 + 6;
+        const zoom = fitZoom(label, curved, tileW, h, 0.62);
+        const cam = { panX: cx - label.worldX, panY: cy - label.worldY, angle: 0, scale: zoom };
+
+        if (s > 0) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(tileW * s, 0); ctx.lineTo(tileW * s, h); ctx.stroke();
+        }
+
+        // 1. glyph ink = exact quad = ground truth — one rotated quad PER
+        // GLYPH, always. This is the same call runMode uses for 'exactQuad'.
+        const ink = buildGlyphChain(label, cam);
+        ctx.fillStyle = 'rgba(199,125,255,0.28)'; ctx.strokeStyle = 'rgba(199,125,255,0.9)';
+        ctx.lineWidth = 1; ctx.setLineDash([]);
+        for (let i = 0; i < ink.n; i++) { drawQuadPath(ctx, ink.qx, ink.qy, i * 4); ctx.fill(); ctx.stroke(); }
+
+        // 2. full-label AABB — dashed
+        const full = buildFullAABB(label, cam, curved);
+        ctx.strokeStyle = '#4f9dff'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+        ctx.strokeRect(full.x0, full.y0, full.x1 - full.x0, full.y1 - full.y0);
+
+        // 3. segmented AABB — same groups as segmented quad (below), reduced
+        // to plain screen-space rects instead of kept oriented
+        const segBox = buildSegmentedAABB(label, cam);
+        ctx.strokeStyle = '#56d193'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+        for (let i = 0; i < segBox.n; i++) { ctx.strokeRect(segBox.x0[i], segBox.y0[i], segBox.x1[i] - segBox.x0[i], segBox.y1[i] - segBox.y0[i]); }
+
+        // 4. per-glyph AABB
+        const pg = buildPerGlyphAABB(label, cam);
+        ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 1; ctx.setLineDash([]);
+        for (let i = 0; i < pg.n; i++) { ctx.strokeRect(pg.x0[i], pg.y0[i], pg.x1[i] - pg.x0[i], pg.y1[i] - pg.y0[i]); }
+
+        // 5. segmented quad — ceil(glyphCount / Seg. max glyphs) quads even for
+        // a straight label (the glyph cap, not curvature, drives it there),
+        // plus however many extra splits curvature demands for a curved one.
+        const seg = buildSegmentedQuad(label, cam);
+        ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 1.5; ctx.setLineDash([2, 3]);
+        for (let i = 0; i < seg.n; i++) { drawQuadPath(ctx, seg.qx, seg.qy, i * 4); ctx.stroke(); }
+
+        ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'center';
+        ctx.fillText(`${label.glyphCount} glyphs / ${label.numSegments} seg`, cx, h - 8);
+    }
+}
+
+// Must run AFTER the containing HTML (with the <canvas> elements) is in the
+// DOM — renderPreviewSection only queues the job, this does the actual draw.
+function drawPreviews() {
+    for (const job of _previewJobs) {
+        const canvas = document.getElementById(job.id);
+        if (canvas) { drawPreviewCanvas(canvas, job.samples, job.curved); }
+    }
+    _previewJobs = [];
+}
+
+const elRun = document.getElementById('btn-run');
+const elExport = document.getElementById('btn-export');
+const elStatus = document.getElementById('status');
+const elResults = document.getElementById('results');
+let _lastPayload = null;
+
+async function run() {
+    elRun.disabled = true; elExport.disabled = true;
+    elStatus.textContent = 'RUNNING…';
+    elResults.innerHTML = '';
+    await new Promise(r => setTimeout(r, 0)); // let the UI paint before blocking
+
+    const cfg = readConfig();
+    const straight = runComparison(false, cfg);
+    elStatus.textContent = 'RUNNING… (curved)';
+    await new Promise(r => setTimeout(r, 0));
+    const curved = runComparison(true, cfg);
+
+    elResults.innerHTML =
+        `<div class="note">
+            <b>Build</b> = deriving screen geometry from cached glyph offsets/sizes — identical input for every row,
+            same glyph position + size (real fonts vary both per character, same as this bench's charMetrics — see
+            GlyphInfo.w/h in prod), zero per-frame heap allocation (see generateLabel's pre-allocated scratch
+            buffers). <b>Test</b> = the occupancy calls on the one shared bitmap (${cfg.downscale}× downscale).<br>
+            <b>Exact quad is always the per-glyph chain</b> — a single rotated box over a straight run is NOT a
+            label's real ink (glyphs have gaps and different sizes), so it isn't ground truth; the middle ground is
+            <b>segmented quad / segmented AABB</b> instead, both grouping consecutive glyphs while EITHER (a) they
+            stay within <code>Seg. tolerance</code> px of a straight line (a perpendicular-deviation test,
+            scale-independent, ignoring baseline jitter — only fires on real curvature) OR (b) the group reaches
+            <code>Seg. max glyphs</code> — then either kept oriented (quad) or reduced to a plain rect (AABB). (a)
+            never fires for a straight label (deviation is always exactly 0 there), so (b) is what actually
+            subdivides it — without it, "segmented" would collapse to one full-label-sized box, no tighter than
+            plain full-label AABB.<br>
+            <b>Build cost = corners transformed per frame</b>, which depends on what each mode can reuse from
+            generation time. Both segmented rows transform <b>4·K</b> corners (K = groups) because each group's box is
+            pre-baked once (<code>segmentCorners</code>) — they never touch individual glyphs at build time.
+            Per-glyph AABB and exact quad transform <b>4·N</b> (N = glyphs) by definition. Full-label AABB is 4 for a
+            straight label (one cached box) but 4·N for a curved one, since no single rigid box exists there — which
+            is why on <b>curved</b> labels the segmented rows out-build even full-label AABB while being much tighter
+            than it.<br>
+            <b>Test cost is where exactness gets paid for:</b> rasterising quads via per-row scanline decomposition
+            costs several times more than testing the same number of plain rectangles — hence the ordering
+            full/segmented AABB &lt; per-glyph AABB &lt; segmented quad &lt; exact quad. Same K groups, AABB vs quad:
+            the AABB is cheaper to test but looser, because a screen AABB around a tilted group carries rotation slack
+            the matching oriented quad doesn't.<br>
+            <b>Net:</b> segmented AABB is the cheap-and-loose end of the grouped family (fastest non-trivial build,
+            near-rect test cost, ~30–40% lower false-reject rate than full-label AABB at the default cap of 3),
+            segmented quad the tight-but-test-heavy end, and per-glyph/exact the tightest at full 4·N build plus the
+            heaviest tests.
+        </div>` +
+        renderTable('Straight labels (rotated)', 'straight', straight) +
+        renderTable('Curved labels', 'curved', curved) +
+        renderPreviewSection('Straight labels — visual', pickSamples(straight.labels), false) +
+        renderPreviewSection('Curved labels — visual', pickSamples(curved.labels), true);
+
+    drawPreviews();
+
+    _lastPayload = {
+        type: 'bounds-granularity', config: cfg,
+        straight: summarizeForExport(straight), curved: summarizeForExport(curved),
+    };
+    elExport.disabled = false;
+    elStatus.textContent = 'DONE';
+    elRun.disabled = false;
+}
+
+function summarizeForExport(r) {
+    const out = { labelCount: r.labelCount, avgGlyphs: r.avgGlyphs, modes: {} };
+    for (const m of MODES) {
+        const v = r.results[m.key];
+        out.modes[m.key] = {
+            buildMsPerFrame: v.buildMsPerFrame, testMsPerFrame: v.testMsPerFrame,
+            placedAvg: v.placedAvg,
+            falseAcceptPct: v.falseAcceptPct ?? null, falseRejectPct: v.falseRejectPct ?? null,
+        };
+    }
+    return out;
+}
+
+elRun.addEventListener('click', run);
+elExport.addEventListener('click', () => {
+    if (!_lastPayload) { return; }
+    const blob = new Blob([JSON.stringify(_lastPayload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `bounds-granularity-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+});
+</script>
+</body>
+</html>

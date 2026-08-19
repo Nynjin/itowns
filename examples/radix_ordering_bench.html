@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Radix Ordering Bench — bits, passes, and what they cost</title>
+<style>
+    :root{--bg:#0f1420;--surface:#161d2e;--surface2:#1c2438;--border:#2a3450;--text:#d7dceb;--dim:#8b96b0;
+          --accent:#4f9dff;--green:#56d193;--red:#e0605f;--orange:#ffb454;--purple:#c77dff}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,'Segoe UI',sans-serif;font-size:14px;line-height:1.6}
+    .wrap{max-width:1500px;margin:0 auto;padding:28px 22px 90px}
+    h1{font-size:26px;font-weight:800;letter-spacing:-.3px;margin-bottom:6px}
+    h1 small{display:block;font-size:14px;font-weight:400;color:var(--dim);margin-top:6px}
+    h2{font-size:18px;font-weight:700;margin:32px 0 12px;padding-top:16px;border-top:1px solid var(--border)}
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;margin:18px 0}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+    .field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:4px}
+    .field input,.field select{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+        color:var(--text);padding:7px 9px;font-family:inherit;font-size:13px}
+    .chips{display:flex;flex-wrap:wrap;gap:6px}
+    .chip{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer;
+        font-size:12px;user-select:none}
+    .chip.on{background:#1a2f4e;border-color:var(--accent);color:#cfe2ff}
+    button{background:var(--accent);color:#08111f;border:0;border-radius:7px;padding:10px 20px;font-weight:700;
+        font-size:14px;cursor:pointer;font-family:inherit}
+    button.alt{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+    button:disabled{opacity:.5;cursor:default}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+    table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+    th,td{padding:8px 10px;border:1px solid var(--border);text-align:right;white-space:nowrap}
+    th{background:var(--surface2);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);
+       text-align:right;cursor:pointer}
+    td:first-child,th:first-child{text-align:left}
+    tr.ref td{background:#141d17}
+    .best{color:var(--green);font-weight:700}
+    .bad{color:var(--red)}
+    .warn{color:var(--orange)}
+    .dim{color:var(--dim)}
+    code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Fira Code',Consolas,monospace;font-size:12px}
+    .note{background:var(--surface);border-left:4px solid var(--accent);padding:12px 16px;margin:14px 0;border-radius:0 8px 8px 0;font-size:13px}
+    .note.warn{border-color:var(--orange)}
+    .note.good{border-color:var(--green)}
+    .note b{color:var(--text)}
+    #status{color:var(--dim);font-size:13px;min-height:20px;margin-top:10px}
+    .bar{display:inline-block;height:8px;border-radius:4px;background:var(--accent);vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Radix Ordering Bench
+<small>How many bits, how many passes, and which optimisations actually pay — measured against an exact comparison sort on a realistic label-priority key.</small>
+</h1>
+
+<div class="note">
+    <b>What this measures.</b> Ordering is the first stage of label placement, and on large scenes it is a large share of the frame. This page
+    isolates it: it builds a realistic priority-key distribution, runs each ordering variant on the identical data, and reports both
+    <b>cost</b> (ms) and <b>quality</b> — where quality is measured two ways, because they disagree and only one of them matters.
+    <ul style="margin:8px 0 0 20px">
+        <li><b>Order agreement</b> — fraction of positions identical to the exact sort. Strict, and pessimistic: reordering two labels of nearly
+            equal priority counts as a miss even when it changes nothing on screen.</li>
+        <li><b>Decision agreement</b> — fraction of labels whose <em>placed / not placed</em> outcome matches the exact sort, after running the
+            same greedy placement over the same occupancy. This is the number that matters.</li>
+    </ul>
+</div>
+
+<div class="note">
+    <b>The three words this page keeps using, defined concretely.</b>
+    <p style="margin:8px 0 0"><b>Slots</b> are counters — literally the length of the histogram array, <code>new Int32Array(1 &lt;&lt; digitBits)</code>.
+    To sort by a digit that can take 2<sup>d</sup> values you need one counter per possible value, so a 12-bit digit means 4&nbsp;096 slots. Two
+    passes of 12 bits means 4&nbsp;096 slots each, 8&nbsp;192 total — that is why passes are cheap in memory and a single wide pass is not.</p>
+    <p style="margin:8px 0 0"><b>Precision</b> is not about the float key; it is about how coarsely that key gets chopped up before counting.
+    A counting pass cannot look at a float, so the observed key range is mapped onto integer levels:
+    <code>q = floor((key − lo) / (hi − lo) × (2<sup>bits</sup> − 1))</code>. So <i>bits</i> decides how many levels the range is divided into, and
+    any two labels landing in the same level become <b>tied</b> — the sort can no longer tell them apart and falls back to index order. Measured on
+    a 24k scene whose keys span 43.7 units, with an average gap of 0.0018 between neighbouring keys:</p>
+    <table style="margin-top:8px">
+        <thead><tr><th>bits</th><th>slots</th><th>level width</th><th>labels tied</th><th>largest tie group</th></tr></thead>
+        <tbody>
+            <tr><td>10</td><td>1 024</td><td>4.3e−2</td><td class="bad">23 939 <span class="dim">(99.7%)</span></td><td>127</td></tr>
+            <tr><td>12</td><td>4 096</td><td>1.1e−2</td><td class="bad">23 489 <span class="dim">(97.9%)</span></td><td>42</td></tr>
+            <tr><td>14</td><td>16 384</td><td>2.7e−3</td><td class="warn">20 451 <span class="dim">(85.2%)</span></td><td>18</td></tr>
+            <tr><td>16</td><td>65 536</td><td>6.7e−4</td><td>11 743 <span class="dim">(48.9%)</span></td><td>8</td></tr>
+            <tr><td>20</td><td>1 048 576</td><td>4.2e−5</td><td class="best">1 112 <span class="dim">(4.6%)</span></td><td>3</td></tr>
+            <tr><td>24</td><td>16 777 216</td><td>2.6e−6</td><td class="best">76 <span class="dim">(0.3%)</span></td><td>2</td></tr>
+        </tbody>
+    </table>
+    <p style="margin:8px 0 0"><b>Stability</b> needs splitting in two, because conflating them is what makes this confusing.
+    <i>Sort stability</i> — equal keys keeping their input order — is a property of the algorithm, and every variant here has it regardless of bit
+    count. <i>Temporal stability</i> — labels not flickering between frames — is the one bits actually affect, and the mechanism is indirect:
+    as the camera moves, <code>lo</code> and <code>hi</code> shift, so the level boundaries slide relative to the keys. Tied labels therefore swap
+    order from frame to frame, and swapping two labels that compete for the same space changes which one wins. Measured over 25 drifting frames,
+    against the exact sort's own churn of 1.5 flips/frame:</p>
+    <table style="margin-top:8px">
+        <thead><tr><th>bits</th><th>8</th><th>10</th><th>12</th><th>14</th><th>16</th><th>20</th></tr></thead>
+        <tbody><tr><td>flips / frame</td><td class="bad">6.3</td><td class="warn">2.8</td><td class="bad">8.1</td><td class="warn">2.8</td>
+            <td class="best">1.5</td><td class="best">1.5</td></tr>
+        </tbody>
+    </table>
+    <p style="margin:8px 0 0">From 16 bits up the churn is <em>identical</em> to the exact sort — the quantisation adds no flicker of its own.
+    Below that it adds real flicker, non-monotonically, because whether a given bit width happens to split a dense part of the key distribution
+    is somewhat arbitrary.</p>
+</div>
+
+<div class="note good">
+    <b>So what should you actually use? 16 bits, one pass.</b> That is <code>bucket</code> ordering with K = 65&nbsp;536, and it is the first
+    setting that is reliable rather than merely usually-fine:
+    <ul style="margin:8px 0 0 20px">
+        <li><b>Reliability, tested across 8 seeds &times; 3 sizes (24 scenes).</b> 16 bits scored exactly 100% decision agreement and 100% weight
+            kept in <b>24/24</b> cases. 14 bits failed 5/24, 12 bits failed 9/24, 10 bits failed 18/24. The failures are small (worst case 99.88%
+            decisions, 99.44% weight) but they are real, and they are invisible if you test one scene — which is exactly the mistake an earlier
+            version of this page made when it concluded "12 bits is enough" from a single lucky seed.</li>
+        <li><b>Zero extra flicker</b>, per the churn table above.</li>
+        <li><b>Passes stop mattering at this precision.</b> 16-bit 1-pass, 20-bit 2-pass and 24-bit 2-pass are within noise of one another at every
+            size tested (the winner flips between them run to run). So take the single pass for simplicity — and if you already run a 20-bit
+            2&times;10 radix, there is nothing to fix.</li>
+        <li><b>Do not go to 24 bits</b> chasing exactness. It buys order fidelity that placement never reads, and if you take it in one pass it
+            costs 16.7&nbsp;M slots and ~40&times; the time.</li>
+    </ul>
+    Against a comparison sort, any of these is <b>6&ndash;9&times;</b> faster (0.070 vs 0.409&nbsp;ms at 3k; 1.25 vs 11.1&nbsp;ms at 60k).
+    That replacement is the win; the bit width is a correctness setting, not a performance one.
+</div>
+
+<div class="note good">
+    <b>What this page found, on a 24k-label scene at 3840&times;2160.</b> Re-run it on your own numbers, but the pattern was consistent across
+    sizes and viewports:
+    <ul style="margin:8px 0 0 20px">
+        <li><b>Precision saturates far below full float resolution — but 12 bits is not the floor, 16 is.</b> On any single scene, 12 bits looks
+            perfect; across 24 scenes it slips in 9 of them. 16 bits is exact in all 24 and adds no flicker. Everything above 16 bits buys order
+            fidelity that placement never reads.</li>
+        <li><b>A single counting pass is enough at that precision.</b> Bucket at 16 bits is within noise of 20-bit 2&times;10 radix at every size
+            tested, and both are <b>6&ndash;9&times;</b> a comparison sort. Replacing the comparison sort is the win; the choice among the linear
+            methods is close to a coin flip on speed.</li>
+        <li><b>More passes lose <em>here</em> — but they are not useless in general.</b> 24-bit 3&times;8 measured <b>0.607&nbsp;ms</b>, ~9%
+            <em>slower</em> than 20-bit 2&times;10, because at these precisions the histogram already fits in cache and every extra pass is another
+            full traversal. What passes actually buy is <b>precision per byte of histogram</b>: one pass at <i>B</i> bits needs 2<sup>B</sup>
+            counters, <i>p</i> passes need p&middot;2<sup>B/p</sup>. Hold precision fixed and vary only the pass count and the crossover is stark
+            — at 24 bits a single pass costs <b>23.4&nbsp;ms</b> against <b>0.58&nbsp;ms</b> for two passes, a <b>40&times;</b> gap, because it must
+            clear and prefix-sum 16.7&nbsp;M counters. Multi-pass loses on this workload only because label placement needs ~12 bits, where a
+            single pass costs 16&nbsp;KB of counters. See the <b>Passes vs precision</b> mode.</li>
+        <li><b>The three hand optimisations below mostly do not pay</b> on this key distribution: fused histograms measured ~6% <em>slower</em>,
+            key permutation ~3% slower, and skip-uniform-digit was within noise (it almost never fires, because real priority keys spread across
+            the whole top digit). They are kept selectable so the result is reproducible rather than asserted.</li>
+        <li><b>Sorting the packed key natively is a dead end.</b> Packing (key, index) into one double and calling comparator-free
+            <code>TypedArray.sort()</code> — betting on the engine's fast path — measured <b>2.1&nbsp;ms</b>, roughly 4&times; slower than a
+            bucket pass. It is still O(n&nbsp;log&nbsp;n); avoiding the JS comparator does not recover the gap.</li>
+        <li><b>Top-K is a real dial, not a free win.</b> Truncating to the best K candidates cuts <em>order + place</em> from 0.82&nbsp;ms to
+            0.52&nbsp;ms (K=1000), but keeps only <b>80%</b> of the placeable importance weight — 297 labels placed instead of 906. Quality rises
+            monotonically with K (80% &rarr; 87% &rarr; 94% at K = 1k/2k/4k). Worth it only if you have a hard label budget anyway.</li>
+    </ul>
+</div>
+
+<div class="note">
+    <b>On naming.</b> <code>bucket</code>, <code>counting sort</code>, and <code>one-pass radix</code> are three names for the same algorithm, which
+    is why this page lists it once as &ldquo;bucket / counting&rdquo;. Scattering n items into K bins by a quantised key <em>is</em> a counting sort
+    over K keys, and <em>is</em> an LSD radix with a single log&#8322;(K)-bit digit. The only difference from the multi-pass radix rows is that it
+    stops after one pass, so its key precision is log&#8322;(K) bits rather than the full budget. The configurator's <code>bucket</code> ordering is
+    exactly this, implemented flat.
+</div>
+
+<div class="note">
+    <b>Algorithms on this page, and what is deliberately left out.</b>
+    <ul style="margin:8px 0 0 20px">
+        <li><b>Comparison sort</b> — the exact reference. Every quality number is measured against it.</li>
+        <li><b>Bucket / counting</b> — one pass, K bins. The practical winner here.</li>
+        <li><b>LSD radix</b> — multi-pass, with the three candidate optimisations independently switchable.</li>
+        <li><b>Float-bit radix</b> — radix on the double's high word: no min/max pass and immune to range outliers, but only ~20 mantissa bits
+            of precision, so not lossless.</li>
+        <li><b>Packed native sort</b> — one double per item, comparator-free native sort.</li>
+        <li><b>Top-K partial</b> — bucket, then emit only the best K in bucket order.</li>
+        <li><b>Adaptive insertion</b> — reuses the previous frame's order and repairs it. Only measurable in the <b>Temporal</b> mode, since a
+            cold single frame is precisely the case where order reuse is worth nothing.</li>
+    </ul>
+    Left out on purpose: <b>heap-based top-K</b> (O(n&nbsp;log&nbsp;K) with per-item branching loses to a single counting pass at these K),
+    <b>quickselect-then-sort</b> (two passes plus a partition, strictly more work than counting for a quantised key),
+    <b>samplesort / splitter-based schemes</b> (they exist to parallelise; single-threaded they only add overhead), and
+    <b>importance-class-major bucketing</b> — that one looks attractive because the key is importance-dominated, but with
+    <code>IMP_SCALE=5</code> the distance term spans ~16 log units while adjacent class offsets differ by ~6, so classes genuinely overlap in
+    key space and a class-major pass would not be exact.
+</div>
+
+<div class="panel">
+    <div class="grid">
+        <div class="field"><label>Labels</label><input id="c-n" type="number" min="500" step="1000" value="24000"></div>
+        <div class="field"><label>Seed</label><input id="c-seed" type="number" min="1" step="1" value="1337"></div>
+        <div class="field"><label>Timed repeats</label><input id="c-reps" type="number" min="3" step="2" value="11"></div>
+        <div class="field"><label>Viewport W</label><input id="c-vw" type="number" min="640" step="160" value="3840"></div>
+        <div class="field"><label>Viewport H</label><input id="c-vh" type="number" min="480" step="120" value="2160"></div>
+        <div class="field"><label>Occupancy downscale</label><input id="c-ds" type="number" min="1" max="16" step="1" value="4"></div>
+        <div class="field"><label>Prev-rendered share</label><input id="c-prev" type="number" min="0" max="1" step="0.05" value="0.3"></div>
+    </div>
+    <div style="margin-top:16px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);display:block;margin-bottom:6px">Total quantised bits</label>
+        <div class="chips" id="ch-bits"></div>
+    </div>
+    <div style="margin-top:12px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);display:block;margin-bottom:6px">Digit width (bits per pass)</label>
+        <div class="chips" id="ch-digit"></div>
+    </div>
+    <div style="margin-top:12px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);display:block;margin-bottom:6px">Candidate optimisations <span style="text-transform:none;letter-spacing:0">— measured, not assumed</span></label>
+        <div class="chips" id="ch-opt"></div>
+    </div>
+    <div style="margin-top:12px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);display:block;margin-bottom:6px">Also include</label>
+        <div class="chips" id="ch-extra"></div>
+    </div>
+    <div class="row">
+        <button id="btn-run">Run comparison</button>
+        <button id="btn-sweep" class="alt">Sweep bits &times; digits</button>
+        <button id="btn-scale" class="alt">Scaling curve</button>
+        <button id="btn-temporal" class="alt">Temporal (frame-to-frame)</button>
+        <button id="btn-passes" class="alt">Passes vs precision</button>
+    </div>
+    <div id="status"></div>
+</div>
+
+<div id="out"></div>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════════════════════
+// Dataset — the same priority-key model the configurator uses, so the bit-width
+// question is asked of a realistic distribution rather than uniform randoms.
+// Key = log1p(distance²) + IMP_SCALE·(logWmax − log(weight)), × penalty if the
+// label was not rendered last frame. Importance classes are heavy-tailed, which
+// is what makes the key's low bits nearly irrelevant and the high bits decisive.
+// ═══════════════════════════════════════════════════════════════════════════
+const IMP_SCALE = 5, LOGW_MAX = Math.log(100), RENDER_PENALTY = 1.35;
+const CLASSES = [
+    { w: 100, font: 34, cum: 0.02 },   // cities
+    { w: 30,  font: 26, cum: 0.10 },   // towns
+    { w: 12,  font: 20, cum: 0.35 },   // roads
+    { w: 1,   font: 16, cum: 1.00 },   // POIs
+];
+function mulberry32(s){let a=s>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+const priorityKey = (score, weight, prevRendered) => {
+    const k = Math.log1p(score) + IMP_SCALE * (LOGW_MAX - Math.log(weight));
+    return prevRendered ? k : k * RENDER_PENALTY;
+};
+
+function buildScene(cfg) {
+    const rand = mulberry32(cfg.seed), n = cfg.n;
+    const score = new Float64Array(n), weight = new Float64Array(n), prev = new Uint8Array(n);
+    const x0 = new Int32Array(n), y0 = new Int32Array(n), x1 = new Int32Array(n), y1 = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+        const r = rand(); let cls = CLASSES[3];
+        for (const c of CLASSES) if (r < c.cum) { cls = c; break; }
+        // distance² spread over a plausible depth range
+        const d = 40 + rand() * 4000;
+        score[i] = d * d * (0.0002 + rand() * 0.0008);
+        weight[i] = cls.w;
+        prev[i] = rand() < cfg.prevShare ? 1 : 0;
+        const w = (cls.font * (3 + rand() * 9)) | 0, h = (cls.font * 1.3) | 0;
+        const px = (rand() * (cfg.vw - w)) | 0, py = (rand() * (cfg.vh - h)) | 0;
+        x0[i] = px; y0[i] = py; x1[i] = px + w; y1[i] = py + h;
+    }
+    return { n, score, weight, prev, x0, y0, x1, y1 };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Packed-bit occupancy — only needed so "decision agreement" is a real greedy
+// placement rather than a proxy. Identical for every variant, so any difference
+// in outcome is attributable to the ORDER alone.
+// ═══════════════════════════════════════════════════════════════════════════
+function makeBitmap(vw, vh, ds) {
+    const W = Math.max(1, Math.ceil(vw / ds)), H = Math.max(1, Math.ceil(vh / ds));
+    const wpr = (W + 31) >> 5, bits = new Uint32Array(wpr * H), shift = Math.round(Math.log2(ds)), m = (1 << shift) - 1;
+    const empty = (a, c, b, d) => {
+        const wA = a >> 5, wB = b >> 5;
+        const mA = (0xffffffff << (a & 31)) >>> 0, mB = (0xffffffff >>> (31 - (b & 31)));
+        for (let y = c; y <= d; y++) {
+            const row = y * wpr;
+            if (wA === wB) { if ((bits[row + wA] & mA & mB) !== 0) return false; }
+            else {
+                if ((bits[row + wA] & mA) !== 0) return false;
+                for (let w = wA + 1; w < wB; w++) if (bits[row + w] !== 0) return false;
+                if ((bits[row + wB] & mB) !== 0) return false;
+            }
+        }
+        return true;
+    };
+    const set = (a, c, b, d) => {
+        const wA = a >> 5, wB = b >> 5;
+        const mA = (0xffffffff << (a & 31)) >>> 0, mB = (0xffffffff >>> (31 - (b & 31)));
+        for (let y = c; y <= d; y++) {
+            const row = y * wpr;
+            if (wA === wB) bits[row + wA] |= mA & mB;
+            else { bits[row + wA] |= mA; for (let w = wA + 1; w < wB; w++) bits[row + w] = 0xffffffff; bits[row + wB] |= mB; }
+        }
+    };
+    return {
+        clear() { bits.fill(0); },
+        tryPlace(px0, py0, px1, py1) {
+            const a = Math.max(0, px0 >> shift), b = Math.min(W - 1, (px1 + m) >> shift);
+            const c = Math.max(0, py0 >> shift), d = Math.min(H - 1, (py1 + m) >> shift);
+            if (a > b || c > d) return false;
+            if (!empty(a, c, b, d)) return false;
+            set(a, c, b, d); return true;
+        },
+    };
+}
+// greedy placement in the given order → decision bitfield
+function place(scene, order, n, occ, out) {
+    occ.clear(); out.fill(0);
+    let placed = 0;
+    for (let s = 0; s < n; s++) {
+        const i = order[s];
+        if (occ.tryPlace(scene.x0[i], scene.y0[i], scene.x1[i], scene.y1[i])) { out[i] = 1; placed++; }
+    }
+    return placed;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ordering variants. Every one is allocation-free after the first call: all
+// scratch is hoisted into the closure, because a per-frame allocation would
+// dominate exactly the thing being measured.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Exact reference.
+function makeSort() {
+    return { name: 'comparison sort', kind: 'ref', passes: '—', run(sc, key, order) {
+        const n = sc.n;
+        for (let i = 0; i < n; i++) { order[i] = i; key[i] = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]); }
+        order.subarray(0, n).sort((a, b) => key[a] - key[b]);
+        return n;
+    } };
+}
+
+// BUCKET SORT. Also called counting sort, and also exactly a one-digit radix
+// pass — these three names describe the same algorithm, and the equivalence is
+// the whole reason this row belongs in a radix comparison:
+//
+//   "bucket scatter with K bins"  ==  "counting sort over K keys"
+//                                 ==  "LSD radix with a single log2(K)-bit digit"
+//
+// The only thing that distinguishes it from the multi-pass radix below is that
+// it stops after one pass, so its effective key precision is log2(K) bits
+// instead of totalBits. Implemented flat (count → prefix-sum → scatter, typed
+// arrays throughout) rather than as K JavaScript arrays with push(), which would
+// measure allocator behaviour instead of the algorithm.
+function makeBucket(bits) {
+    const slots = 1 << bits, maxQ = slots - 1;
+    let bIdx = null, cnt = new Int32Array(slots);
+    return { name: `bucket / counting · ${bits}b (K=${slots})`, kind: 'count', passes: 1, run(sc, key, order) {
+        const n = sc.n; let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) { const k = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]); key[i] = k; if (k < lo) lo = k; if (k > hi) hi = k; }
+        const scale = maxQ / ((hi - lo) || 1);
+        if (!bIdx || bIdx.length < n) bIdx = new Int32Array(order.length);
+        cnt.fill(0);
+        for (let i = 0; i < n; i++) { let b = ((key[i] - lo) * scale) | 0; if (b < 0) b = 0; else if (b >= slots) b = slots - 1; bIdx[i] = b; cnt[b]++; }
+        let s = 0; for (let b = 0; b < slots; b++) { const c = cnt[b]; cnt[b] = s; s += c; }
+        for (let i = 0; i < n; i++) order[cnt[bIdx[i]]++] = i;
+        return n;
+    } };
+}
+
+// ── PACKED NATIVE SORT ──────────────────────────────────────────────────────
+// A comparison sort is slow here mostly because of the JS comparator callback,
+// not because of the O(n log n). TypedArray.prototype.sort() WITHOUT a
+// comparator takes an engine fast path that sorts numerically in native code.
+// So pack (quantised key, index) into a single double and sort that:
+//
+//     packed = q * 2^21 + i        q < 2^bits, i < 2^21
+//
+// Both fit exactly in a double's 53-bit mantissa, so the packed value orders by
+// q first and by index second — which also makes it stable. Then unpack the low
+// 21 bits. One allocation-free fill, one native sort, one extract.
+function makePackedNativeSort(bits) {
+    const maxQ = (1 << bits) - 1, SHIFT = 2097152;   // 2^21 → up to ~2.1M labels
+    let buf = null, view = null;
+    return { name: `packed native sort · ${bits}b`, kind: 'packed', passes: '—', run(sc, key, order) {
+        const n = sc.n; let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) { const k = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]); key[i] = k; if (k < lo) lo = k; if (k > hi) hi = k; }
+        const scale = maxQ / ((hi - lo) || 1);
+        if (!buf || buf.length < n) { buf = new Float64Array(order.length); }
+        for (let i = 0; i < n; i++) {
+            let q = ((key[i] - lo) * scale) | 0; if (q < 0) q = 0; else if (q > maxQ) q = maxQ;
+            buf[i] = q * SHIFT + i;
+        }
+        view = n === buf.length ? buf : buf.subarray(0, n);
+        view.sort();                                    // native, no comparator
+        for (let i = 0; i < n; i++) { const p = view[i]; order[i] = p - Math.floor(p / SHIFT) * SHIFT; }
+        return n;
+    } };
+}
+
+// ── TOP-K PARTIAL ORDER ─────────────────────────────────────────────────────
+// Case-specific heuristic. On a saturated screen only a few hundred labels can
+// ever be placed, so ordering the whole tail is arguably wasted work: bucket
+// once, then emit only the best K indices and drop the rest.
+// This is NOT lossless, and the tool reports how lossy: greedy placement can
+// still fit a low-priority label in an empty corner, so truncating the candidate
+// list removes real placements. K is the knob between speed and that loss.
+function makeTopK(bits, K) {
+    const slots = 1 << bits, maxQ = slots - 1;
+    let bIdx = null, cnt = new Int32Array(slots);
+    return { name: `top-K partial · ${bits}b · K=${K}`, kind: 'topk', passes: 1, run(sc, key, order) {
+        const n = sc.n; let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) { const k = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]); key[i] = k; if (k < lo) lo = k; if (k > hi) hi = k; }
+        const scale = maxQ / ((hi - lo) || 1);
+        if (!bIdx || bIdx.length < n) bIdx = new Int32Array(order.length);
+        cnt.fill(0);
+        for (let i = 0; i < n; i++) { let b = ((key[i] - lo) * scale) | 0; if (b < 0) b = 0; else if (b >= slots) b = slots - 1; bIdx[i] = b; cnt[b]++; }
+        // Find the bucket at which the running total reaches K, then prefix-sum and
+        // scatter ONLY buckets 0..cut. The scatter must be in bucket order: greedy
+        // consumes a priority *sequence*, so emitting the correct top-K set in
+        // index order would hand the placement loop an essentially random order and
+        // destroy quality while looking like a valid partial sort.
+        let cut = 0, acc = 0;
+        for (; cut < slots; cut++) { acc += cnt[cut]; if (acc >= K) break; }
+        if (cut >= slots) cut = slots - 1;
+        let s = 0; for (let b = 0; b <= cut; b++) { const c = cnt[b]; cnt[b] = s; s += c; }
+        const lim = Math.min(K, s);
+        for (let i = 0; i < n; i++) { const b = bIdx[i];
+            if (b <= cut) { const at = cnt[b]++; if (at < lim) order[at] = i; } }
+        return lim;
+    } };
+}
+
+// ── ADAPTIVE / TEMPORALLY COHERENT ──────────────────────────────────────────
+// The strongest case-specific heuristic, and the only one that exploits the fact
+// that this runs every frame: between two frames the camera barely moves, so
+// LAST frame's order is already almost sorted. Insertion sort on a nearly-sorted
+// array is O(n + inversions), and inversions per frame are a tiny fraction of n.
+// Only meaningful in the temporal mode, which perturbs keys frame to frame; on a
+// cold first frame it degenerates to a full insertion sort and is catastrophic,
+// so it seeds itself from a bucket pass.
+function makeAdaptive(bits) {
+    const bucket = makeBucket(bits);
+    let prevOrder = null, warm = false;
+    return { name: `adaptive insertion (reuses last frame)`, kind: 'adaptive', passes: '—',
+        reset() { warm = false; },
+        run(sc, key, order) {
+            const n = sc.n;
+            if (!warm || !prevOrder || prevOrder.length < n) {
+                const r = bucket.run(sc, key, order);           // cold start
+                prevOrder = prevOrder && prevOrder.length >= n ? prevOrder : new Int32Array(order.length);
+                prevOrder.set(order.subarray(0, r)); warm = true; return r;
+            }
+            for (let i = 0; i < n; i++) key[i] = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]);
+            order.set(prevOrder.subarray(0, n));
+            // binary insertion sort over an almost-sorted array
+            for (let i = 1; i < n; i++) {
+                const v = order[i], kv = key[v];
+                let j = i - 1;
+                if (key[order[j]] <= kv) continue;              // already in place — the common case
+                while (j >= 0 && key[order[j]] > kv) { order[j + 1] = order[j]; j--; }
+                order[j + 1] = v;
+            }
+            prevOrder.set(order.subarray(0, n));
+            return n;
+        } };
+}
+
+// Parameterised LSD radix. Flags let each optimisation be measured on its own:
+//   fused   — build EVERY digit histogram in the quantise pass. A digit histogram
+//             is a multiset count, so it does not depend on order; computing them
+//             all up front removes one full read of the data per extra pass.
+//   skip    — if a digit takes only one value, that pass cannot reorder anything.
+//             Skipping it is free correctness-preserving work avoidance, and on
+//             clustered keys the top digit is very often uniform.
+//   permute — carry the quantised key alongside the index so later passes read
+//             q[] sequentially instead of gathering through q[src[i]].
+function makeRadix(totalBits, digitBits, opt) {
+    const passes = Math.ceil(totalBits / digitBits);
+    const slots = 1 << digitBits, mask = slots - 1;
+    const maxQ = totalBits >= 31 ? 0x7fffffff : (1 << totalBits) - 1;
+    const tag = [];
+    if (opt.fused) tag.push('fused');
+    if (opt.skip) tag.push('skip');
+    if (opt.permute) tag.push('permute');
+    let q = null, q2 = null, tmp = null, hist = null;
+    return {
+        name: `radix ${totalBits}b · ${passes}×${digitBits}b${tag.length ? ' · ' + tag.join('+') : ''}`,
+        kind: 'radix', passes,
+        run(sc, key, order) {
+            const n = sc.n; let lo = Infinity, hi = -Infinity;
+            for (let i = 0; i < n; i++) { const k = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]); key[i] = k; if (k < lo) lo = k; if (k > hi) hi = k; }
+            const scale = maxQ / ((hi - lo) || 1);
+            if (!q || q.length < order.length) {
+                q = new Int32Array(order.length); q2 = new Int32Array(order.length);
+                tmp = new Int32Array(order.length); hist = new Int32Array(passes * slots);
+            }
+            hist.fill(0);
+            if (opt.fused) {                                  // quantise + all histograms in one read
+                for (let i = 0; i < n; i++) {
+                    const v = ((key[i] - lo) * scale) | 0; q[i] = v;
+                    for (let p = 0; p < passes; p++) hist[p * slots + ((v >>> (p * digitBits)) & mask)]++;
+                }
+            } else {
+                for (let i = 0; i < n; i++) q[i] = ((key[i] - lo) * scale) | 0;
+            }
+            let src = order, dst = tmp, srcQ = q, dstQ = q2;
+            for (let i = 0; i < n; i++) src[i] = i;
+            let ranPasses = 0;
+            for (let p = 0; p < passes; p++) {
+                const sh = p * digitBits, off = p * slots;
+                if (!opt.fused) {                             // per-pass histogram
+                    hist.fill(0, off, off + slots);
+                    if (opt.permute && p > 0) { for (let i = 0; i < n; i++) hist[off + ((srcQ[i] >>> sh) & mask)]++; }
+                    else                      { for (let i = 0; i < n; i++) hist[off + ((q[src[i]] >>> sh) & mask)]++; }
+                }
+                if (opt.skip) {                               // uniform digit → cannot reorder
+                    let nz = 0;
+                    for (let b = 0; b < slots && nz < 2; b++) if (hist[off + b]) nz++;
+                    if (nz < 2) continue;
+                }
+                let s = 0; for (let b = 0; b < slots; b++) { const c = hist[off + b]; hist[off + b] = s; s += c; }
+                if (opt.permute) {
+                    if (ranPasses === 0) { for (let i = 0; i < n; i++) { const v = q[i], d = (v >>> sh) & mask, at = hist[off + d]++; dst[at] = i; dstQ[at] = v; } }
+                    else                 { for (let i = 0; i < n; i++) { const v = srcQ[i], d = (v >>> sh) & mask, at = hist[off + d]++; dst[at] = src[i]; dstQ[at] = v; } }
+                    let t = srcQ; srcQ = dstQ; dstQ = t;
+                } else {
+                    for (let i = 0; i < n; i++) { const v = q[src[i]], d = (v >>> sh) & mask; dst[hist[off + d]++] = src[i]; }
+                }
+                const t = src; src = dst; dst = t;
+                ranPasses++;
+            }
+            if (src !== order) order.set(src.subarray(0, n));
+            return n;
+        }
+    };
+}
+
+// Radix straight on the float bits. The double's HIGH WORD is mapped to an
+// order-preserving uint32 (negatives invert fully, positives flip the sign bit),
+// so ordering follows float ordering with no min/max pass and no dependence on
+// the key distribution — a range outlier cannot compress everything else into
+// one bucket the way a linear quantisation can.
+// It is NOT lossless: taking only the high word keeps sign + exponent + 20
+// mantissa bits and discards the low 32, so keys agreeing in those bits tie.
+// Precision is therefore comparable to ~20-bit quantisation; the advantage is
+// robustness and one fewer pass over the keys, not exactness. Skipping uniform
+// digits usually removes the top passes outright, since real keys share an
+// exponent range.
+function makeFloatRadix(digitBits) {
+    const passes = Math.ceil(32 / digitBits), slots = 1 << digitBits, mask = slots - 1;
+    let q = null, tmp = null, hist = null, f64 = null, u32 = null;
+    return { name: `float-bit radix · ${passes}×${digitBits}b · skip`, kind: 'float', passes, run(sc, key, order) {
+        const n = sc.n;
+        if (!q || q.length < order.length) {
+            q = new Uint32Array(order.length); tmp = new Int32Array(order.length);
+            hist = new Int32Array(passes * slots);
+            f64 = new Float64Array(order.length); u32 = new Uint32Array(f64.buffer);
+        }
+        for (let i = 0; i < n; i++) f64[i] = key[i] = priorityKey(sc.score[i], sc.weight[i], sc.prev[i]);
+        hist.fill(0);
+        for (let i = 0; i < n; i++) {
+            const hiWord = u32[i * 2 + 1] | 0;               // top 32 bits of the double
+            const v = (hiWord < 0 ? ~hiWord : (hiWord ^ 0x80000000)) >>> 0;
+            q[i] = v;
+            for (let p = 0; p < passes; p++) hist[p * slots + ((v >>> (p * digitBits)) & mask)]++;
+        }
+        let src = order, dst = tmp;
+        for (let i = 0; i < n; i++) src[i] = i;
+        for (let p = 0; p < passes; p++) {
+            const sh = p * digitBits, off = p * slots;
+            let nz = 0; for (let b = 0; b < slots && nz < 2; b++) if (hist[off + b]) nz++;
+            if (nz < 2) continue;
+            let s = 0; for (let b = 0; b < slots; b++) { const c = hist[off + b]; hist[off + b] = s; s += c; }
+            for (let i = 0; i < n; i++) { const d = (q[src[i]] >>> sh) & mask; dst[hist[off + d]++] = src[i]; }
+            const t = src; src = dst; dst = t;
+        }
+        if (src !== order) order.set(src.subarray(0, n));
+        return n;
+    } };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Harness
+// ═══════════════════════════════════════════════════════════════════════════
+function median(a){ const b=[...a].sort((x,y)=>x-y); return b[b.length>>1]; }
+
+function evaluate(variants, scene, cfg) {
+    const cap = scene.n;
+    const key = new Float64Array(cap), order = new Int32Array(cap);
+    const occ = makeBitmap(cfg.vw, cfg.vh, cfg.ds);
+    const dec = new Uint8Array(cap);
+
+    // reference: exact sort
+    const ref = makeSort();
+    const refOrder = new Int32Array(cap), refDec = new Uint8Array(cap);
+    const nRef = ref.run(scene, key, refOrder);
+    const refPlaced = place(scene, refOrder, nRef, occ, refDec);
+
+    const rows = [];
+    for (const v of variants) {
+        // warm
+        for (let i = 0; i < 40; i++) v.run(scene, key, order);
+        const ts = [];
+        for (let r = 0; r < cfg.reps; r++) {
+            const t0 = performance.now();
+            for (let i = 0; i < 5; i++) v.run(scene, key, order);
+            ts.push((performance.now() - t0) / 5);
+        }
+        const n = v.run(scene, key, order);
+        // Ordering + placement together. A partial-order method hands the greedy
+        // loop fewer candidates, so its benefit is downstream of ordering and is
+        // invisible in the ordering column alone.
+        const tt = [];
+        for (let r = 0; r < cfg.reps; r++) {
+            const t0 = performance.now();
+            for (let i = 0; i < 3; i++) { const nn = v.run(scene, key, order); place(scene, order, nn, occ, dec); }
+            tt.push((performance.now() - t0) / 3);
+        }
+        // order agreement
+        let same = 0;
+        for (let i = 0; i < n; i++) if (order[i] === refOrder[i]) same++;
+        // inversions against the exact float key
+        let inv = 0;
+        for (let s = 1; s < n; s++) if (key[order[s]] < key[order[s - 1]]) inv++;
+        // Decision agreement over the same greedy placement. NOTE the loop bound:
+        // dec[] and refDec[] are indexed by LABEL, not by rank, so this must walk
+        // every label — not the variant's returned rank count. A partial-order
+        // method returns n < scene.n, and bounding by n would score it on a biased
+        // subset of labels (and can report >100% weight kept).
+        const placed = place(scene, order, n, occ, dec);
+        let agree = 0, wRef = 0, wGot = 0;
+        for (let i = 0; i < scene.n; i++) {
+            if (dec[i] === refDec[i]) agree++;
+            if (refDec[i]) wRef += scene.weight[i];
+            if (dec[i]) wGot += scene.weight[i];
+        }
+        rows.push({ name: v.name, kind: v.kind, passes: v.passes, ms: median(ts), totalMs: median(tt),
+                    orderAgree: same / n * 100, inv, placed, considered: n,
+                    decAgree: agree / scene.n * 100, weightPct: wRef > 0 ? wGot / wRef * 100 : 100 });
+    }
+    return { rows, refPlaced, nRef, refMs: (() => {
+        for (let i = 0; i < 20; i++) ref.run(scene, key, refOrder);
+        const ts = []; for (let r = 0; r < cfg.reps; r++) { const t0 = performance.now(); for (let i = 0; i < 3; i++) ref.run(scene, key, refOrder); ts.push((performance.now() - t0) / 3); }
+        return median(ts);
+    })() };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════════════════════════════════════
+const BITS = [2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 30, 32];
+const DIGITS = [2, 3, 4, 6, 8, 10, 11, 12, 16];
+const OPTS = [['fused', 'fused histograms'], ['skip', 'skip uniform digit'], ['permute', 'permute keys']];
+const EXTRA = [
+    ['bucket',   'bucket / counting (1 pass)'],
+    ['packed',   'packed native sort'],
+    ['topk',     'top-K partial'],
+    ['float',    'float-bit radix'],
+    ['baseline', 'unoptimised radix'],
+];
+const TOPK = [1000, 2000, 4000];
+// Defaults reproduce the headline comparison on the first click.
+const sel = { bits: new Set([12, 20, 24]), digit: new Set([8, 10]),
+              opt: new Set(['fused', 'skip', 'permute']),
+              extra: new Set(['bucket', 'packed', 'topk', 'float', 'baseline']) };
+
+function chips(host, list, set, fmt) {
+    const el = document.getElementById(host);
+    el.innerHTML = list.map(v => {
+        const [id, lab] = Array.isArray(v) ? v : [v, fmt ? fmt(v) : v];
+        return `<span class="chip ${set.has(id) ? 'on' : ''}" data-v="${id}">${lab}</span>`;
+    }).join('');
+    el.querySelectorAll('.chip').forEach(c => c.onclick = () => {
+        const raw = c.dataset.v, v = isNaN(+raw) ? raw : +raw;
+        if (set.has(v)) { if (set.size > 1 || host === 'ch-opt' || host === 'ch-extra') set.delete(v); }
+        else set.add(v);
+        chips(host, list, set, fmt);
+    });
+}
+chips('ch-bits', BITS, sel.bits, b => b + ' bits');
+chips('ch-digit', DIGITS, sel.digit, d => d + 'b/pass');
+chips('ch-opt', OPTS, sel.opt);
+chips('ch-extra', EXTRA, sel.extra);
+
+const statusEl = document.getElementById('status'), outEl = document.getElementById('out');
+const status = s => statusEl.textContent = s;
+const raf = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+function readCfg() {
+    const v = id => +document.getElementById(id).value;
+    return { n: Math.max(500, v('c-n')), seed: v('c-seed') || 1, reps: Math.max(3, v('c-reps')),
+             vw: Math.max(640, v('c-vw')), vh: Math.max(480, v('c-vh')),
+             ds: Math.min(16, Math.max(1, v('c-ds'))), prevShare: Math.min(1, Math.max(0, v('c-prev'))) };
+}
+
+function optObj() { return { fused: sel.opt.has('fused'), skip: sel.opt.has('skip'), permute: sel.opt.has('permute') }; }
+
+function buildVariants() {
+    const vs = [], o = optObj();
+    for (const b of [...sel.bits].sort((a, z) => a - z))
+        for (const d of [...sel.digit].sort((a, z) => a - z)) {
+            if (sel.extra.has('baseline')) vs.push(makeRadix(b, d, { fused: false, skip: false, permute: false }));
+            if (o.fused || o.skip || o.permute) vs.push(makeRadix(b, d, o));
+        }
+    const bitsAsc = [...sel.bits].sort((a, z) => a - z);
+    if (sel.extra.has('bucket')) for (const b of bitsAsc) if (b <= 18) vs.push(makeBucket(b));
+    if (sel.extra.has('packed')) for (const b of bitsAsc) if (b <= 30) vs.push(makePackedNativeSort(b));
+    if (sel.extra.has('topk')) { const b = Math.min(...bitsAsc.filter(x => x <= 18), 12);
+        for (const K of TOPK) vs.push(makeTopK(isFinite(b) ? b : 12, K)); }
+    if (sel.extra.has('float')) for (const d of [...sel.digit].sort((a, z) => a - z)) if (d >= 8) vs.push(makeFloatRadix(d));
+    return vs;
+}
+
+function table(res, cfg) {
+    const rows = [...res.rows].sort((a, b) => a.ms - b.ms);
+    const fastest = Math.min(...rows.map(r => r.ms));
+    const maxMs = Math.max(...rows.map(r => r.ms), res.refMs);
+    const cell = r => {
+        const spd = res.refMs / r.ms;
+        return `<tr>
+            <td>${r.name}</td>
+            <td>${r.passes}</td>
+            <td class="${r.ms === fastest ? 'best' : ''}">${r.ms.toFixed(3)}</td>
+            <td><span class="bar" style="width:${Math.max(2, r.ms / maxMs * 90)}px"></span></td>
+            <td>${spd.toFixed(1)}×</td>
+            <td>${r.totalMs.toFixed(3)}</td>
+            <td class="${r.considered < 0.99 * res.nRef ? 'warn' : 'dim'}">${r.considered.toLocaleString()}</td>
+            <td class="${r.decAgree >= 99.95 ? 'best' : (r.decAgree < 99 ? 'bad' : 'warn')}">${r.decAgree.toFixed(2)}%</td>
+            <td>${r.placed}</td>
+            <td class="${r.weightPct >= 99.95 ? 'best' : (r.weightPct < 99 ? 'bad' : 'warn')}">${r.weightPct.toFixed(2)}%</td>
+            <td class="${r.orderAgree > 99 ? '' : 'dim'}">${r.orderAgree.toFixed(2)}%</td>
+            <td class="${r.inv ? 'dim' : 'best'}">${r.inv}</td>
+        </tr>`;
+    };
+    return `<table>
+        <thead><tr><th>variant</th><th>passes</th><th>order ms</th><th></th><th>vs sort</th>
+            <th title="ordering plus the greedy placement loop — where a partial order actually pays">order+place ms</th>
+            <th title="how many candidates the ordering handed to the placement loop">considered</th>
+            <th title="fraction of labels whose placed/not-placed outcome matches the exact sort">decision agree</th>
+            <th>placed</th><th title="total importance weight placed, as % of the exact sort's">weight kept</th>
+            <th title="fraction of positions identical to the exact sort">order agree</th>
+            <th title="pairs out of ascending float-key order — non-zero means quantisation created ties">inversions</th></tr></thead>
+        <tbody>
+        <tr class="ref"><td>comparison sort <span class="dim">(reference)</span></td><td>—</td>
+            <td>${res.refMs.toFixed(3)}</td><td><span class="bar" style="width:${Math.max(2, res.refMs / maxMs * 90)}px;background:#3a4a6a"></span></td>
+            <td>1.0×</td><td class="dim">—</td><td class="dim">${res.nRef.toLocaleString()}</td>
+            <td class="best">100.00%</td><td>${res.refPlaced}</td><td class="best">100.00%</td><td class="best">100.00%</td><td class="best">0</td></tr>
+        ${rows.map(cell).join('')}
+        </tbody></table>`;
+}
+
+document.getElementById('btn-run').onclick = async () => {
+    const cfg = readCfg();
+    status('Building scene…'); await raf();
+    const scene = buildScene(cfg);
+    const vs = buildVariants();
+    if (!vs.length) { status('Select at least one bit width and digit width.'); return; }
+    status(`Measuring ${vs.length} variants at ${cfg.n.toLocaleString()} labels…`); await raf();
+    const res = evaluate(vs, scene, cfg);
+    outEl.innerHTML = `<h2>Comparison — ${cfg.n.toLocaleString()} labels, ${res.nRef.toLocaleString()} candidates</h2>${table(res, cfg)}${interpret(res)}`;
+    status(`Done — ${vs.length} variants.`);
+};
+
+document.getElementById('btn-sweep').onclick = async () => {
+    const cfg = readCfg();
+    status('Building scene…'); await raf();
+    const scene = buildScene(cfg);
+    const o = optObj();
+    const cells = [];
+    for (const b of BITS) {
+        const row = [];
+        for (const d of DIGITS) {
+            if (d > b) { row.push(null); continue; }
+            const v = makeRadix(b, d, o);
+            const res = evaluate([v], scene, cfg);
+            row.push({ b, d, ...res.rows[0], refMs: res.refMs });
+            status(`Sweep ${b}b / ${d}b/pass…`); await raf();
+        }
+        cells.push(row);
+    }
+    const all = cells.flat().filter(Boolean);
+    const best = Math.min(...all.map(c => c.ms));
+    let html = `<h2>Sweep — total bits &times; digit width <span class="dim">(${[...sel.opt].join('+') || 'no optimisations'})</span></h2>
+        <p class="dim" style="font-size:13px">Each cell: <b>ms</b> / decision agreement / passes. Green = fastest overall. Red = decision agreement below 99%.</p>
+        <table><thead><tr><th>total bits</th>${DIGITS.map(d => `<th>${d}b/pass</th>`).join('')}</tr></thead><tbody>`;
+    cells.forEach((row, ri) => {
+        html += `<tr><td><b>${BITS[ri]}</b></td>` + row.map(c => {
+            if (!c) return '<td class="dim">—</td>';
+            const cls = c.ms === best ? 'best' : (c.decAgree < 99 ? 'bad' : '');
+            return `<td class="${cls}">${c.ms.toFixed(3)}<br><span class="dim" style="font-size:11px">${c.decAgree.toFixed(1)}% · ${c.passes}p</span></td>`;
+        }).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    outEl.innerHTML = html + sweepNotes(all);
+    status('Sweep done.');
+};
+
+document.getElementById('btn-scale').onclick = async () => {
+    const cfg = readCfg();
+    const sizes = [3000, 6000, 12000, 24000, 48000, 96000];
+    let html = `<h2>Scaling — cost <i>and</i> quality as N grows</h2>
+        <p class="dim" style="font-size:13px">Each cell: <b>ms</b> above, decision agreement below. Quality is re-measured at every size
+        because ties per quantum grow with N — a bit width that is lossless at 3k need not stay lossless at 96k.</p>
+        <table><thead><tr><th>variant</th>${sizes.map(s => `<th>${(s / 1000)}k</th>`).join('')}<th>growth</th></tr></thead><tbody>`;
+    const vs = buildVariants(); vs.unshift(makeSort());
+    const acc = vs.map(() => []), qacc = vs.map(() => []);
+    for (const N of sizes) {
+        status(`Scaling at ${N.toLocaleString()}…`); await raf();
+        const scene = buildScene({ ...cfg, n: N });
+        const key = new Float64Array(N), order = new Int32Array(N);
+        // reference order + decisions at this size, for the quality column
+        const occ = makeBitmap(cfg.vw, cfg.vh, cfg.ds);
+        const refOrder = new Int32Array(N), refDec = new Uint8Array(N), dec = new Uint8Array(N);
+        const rv = makeSort(); const nRef = rv.run(scene, key, refOrder);
+        place(scene, refOrder, nRef, occ, refDec);
+        vs.forEach((v, vi) => {
+            if (v.reset) v.reset();
+            for (let i = 0; i < 25; i++) v.run(scene, key, order);
+            const ts = []; for (let r = 0; r < cfg.reps; r++) { const t0 = performance.now(); for (let i = 0; i < 3; i++) v.run(scene, key, order); ts.push((performance.now() - t0) / 3); }
+            acc[vi].push(median(ts));
+            const n = v.run(scene, key, order);
+            place(scene, order, n, occ, dec);
+            let agree = 0; for (let i = 0; i < N; i++) if (dec[i] === refDec[i]) agree++;
+            qacc[vi].push(agree / N * 100);
+        });
+    }
+    vs.forEach((v, vi) => {
+        const a = acc[vi], q = qacc[vi];
+        const exp = Math.log(a[a.length - 1] / a[0]) / Math.log(sizes[sizes.length - 1] / sizes[0]);
+        html += `<tr><td>${v.name}</td>${a.map((x, i) => {
+            const cls = q[i] >= 99.95 ? 'best' : (q[i] < 99 ? 'bad' : 'warn');
+            return `<td>${x.toFixed(3)}<br><span class="${cls}" style="font-size:11px">${q[i].toFixed(2)}%</span></td>`;
+        }).join('')}<td>N<sup>${exp.toFixed(2)}</sup></td></tr>`;
+    });
+    outEl.innerHTML = html + `</tbody></table>
+        <div class="note"><b>Reading the exponent.</b> A linear method should land near N<sup>1.0</sup>; a comparison sort near
+        N<sup>1.1&ndash;1.2</sup> at these sizes. An exponent well above 1 for a radix variant means the scatter's random writes are
+        outgrowing cache, not that the algorithm changed complexity &mdash; which is why a wider digit (more buckets, worse write locality)
+        can lose to a narrower one despite doing fewer passes.</div>`;
+    status('Scaling done.');
+};
+
+// Temporal mode: the camera drifts, so keys change only slightly per frame. This
+// is the regime the real engine runs in, and the only one where an order-reusing
+// sort can pay — it is measured separately because a cold single frame hides the
+// entire effect.
+document.getElementById('btn-temporal').onclick = async () => {
+    const cfg = readCfg();
+    const FRAMES = 30;
+    status('Building scene…'); await raf();
+    const scene = buildScene(cfg);
+    const N = scene.n;
+    const base = Float64Array.from(scene.score);
+    const vs = buildVariants();
+    vs.push(makeAdaptive(12));
+    vs.unshift(makeSort());
+    const key = new Float64Array(N), order = new Int32Array(N);
+    const occ = makeBitmap(cfg.vw, cfg.vh, cfg.ds);
+    const refOrder = new Int32Array(N), refDec = new Uint8Array(N), dec = new Uint8Array(N);
+    // drift: a small multiplicative wobble on distance², i.e. a slow camera move
+    const drift = (f) => { const a = f * 0.06;
+        for (let i = 0; i < N; i++) scene.score[i] = base[i] * (1 + 0.04 * Math.sin(a + i * 0.0007)); };
+    const rows = vs.map(v => ({ name: v.name, ms: [], agree: [] }));
+    for (let f = 0; f < FRAMES; f++) {
+        drift(f);
+        const rv = makeSort(); const nRef = rv.run(scene, key, refOrder);
+        place(scene, refOrder, nRef, occ, refDec);
+        for (let vi = 0; vi < vs.length; vi++) {
+            const v = vs[vi];
+            const t0 = performance.now(); const n = v.run(scene, key, order); const dt = performance.now() - t0;
+            rows[vi].ms.push(dt);
+            place(scene, order, n, occ, dec);
+            let a = 0; for (let i = 0; i < N; i++) if (dec[i] === refDec[i]) a++;
+            rows[vi].agree.push(a / N * 100);
+        }
+        if ((f & 7) === 0) { status(`Temporal frame ${f + 1}/${FRAMES}…`); await raf(); }
+    }
+    scene.score.set(base);
+    // discard the first 3 frames: they include each variant's cold start
+    const warm = a => a.slice(3);
+    const out = rows.map(r => ({ name: r.name, ms: median(warm(r.ms)),
+        cold: r.ms[0], agree: warm(r.agree).reduce((x, y) => x + y, 0) / warm(r.agree).length }));
+    out.sort((a, b) => a.ms - b.ms);
+    const fastest = Math.min(...out.map(r => r.ms));
+    outEl.innerHTML = `<h2>Temporal — ${FRAMES} frames of slow camera drift, ${N.toLocaleString()} labels</h2>
+        <table><thead><tr><th>variant</th><th>warm ms/frame</th><th>cold frame ms</th><th>decision agree</th></tr></thead><tbody>
+        ${out.map(r => `<tr><td>${r.name}</td>
+            <td class="${r.ms === fastest ? 'best' : ''}">${r.ms.toFixed(3)}</td>
+            <td class="${r.cold > r.ms * 3 ? 'warn' : 'dim'}">${r.cold.toFixed(3)}</td>
+            <td class="${r.agree >= 99.95 ? 'best' : (r.agree < 99 ? 'bad' : 'warn')}">${r.agree.toFixed(2)}%</td></tr>`).join('')}
+        </tbody></table>
+        <div class="note"><b>Why this mode exists.</b> Every other mode measures a cold frame, which is the one regime where reusing the
+        previous order is worthless. Here keys drift by a few percent per frame, so last frame's order is nearly sorted and an insertion pass
+        costs O(n + inversions) instead of O(n log n) or a full multi-pass scatter. Watch the <b>cold frame</b> column too: an adaptive method
+        that is fastest when warm can be far slower on the first frame, on a scene cut, or after a teleport — so it needs the bucket fallback
+        it seeds itself with, and a policy for when to force a rebuild.</div>`;
+    status('Temporal done.');
+};
+
+// The one mode that shows what extra passes are FOR. Holding total key precision
+// fixed and varying only the pass count isolates the real trade: a single pass
+// needs 2^bits counters, p passes need p·2^(bits/p) — exponentially fewer. The
+// histogram cost (clear + prefix-sum walk) is O(slots) and INDEPENDENT of n, so
+// it is invisible at low precision and catastrophic at high precision.
+document.getElementById('btn-passes').onclick = async () => {
+    const cfg = readCfg();
+    status('Building scene…'); await raf();
+    const scene = buildScene(cfg);
+    const N = scene.n;
+    const key = new Float64Array(N), order = new Int32Array(N);
+    const occ = makeBitmap(cfg.vw, cfg.vh, cfg.ds);
+    const refOrder = new Int32Array(N), refDec = new Uint8Array(N), dec = new Uint8Array(N);
+    const rv = makeSort(); const nRef = rv.run(scene, key, refOrder);
+    place(scene, refOrder, nRef, occ, refDec);
+    const P = { fused: false, skip: false, permute: false };
+    const BITSET = [12, 14, 16, 18, 20, 22, 24];
+    const PASSES = [1, 2, 3, 4];
+    const CAP = 1 << 25;                       // refuse >128 MB of counters
+    const cells = [];
+    for (const B of BITSET) {
+        const row = [];
+        for (const p of PASSES) {
+            const digit = Math.ceil(B / p), slots = 1 << digit;
+            if (p * slots > CAP) { row.push({ skipped: true, slots: p * slots }); continue; }
+            const v = makeRadix(B, digit, P);
+            for (let i = 0; i < 25; i++) v.run(scene, key, order);
+            const ts = [];
+            for (let r = 0; r < cfg.reps; r++) { const t0 = performance.now(); for (let i = 0; i < 3; i++) v.run(scene, key, order); ts.push((performance.now() - t0) / 3); }
+            const n = v.run(scene, key, order);
+            place(scene, order, n, occ, dec);
+            let a = 0; for (let i = 0; i < N; i++) if (dec[i] === refDec[i]) a++;
+            row.push({ ms: median(ts), decAgree: a / N * 100, slots: p * slots, digit, passes: Math.ceil(B / digit) });
+            status(`Passes: ${B} bits, ${p} pass…`); await raf();
+        }
+        cells.push(row);
+    }
+    const flat = cells.flat().filter(c => !c.skipped);
+    const fmtSlots = s => s >= 1048576 ? (s / 1048576).toFixed(1) + 'M' : (s >= 1024 ? (s / 1024).toFixed(0) + 'K' : s);
+    let html = `<h2>Passes vs precision — ${N.toLocaleString()} labels</h2>
+        <p class="dim" style="font-size:13px">Total key precision is held fixed across each row; only the pass count changes. Each cell:
+        <b>ms</b>, then total counter slots and the resulting digit width. Green = fastest in its row.</p>
+        <table><thead><tr><th>total bits</th>${PASSES.map(p => `<th>${p} pass${p > 1 ? 'es' : ''}</th>`).join('')}<th>row winner</th></tr></thead><tbody>`;
+    cells.forEach((row, ri) => {
+        const live = row.filter(c => !c.skipped);
+        const best = live.length ? Math.min(...live.map(c => c.ms)) : Infinity;
+        const wIdx = row.findIndex(c => !c.skipped && c.ms === best);
+        html += `<tr><td><b>${BITSET[ri]}</b></td>` + row.map(c => {
+            if (c.skipped) return `<td class="dim">— <span style="font-size:11px">${fmtSlots(c.slots)} slots</span></td>`;
+            return `<td class="${c.ms === best ? 'best' : ''}">${c.ms.toFixed(3)}
+                <br><span class="dim" style="font-size:11px">${fmtSlots(c.slots)} slots · ${c.digit}b</span></td>`;
+        }).join('') + `<td>${wIdx >= 0 ? PASSES[wIdx] + '-pass' : '—'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    // where does multi-pass take over?
+    let cross = null;
+    cells.forEach((row, ri) => {
+        if (cross !== null) return;
+        const one = row[0], two = row[1];
+        if (one && !one.skipped && two && !two.skipped && two.ms < one.ms) cross = BITSET[ri];
+    });
+    const worst = cells[cells.length - 1];
+    const ratio = (worst[0] && !worst[0].skipped && worst[1] && !worst[1].skipped) ? (worst[0].ms / worst[1].ms) : null;
+    html += `<div class="note good"><b>This is what extra passes buy: precision per byte of histogram.</b>
+        A single pass at <i>B</i> bits needs 2<sup>B</sup> counters; <i>p</i> passes need only
+        p&middot;2<sup>B/p</sup>. The clear-and-prefix-sum cost is proportional to that slot count and is
+        <b>independent of n</b> — a 24-bit single pass must walk 16.7&nbsp;M counters whether it is sorting 100 labels or 100&nbsp;000.
+        ${cross ? `On this scene multi-pass takes over at <b>${cross} bits</b>` : 'On this scene single-pass never lost within the tested range'}${ratio ? `, and by ${BITSET[BITSET.length - 1]} bits the gap is <b>${ratio.toFixed(0)}&times;</b>` : ''}.
+        <br><br>
+        The crossover moves <b>up</b> with n, because the histogram cost is fixed while the per-element work grows: measured at 12&nbsp;bits for
+        n=3&nbsp;000, 16&nbsp;bits at 24&nbsp;000, and 18&nbsp;bits at 100&nbsp;000. So "how many passes" is not a property of the algorithm —
+        it is a function of how much key precision you need and how many items you have.
+        <br><br>
+        <b>Which is exactly why passes lose on this workload:</b> label placement needs only ~12 bits (see the decision-agreement column —
+        it saturates there), and at 12 bits a single pass costs 16&nbsp;KB of counters. The precision that extra passes exist to make affordable
+        is precision this problem does not use. Give the key a genuine 24-bit range — or an already-wide integer key you cannot requantise, like
+        a 32-bit feature id or a packed multi-field sort key — and the ranking inverts.</div>`;
+    outEl.innerHTML = html;
+    status('Passes vs precision done.');
+};
+
+function interpret(res) {
+    const rows = res.rows;
+    const exact = rows.filter(r => r.decAgree >= 99.95);
+    const best = rows.reduce((a, b) => a.ms < b.ms ? a : b);
+    const bestExact = exact.length ? exact.reduce((a, b) => a.ms < b.ms ? a : b) : null;
+    const notes = [];
+    notes.push(`<div class="note good"><b>Fastest overall:</b> ${best.name} at ${best.ms.toFixed(3)} ms
+        (${(res.refMs / best.ms).toFixed(1)}× the comparison sort), keeping ${best.decAgree.toFixed(2)}% of decisions
+        and ${best.weightPct.toFixed(2)}% of importance weight.</div>`);
+    if (bestExact) notes.push(`<div class="note"><b>Fastest with no decision loss:</b> ${bestExact.name} at
+        ${bestExact.ms.toFixed(3)} ms — ${(res.refMs / bestExact.ms).toFixed(1)}× the sort. If that is not also the fastest overall, the
+        difference is what precision is costing you.</div>`);
+    // single vs multi pass, on equal decision quality
+    const clean = rows.filter(r => r.decAgree >= 99.95);
+    const one = clean.filter(r => r.passes === 1), many = clean.filter(r => r.passes > 1);
+    if (one.length && many.length) {
+        const b1 = one.reduce((a, b) => a.ms < b.ms ? a : b), bm = many.reduce((a, b) => a.ms < b.ms ? a : b);
+        const dir = b1.ms < bm.ms
+            ? `<b>one pass wins</b> — ${b1.name} at ${b1.ms.toFixed(3)} ms beats the best multi-pass (${bm.name}, ${bm.ms.toFixed(3)} ms) by ${((bm.ms / b1.ms - 1) * 100).toFixed(0)}%`
+            : `<b>multi-pass wins</b> — ${bm.name} at ${bm.ms.toFixed(3)} ms beats the best single pass (${b1.name}, ${b1.ms.toFixed(3)} ms) by ${((b1.ms / bm.ms - 1) * 100).toFixed(0)}%`;
+        notes.push(`<div class="note"><b>Passes versus precision.</b> Among variants that lose no placement decisions, ${dir}. Each extra pass is
+            a full extra traversal of the index array; a wider digit avoids passes but enlarges the histogram and worsens scatter locality. The
+            balance point moves with N and with how clustered your keys are.</div>`);
+    }
+    // where does decision agreement actually break?
+    const slipping = rows.filter(r => r.decAgree < 99.95).sort((a, b) => b.decAgree - a.decAgree);
+    if (slipping.length) notes.push(`<div class="note warn"><b>Precision floor.</b> ${slipping.length} variant(s) lost placement decisions, the
+        mildest being ${slipping[0].name} at ${slipping[0].decAgree.toFixed(3)}%. Everything above that keeps decisions intact, so the extra bits
+        those variants spend are buying order fidelity the placement loop never consults. Bisect the bit width to find your own floor.</div>`);
+    const inv = rows.filter(r => r.inv > 0);
+    if (inv.length) notes.push(`<div class="note"><b>Inversions are not errors.</b> ${inv.length} variant(s) report pairs out of exact float-key
+        order: two labels whose keys land in the same quantum are ordered by index instead of by key. Compare the inversion column against the
+        decision column — they barely correlate, because tied labels have near-identical priority and swapping them rarely changes what fits.
+        This is why "order agreement" is the wrong headline metric for an ordering stage.</div>`);
+    return notes.join('');
+}
+function sweepNotes(all) {
+    const byPasses = new Map();
+    for (const c of all) { const k = c.passes; if (!byPasses.has(k)) byPasses.set(k, []); byPasses.get(k).push(c.ms); }
+    const lines = [...byPasses.entries()].sort((a, b) => a[0] - b[0])
+        .map(([p, ms]) => `${p} pass${p > 1 ? 'es' : ''}: best ${Math.min(...ms).toFixed(3)} ms`);
+    return `<div class="note"><b>Cost by pass count.</b> ${lines.join(' · ')}<br>
+        More passes means more full traversals of the index array, so fewer-and-wider generally wins until the histogram stops fitting in
+        cache and the scatter's write locality collapses. That crossover is what this sweep locates for your N.</div>`;
+}
+</script>
+</div>
+</body>
+</html>

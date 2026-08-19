@@ -339,7 +339,7 @@
         }
 
         /* ── Param tuning report ──────────────────────────────────────────── */
-        #panel-tune-report {
+        #panel-tune-report, #panel-sweep-report {
             position: fixed;
             top: 10px; right: 10px;
             width: 920px;
@@ -356,8 +356,8 @@
             box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             z-index: 15;
         }
-        #panel-tune-report.visible { display: flex; }
-        #tune-report-header {
+        #panel-tune-report.visible, #panel-sweep-report.visible { display: flex; }
+        #tune-report-header, #sweep-report-header {
             display: flex;
             align-items: center;
             gap: 8px;
@@ -366,8 +366,8 @@
             background: rgba(255,255,255,0.55);
             flex-shrink: 0;
         }
-        #tune-report-header .panel-title { margin: 0; flex: 1; }
-        #tune-report-body {
+        #tune-report-header .panel-title, #sweep-report-header .panel-title { margin: 0; flex: 1; }
+        #tune-report-body, #sweep-report-body {
             overflow: auto;
             padding: 10px;
             max-height: calc(100vh - 70px);
@@ -381,6 +381,14 @@
         .tune-param-name:first-child { margin-top: 0; }
         .tune-best { background: rgba(26,122,74,0.08) !important; }
         .tune-worst { background: rgba(176,32,32,0.06) !important; }
+
+        .sweep-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .sweep-table th, .sweep-table td {
+            border: 1px solid rgba(0,0,0,0.10); padding: 4px 8px; text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        .sweep-table th { background: rgba(0,0,0,0.04); font-weight: 600; color: rgba(0,0,0,0.55); }
+        .sweep-table tbody tr:nth-child(even) { background: rgba(0,0,0,0.02); }
 
     </style>
 </head>
@@ -506,6 +514,40 @@
                     style="background:rgba(180,80,0,0.12);border-color:rgba(200,100,0,0.35);color:#8a4000;"
                     title="Parameter tuning: systematically vary InstancedLabelManager config parameters and measure performance impact of each. Runs a short camera path for each configuration variant.">⚙ Tune Params</button>
             </div>
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);letter-spacing:.08em;"
+                    title="Runtime collision algorithm — applied live to the 3D label manager via setCollisionConfig(), no scene rebuild. Only affects the 3D (instanced) mode.">COLLIDE</span>
+                <select id="sel-ordering" class="step-select" title="Priority ordering strategy">
+                    <option value="bucket">bucket O(n)</option>
+                    <option value="radix">radix O(n·d)</option>
+                </select>
+                <select id="sel-occupancy" class="step-select" title="Screen-occupancy structure">
+                    <option value="pyramid">pyramid</option>
+                    <option value="bitmap">bitmap</option>
+                    <option value="summary">summary</option>
+                    <option value="grid">grid</option>
+                </select>
+                <select id="sel-bounds" class="step-select" title="Footprint model (grid supports AABB only)">
+                    <option value="aabb">AABB</option>
+                    <option value="quad">exact quad</option>
+                </select>
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);" title="Occlusion tolerance [0,0.9). 0 = strict. Honored on grid/bitmap/summary, and pyramid in AABB mode only.">tol</span>
+                <input class="btn" id="inp-occltol" type="number" min="0" max="0.9" step="0.05" value="0" style="width:52px;text-align:right;" />
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);" title="Raster downscale (power of 2). Ignored by grid.">down</span>
+                <input class="btn" id="inp-downscale" type="number" min="1" step="1" value="8" style="width:48px;text-align:right;" />
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);" title="Pyramid levels (pyramid occupancy only).">pyr</span>
+                <input class="btn" id="inp-pyrlevels" type="number" min="1" max="8" step="1" value="4" style="width:44px;text-align:right;" />
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);" title="Depth-sort buckets (bucket ordering only).">buck</span>
+                <input class="btn" id="inp-buckets" type="number" min="1" step="1" value="256" style="width:56px;text-align:right;" />
+                <span style="font-size:9px;color:rgba(0,0,0,0.3);" title="Grid cell size in screen px (grid occupancy only).">cell</span>
+                <input class="btn" id="inp-gridcell" type="number" min="4" step="4" value="32" style="width:48px;text-align:right;" />
+                <button class="btn primary" id="btn-apply-collide"
+                    title="Apply the collision config above to the live 3D label manager (no scene rebuild, no need to run the benchmark)">✓ Apply</button>
+                <button class="btn" id="btn-sweep-collide"
+                    style="background:rgba(80,40,180,0.15);border-color:rgba(100,60,220,0.35);color:#4030a0;"
+                    title="Collision sweep: force 3D mode, then run the camera path once per config in the prepared COLLISION_SWEEP list, and produce a side-by-side comparison of every method (occlusion time, FPS, rendered count…).">▶▶ Sweep</button>
+                <span id="collide-note" style="font-size:9px;color:#8a4000;margin-left:4px;"></span>
+            </div>
         </div>
 
         <div class="panel" id="panel-labels">
@@ -567,6 +609,16 @@
         <div id="tune-report-body"></div>
     </div>
 
+    <div id="panel-sweep-report">
+        <div id="sweep-report-header">
+            <div class="panel-title">Collision Method Comparison</div>
+            <span id="sweep-report-progress" style="font-size:9px;color:rgba(0,0,0,0.4);"></span>
+            <button class="btn" id="btn-sweep-pdf" style="pointer-events:auto;font-size:10px;padding:3px 8px;" title="Open a print/PDF view comparing every collision config in this sweep">⎙ PDF</button>
+            <button class="btn" id="btn-sweep-close" style="pointer-events:auto;font-size:10px;padding:3px 8px;">✕ Close</button>
+        </div>
+        <div id="sweep-report-body"></div>
+    </div>
+
     <div id="countdown-overlay">
         <div id="countdown-text">3</div>
     </div>
@@ -614,6 +666,105 @@
 
     // ── Scene factory ────────────────────────────────────────────────────────
 
+    // ── Runtime collision-algorithm switching (3D / instanced manager) ────────
+    // The COLLIDE controls are preview-only until "✓ Apply" is clicked — editing
+    // a dropdown/input never touches the live manager by itself, so you can freely
+    // dial in a combo (and see the clamp/tolerance note update) before committing.
+    // The bench never needs to be running (no "Run" click required) — interacting
+    // with the 3D view via mouse (GlobeControls) already works at any time; the
+    // benchmark only takes over the camera while a scripted step is playing.
+    let _lastAppliedCollisionConfig = null; // re-applied after a scene rebuild (mode/dataset switch)
+
+    function readCollisionControls() {
+        const val = id => document.getElementById(id);
+        const occ = val('sel-occupancy').value;
+        let bounds = val('sel-bounds').value;
+        // grid can't rasterise quads — mirror the clamp the engine applies
+        if (bounds === 'quad' && occ === 'grid') { bounds = 'aabb'; }
+        return {
+            sortMethod:       val('sel-ordering').value,
+            occupancyMethod:  occ,
+            boundsMode:       bounds,
+            occlusionTol:     Math.max(0, +val('inp-occltol').value || 0),
+            downscale:        Math.max(1, +val('inp-downscale').value || 8),
+            pyramidLevels:    Math.max(1, +val('inp-pyrlevels').value || 4),
+            collisionBuckets: Math.max(1, +val('inp-buckets').value || 256),
+            gridCell:         Math.max(1, +val('inp-gridcell').value || 32),
+        };
+    }
+
+    function updateCollideNote(cfg) {
+        const el = document.getElementById('collide-note');
+        if (!el) { return; }
+        const notes = [];
+        if (document.getElementById('sel-bounds')?.value === 'quad' && cfg.occupancyMethod === 'grid') {
+            notes.push('grid → AABB (no quad)');
+        }
+        if (cfg.occlusionTol > 0 && cfg.boundsMode === 'quad' && cfg.occupancyMethod === 'pyramid') {
+            notes.push('tol ignored (pyramid quad is binary)');
+        }
+        el.textContent = notes.join(' · ');
+    }
+
+    // Live preview: just refreshes the clamp/tolerance note and the bounds
+    // dropdown if it was clamped — does NOT touch the label manager.
+    function previewCollisionConfig() {
+        const cfg = readCollisionControls();
+        const bSel = document.getElementById('sel-bounds');
+        if (bSel && bSel.value !== cfg.boundsMode) { bSel.value = cfg.boundsMode; }
+        updateCollideNote(cfg);
+    }
+
+    // Pushes a config to the live manager(s) via setCollisionConfig() — no scene
+    // rebuild, labels preserved. Called on "✓ Apply" and to re-apply after rebuilds.
+    function pushCollisionConfig(cfg) {
+        if (!view) { return; }
+        for (const mgr of [view.instancedLabelManager, view.instancedLabelManagerAsync]) {
+            if (mgr && typeof mgr.setCollisionConfig === 'function') { mgr.setCollisionConfig(cfg); }
+        }
+        updateCollideNote(cfg);
+    }
+
+    function applyCollisionConfig() {
+        const cfg = readCollisionControls();
+        const bSel = document.getElementById('sel-bounds');
+        if (bSel && bSel.value !== cfg.boundsMode) { bSel.value = cfg.boundsMode; }
+        _lastAppliedCollisionConfig = cfg;
+        pushCollisionConfig(cfg);
+    }
+
+    // After a scene rebuild: re-apply the user's last confirmed config if they
+    // ever clicked Apply, otherwise just reflect the fresh manager's config
+    // (View.js's seed) into the controls.
+    function syncCollisionControlsFromManager() {
+        if (_lastAppliedCollisionConfig) {
+            const set = (id, v) => { const e = document.getElementById(id); if (e && v != null) { e.value = v; } };
+            const cfg = _lastAppliedCollisionConfig;
+            set('sel-ordering',  cfg.sortMethod);
+            set('sel-occupancy', cfg.occupancyMethod);
+            set('sel-bounds',    cfg.boundsMode);
+            set('inp-occltol',   cfg.occlusionTol);
+            set('inp-downscale', cfg.downscale);
+            set('inp-pyrlevels', cfg.pyramidLevels);
+            set('inp-buckets',   cfg.collisionBuckets);
+            set('inp-gridcell',  cfg.gridCell);
+            pushCollisionConfig(cfg);
+            return;
+        }
+        const cfg = view && view.instancedLabelManager && view.instancedLabelManager.config;
+        if (!cfg) { return; }
+        const set = (id, v) => { const e = document.getElementById(id); if (e && v != null) { e.value = v; } };
+        set('sel-ordering',  cfg.sortMethod);
+        set('sel-occupancy', cfg.occupancyMethod);
+        set('sel-bounds',    cfg.boundsMode);
+        set('inp-occltol',   cfg.occlusionTol);
+        set('inp-downscale', cfg.downscale);
+        set('inp-pyrlevels', cfg.pyramidLevels);
+        set('inp-buckets',   cfg.collisionBuckets);
+        set('inp-gridcell',  cfg.gridCell);
+        updateCollideNote(cfg);
+    }
+
     async function setupScene(labelManagerOverrides = null) {
         const viewerDiv = document.getElementById('viewerDiv');
 
@@ -658,6 +809,10 @@
             newMgr.attachTo(view.scene);
             view.instancedLabelManager = newMgr;
         }
+
+        // Re-apply the last confirmed collision config so it survives the rebuild
+        // (mode/dataset switch), or reflect View.js's fresh seed if none was applied yet.
+        syncCollisionControlsFromManager();
 
         // [BUG FIX] By ensuring the configuration was fetched previously, we add layers 
         // synchronously here. This prevents the LAYERS_INITIALIZED event from firing
@@ -1415,12 +1570,12 @@
             maplibre: { name: 'main-thread placement pass — build bucket parts + run the collision index', ref: 'Style._updatePlacement → Placement.placeLayerBucketPart (mlProbe wrapPlacement)' },
         },
         priority:  {
-            instanced: { name: 'scatter into depth buckets by score', ref: 'LabelCollisionEngine.evaluate (phase 2)' },
+            instanced: { name: 'priority ordering (bucket scatter / radix) by score', ref: 'CollisionCore.evaluate (phase 2) → Ordering' },
             'dom-perf': { name: 'sort grid.visible by label order', ref: 'Label2DRenderer.render (grid.visible.sort)' },
             maplibre: { name: 'symbol priority sort by symbol-sort-key (worker)', ref: 'SymbolBucket.populate sort (worker, __bench.sort)' },
         },
         occlusion: {
-            instanced: { name: 'hierarchical occupancy bitmap', ref: 'LabelCollisionEngine.evaluate (phase 3) → HierarchicalBitmap' },
+            instanced: { name: 'occupancy placement (grid / bitmap / pyramid / summary; AABB or exact-quad)', ref: 'CollisionCore.evaluate (phase 3) → Occupancy (makeOccupancy)' },
             'dom-perf': { name: 'screen-grid AABB overlap test', ref: 'Label2DRenderer.render → ScreenGrid.insert' },
             maplibre: { name: 'apply placement result + cross-tile fade/opacity update', ref: 'Placement.updateLayerOpacities (mlProbe wrapPlacement)' },
         },
@@ -2964,6 +3119,14 @@
     elBtnDomPerf.addEventListener('click',        () => setLabelMode('dom-perf'));
     elBtnNone.addEventListener('click',           () => setLabelMode('none'));
 
+    // ── Collision algorithm selector (preview on change, commit on Apply) ─────
+    for (const id of ['sel-ordering', 'sel-occupancy', 'sel-bounds',
+        'inp-occltol', 'inp-downscale', 'inp-pyrlevels', 'inp-buckets', 'inp-gridcell']) {
+        document.getElementById(id)?.addEventListener('change', previewCollisionConfig);
+    }
+    document.getElementById('btn-apply-collide')?.addEventListener('click', applyCollisionConfig);
+    syncCollisionControlsFromManager();
+
     // ── Dataset selector ─────────────────────────────────────────────────────
     const elBtnDsIgn = document.getElementById('btn-ds-ign');
     const elBtnDsOfm = document.getElementById('btn-ds-ofm');
@@ -3042,11 +3205,13 @@
 
     // ── Modes the full benchmark runs — the single toggle point. ─────────────
     // Comment a line out to skip that mode; uncomment to include it.
+    // Keep 'maplibre-none' BEFORE 'maplibre': the pair shares one warm map, and
+    // runMaplibreForFull() drops the cache once 'maplibre' has been served.
     const FULL_MODES = [
         'none',            // baseline: tiles, no labels
         'instanced',       // 3D instanced labels
-        // 'dom-perf',        // DOM labels
-        // 'maplibre-none',   // MapLibre baseline (no labels)
+        'dom-perf',        // DOM labels
+        'maplibre-none',   // MapLibre baseline (no labels)
         'maplibre',        // MapLibre with labels
     ];
     const MODE_SHORT = { none: 'None', instanced: '3D', 'dom-perf': 'DOM', maplibre: 'ML', 'maplibre-none': 'ML base' };
@@ -3605,7 +3770,13 @@
 
     elBtnExport.addEventListener('click', () => {
         if (!_exportPayload) return;
-        const blob = new Blob([JSON.stringify(_exportPayload, null, 2)], { type: 'application/json' });
+        // Stamp the active collision algorithm so a saved run is self-documenting.
+        const collisionConfig = (view && view.instancedLabelManager && view.instancedLabelManager.config)
+            ? (({ sortMethod, occupancyMethod, boundsMode, occlusionTol, downscale, pyramidLevels, collisionBuckets, gridCell }) =>
+                ({ sortMethod, occupancyMethod, boundsMode, occlusionTol, downscale, pyramidLevels, collisionBuckets, gridCell }))(view.instancedLabelManager.config)
+            : null;
+        const payload = { ...(_exportPayload || {}), collisionConfig };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `label-bench-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
@@ -4507,6 +4678,243 @@
     // Wire stop button to also abort tuning
     const _origStopHandler = elBtnStop.onclick;
     elBtnStop.addEventListener('click', () => { _tuneAborted = true; });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Collision Method Sweep (3D only)
+    // ═══════════════════════════════════════════════════════════════════════
+    // Forces 3D (instanced) mode, builds the scene ONCE, then runs the camera
+    // path once per config in COLLISION_SWEEP — switching collision algorithms
+    // live via setCollisionConfig() between runs (no scene rebuild) — and shows
+    // a side-by-side comparison (occlusion/priority/candidate ms, FPS, rendered)
+    // plus its own PDF. This is what surfaces "grid time vs pyramid time" etc.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const SWEEP_STEPS = [0, 1, 9, 10, 11];
+    // Shared param baseline; each entry's `config` is merged over it, then pushed.
+    const SWEEP_BASE = { downscale: 1, pyramidLevels: 2, collisionBuckets: 4096, gridCell: 32, occlusionTol: 0.1 };
+    // ── EDIT THIS LIST to choose which collision configs the sweep compares. ──
+    // Each `config` is a patch over SWEEP_BASE. `label` is optional (auto-derived).
+    const COLLISION_SWEEP = [
+        { config: { sortMethod: 'bucket', occupancyMethod: 'bitmap', boundsMode: 'quad', downscale: 1 } },
+        { config: { sortMethod: 'radix',  occupancyMethod: 'bitmap', boundsMode: 'quad', downscale: 1 } },
+        { config: { sortMethod: 'bucket', occupancyMethod: 'bitmap', boundsMode: 'quad', downscale: 2 } },
+        { config: { sortMethod: 'radix',  occupancyMethod: 'bitmap', boundsMode: 'quad', downscale: 2 } },
+        { config: { sortMethod: 'bucket', occupancyMethod: 'bitmap',   boundsMode: 'quad', downscale: 4 } },
+        { config: { sortMethod: 'radix',  occupancyMethod: 'bitmap',   boundsMode: 'quad', downscale: 4 } },
+        { config: { sortMethod: 'bucket', occupancyMethod: 'bitmap',   boundsMode: 'aabb', downscale: 4 } },
+        { config: { sortMethod: 'radix',  occupancyMethod: 'bitmap',   boundsMode: 'aabb', downscale: 4 } },
+    ];
+
+    const elSweepReport     = document.getElementById('panel-sweep-report');
+    const elSweepReportBody = document.getElementById('sweep-report-body');
+    const elSweepReportProg = document.getElementById('sweep-report-progress');
+
+    let _sweepAborted     = false;
+    let _lastSweepResults = null;
+
+    function sweepLabel(cfg) {
+        const t = cfg.occlusionTol > 0 ? ` · tol ${cfg.occlusionTol}` : '';
+        return `${cfg.sortMethod} · ${cfg.occupancyMethod} · ${cfg.boundsMode}${t}`;
+    }
+
+    function sweepMetrics(o) {
+        const st = k => (o.stages && o.stages[k]) || {};
+        return {
+            fpsAvg:  o.fpsAvg, fpsP5: o.fpsP5, msWorst: o.msWorst,
+            occ:     st('occlusion').avgMs || 0,
+            occPeak: st('occlusion').peakMs || 0,
+            pri:     st('priority').avgMs || 0,
+            cand:    st('candidate').avgMs || 0,
+            pos:     (st('position').avgMs || 0) + (st('position').betweenMs || 0),
+            lblCpu:  labelCpuOf(o),
+            rend:    o.rendAvg,
+        };
+    }
+
+    const SWEEP_COLS = [
+        { k: 'fpsAvg',  t: 'FPS avg',      better: 'high', d: 0 },
+        { k: 'fpsP5',   t: 'FPS p5',       better: 'high', d: 0 },
+        { k: 'msWorst', t: 'worst ms',     better: 'low',  d: 1 },
+        { k: 'occ',     t: 'occlusion ms', better: 'low',  d: 3 },
+        { k: 'occPeak', t: 'occl peak ms', better: 'low',  d: 2 },
+        { k: 'pri',     t: 'priority ms',  better: 'low',  d: 3 },
+        { k: 'cand',    t: 'candidate ms', better: 'low',  d: 3 },
+        { k: 'pos',     t: 'GPU pos ms',   better: 'low',  d: 3 },
+        { k: 'lblCpu',  t: 'label CPU ms', better: 'low',  d: 2 },
+        { k: 'rend',    t: 'rendered',     better: 'high', d: 0 },
+    ];
+
+    function sweepTableHTML(results) {
+        const rows = results.map(r => ({ label: r.label, m: sweepMetrics(r.overall) }));
+        const best = {}, worst = {};
+        for (const c of SWEEP_COLS) {
+            const vs = rows.map(r => r.m[c.k]).filter(v => typeof v === 'number' && isFinite(v));
+            if (!vs.length) { continue; }
+            const mn = Math.min(...vs), mx = Math.max(...vs);
+            best[c.k]  = c.better === 'low' ? mn : mx;
+            worst[c.k] = c.better === 'low' ? mx : mn;
+        }
+        const head = `<tr><th style="text-align:left">Config</th>${SWEEP_COLS.map(c => `<th>${c.t}</th>`).join('')}</tr>`;
+        const body = rows.map(r => `<tr><td style="text-align:left;white-space:nowrap">${esc(r.label)}</td>${
+            SWEEP_COLS.map(c => {
+                const v = r.m[c.k];
+                let style = '';
+                if (typeof v === 'number' && isFinite(v) && rows.length > 1) {
+                    if (v === best[c.k])  { style = 'color:#1a7a4a;font-weight:600'; }
+                    else if (v === worst[c.k]) { style = 'color:#b02020'; }
+                }
+                return `<td style="${style}">${typeof v === 'number' && isFinite(v) ? fmt(v, c.d) : '--'}</td>`;
+            }).join('')
+        }</tr>`).join('');
+        return `<table class="sweep-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
+    function renderSweepReport(results) {
+        _lastSweepResults = results;
+        const note = '<div style="font-size:9px;color:rgba(0,0,0,0.5);margin-bottom:8px;line-height:1.5">'
+            + '3D instanced · steps ' + SWEEP_STEPS.join(', ') + ' · '
+            + '<b>occlusion ms</b> is the per-method collision-structure cost (grid / bitmap / pyramid / summary). '
+            + 'Green = best across configs, red = worst.</div>';
+        elSweepReportBody.innerHTML = note + sweepTableHTML(results);
+    }
+
+    function sweepPayload(results) {
+        return {
+            type: 'collision-sweep',
+            dataset: datasetMode,
+            forcedLabelCount: _forcedLabelCount,
+            elevation: useElevation,
+            buildings: useBuildings,
+            steps: SWEEP_STEPS.map(i => STEPS[i].id),
+            configs: results.map(r => ({ label: r.label, config: r.config, metrics: sweepMetrics(r.overall) })),
+        };
+    }
+
+    function setCollideControlsFrom(cfg) {
+        const set = (id, v) => { const e = document.getElementById(id); if (e && v != null) { e.value = v; } };
+        set('sel-ordering',  cfg.sortMethod);  set('sel-occupancy', cfg.occupancyMethod);
+        set('sel-bounds',    cfg.boundsMode);   set('inp-occltol',   cfg.occlusionTol);
+        set('inp-downscale', cfg.downscale);    set('inp-pyrlevels', cfg.pyramidLevels);
+        set('inp-buckets',   cfg.collisionBuckets); set('inp-gridcell', cfg.gridCell);
+    }
+
+    function waitForLabelsSettled(minMs, stableMs, timeoutMs) {
+        return new Promise((resolve) => {
+            const t0 = performance.now();
+            let last = -1, stableSince = performance.now();
+            function check() {
+                const now = performance.now();
+                const { isRendered, total } = _computeLabelStats();
+                if (isRendered !== last) { last = isRendered; stableSince = now; }
+                const settled = now - t0 > minMs && total > 0 && now - stableSince > stableMs;
+                if (settled || now - t0 > timeoutMs || _sweepAborted) { resolve(); return; }
+                view.notifyChange(view.camera3D);
+                requestAnimationFrame(check);
+            }
+            check();
+        });
+    }
+
+    async function runCollisionSweep() {
+        if (runner.running || !COLLISION_SWEEP.length) { return; }
+        _sweepAborted = false;
+        _suppressPublish = true;
+
+        labelMode = 'instanced';
+        syncModeButtons();
+        _stepTimeScale = 0.5;
+        setQuickControlsDisabled(true);
+        elBtnStop.disabled = false;
+        elBtnReset.disabled = true;
+        elStatus.textContent = 'SWEEP…';
+        elSweepReport.classList.add('visible');
+        elSweepReportBody.innerHTML = '<div style="color:rgba(0,0,0,0.4);">Building 3D scene…</div>';
+
+        // One scene for the whole sweep; configs swap live via setCollisionConfig.
+        elStepName.textContent = 'Collision sweep — building 3D scene';
+        await setupScene();
+
+        const results = [];
+        for (let i = 0; i < COLLISION_SWEEP.length && !_sweepAborted; i++) {
+            const entry = COLLISION_SWEEP[i];
+            const cfg = { ...SWEEP_BASE, ...entry.config };
+            const label = entry.label || sweepLabel(cfg);
+            elSweepReportProg.textContent = `Running ${i + 1}/${COLLISION_SWEEP.length}: ${label}`;
+
+            // Apply live, reflect in the COLLIDE controls, and persist across any rebuild.
+            _lastAppliedCollisionConfig = cfg;
+            setCollideControlsFrom(cfg);
+            pushCollisionConfig(cfg);
+
+            // Drive to the first step's start view and let collision settle.
+            applyPlacement(view, STEPS[SWEEP_STEPS[0]].drive(0));
+            view.notifyChange(view.camera3D);
+            await waitForLabelsSettled(1200, 600, 8000);
+            if (_sweepAborted) { break; }
+
+            resetProfilerBaseline();
+            _lastFrameMs = 16;
+            rollingFrames = [];
+            const stepResults = await new Promise((resolve) => { runner.start(r => resolve(r), SWEEP_STEPS); });
+            if (_sweepAborted) { break; }
+
+            const overall = overallOf(stepResults);
+            if (overall) { results.push({ label, config: cfg, overall }); }
+            renderSweepReport(results);
+        }
+
+        _suppressPublish = false;
+        _stepTimeScale = 1;
+        elSweepReportProg.textContent = _sweepAborted ? '■ Stopped' : `✓ Complete — ${results.length} configs`;
+        elStatus.textContent = _sweepAborted ? 'STOPPED' : 'DONE';
+        setQuickControlsDisabled(false);
+        elBtnStop.disabled = true;
+        elBtnReset.disabled = false;
+
+        if (results.length) {
+            renderSweepReport(results);
+            enableExport(sweepPayload(results));
+            console.log('[LabelBench] collision sweep complete:', JSON.stringify(sweepPayload(results), null, 2));
+        }
+        _sweepAborted = false;
+    }
+
+    document.getElementById('btn-sweep-collide')?.addEventListener('click', async () => {
+        if (runner.running) { return; }
+        await countdown();
+        runCollisionSweep();
+    });
+    document.getElementById('btn-sweep-close')?.addEventListener('click', () => {
+        elSweepReport.classList.remove('visible');
+    });
+    document.getElementById('btn-sweep-pdf')?.addEventListener('click', () => {
+        if (!_lastSweepResults || !_lastSweepResults.length) { return; }
+        const meta = [
+            `Collision method comparison — 3D instanced`,
+            `Dataset: ${datasetMode === 'ign' ? 'IGN Plan v2' : 'CARTO Positron'}`,
+            `Force label count: ${_forcedLabelCount > 0 ? `${_forcedLabelCount}/tile` : 'off'}`,
+            `Steps: ${SWEEP_STEPS.map(i => STEPS[i].id).join(', ')}`,
+            new Date().toLocaleString(),
+        ].join('  ·  ');
+        const w = window.open('', '_blank');
+        if (!w) { return; }
+        w.document.write(`<!doctype html><html><head><meta charset="utf-8">
+            <title>iTowns Label Benchmark — Collision Method Comparison</title>
+            <style>${REPORT_PRINT_CSS}
+                .sweep-table { width:100%; border-collapse:collapse; font-size:12px; }
+                .sweep-table th,.sweep-table td { border:1px solid #ccc; padding:5px 9px; text-align:right; }
+                .sweep-table th:first-child,.sweep-table td:first-child { text-align:left; }
+                .sweep-table th { background:#f0f0f0; }
+            </style></head>
+            <body><h1>iTowns Label Benchmark — Collision Method Comparison</h1>
+            <div class="meta">${meta}</div>
+            ${sweepTableHTML(_lastSweepResults)}</body></html>`);
+        w.document.close();
+        w.focus();
+        setTimeout(() => w.print(), 250);
+    });
+    // Stop button also aborts a running sweep.
+    elBtnStop.addEventListener('click', () => { _sweepAborted = true; });
 
     setupScene().then(() => {
         elStepName.textContent = 'Ready';

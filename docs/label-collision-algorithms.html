@@ -1,0 +1,2162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Label Collision Handbook</title>
+<style>
+    /* ─────────────────────────────────────────────────────────────────────────
+       THEME — light is the base palette, dark redefines only the tokens.
+       Three viewer states are covered: no stamp (prefers-color-scheme decides),
+       data-theme="light", data-theme="dark". Nothing below declares a colour
+       outside a token, so no component can end up painting one theme's ink on
+       the other theme's paper.
+
+       The palette comes from a topographic plate: sage-grey paper, water-blue
+       for the through-line, contour sienna for cost, moss for a measured win.
+       ───────────────────────────────────────────────────────────────────────── */
+    :root {
+        --paper:#f2f4f1; --card:#fbfcfa; --card-2:#ecefe9;
+        --ink:#141a18; --ink-strong:#000; --dim:#57635d; --faint:#8b968f;
+        --rule:#d9ded8; --rule-soft:#e6eae3;
+        --azimuth:#15697f; --azimuth-ink:#0d4d5e; --azimuth-soft:#e2eef1;
+        --moss:#2c7043; --moss-soft:#e3efe5;
+        --sienna:#a04d24; --sienna-soft:#f6eae1;
+        --plum:#6a4382; --plum-soft:#efe8f4;
+        --code-bg:#edf0ec; --code-ink:#1d2926;
+        --shadow:0 1px 2px rgba(20,26,24,.06), 0 8px 24px -18px rgba(20,26,24,.35);
+
+        --serif:"Sitka Text",Sitka,Cambria,Georgia,"Times New Roman",serif;
+        --sans:"Segoe UI Variable Text","Segoe UI",Corbel,system-ui,-apple-system,"Helvetica Neue",sans-serif;
+        --mono:"Cascadia Code","Cascadia Mono",Consolas,"Fira Code",ui-monospace,monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            --paper:#0e1315; --card:#161c1f; --card-2:#1b2226;
+            --ink:#e3e9e5; --ink-strong:#fff; --dim:#98a49e; --faint:#6f7b76;
+            --rule:#252f31; --rule-soft:#1e2629;
+            --azimuth:#6fc2db; --azimuth-ink:#a7dcec; --azimuth-soft:#10262d;
+            --moss:#69c286; --moss-soft:#122a1c;
+            --sienna:#e0955f; --sienna-soft:#2c1d13;
+            --plum:#bb96d8; --plum-soft:#221a2c;
+            --code-bg:#121a1c; --code-ink:#cfdad6;
+            --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
+        }
+    }
+    :root[data-theme="dark"] {
+        --paper:#0e1315; --card:#161c1f; --card-2:#1b2226;
+        --ink:#e3e9e5; --ink-strong:#fff; --dim:#98a49e; --faint:#6f7b76;
+        --rule:#252f31; --rule-soft:#1e2629;
+        --azimuth:#6fc2db; --azimuth-ink:#a7dcec; --azimuth-soft:#10262d;
+        --moss:#69c286; --moss-soft:#122a1c;
+        --sienna:#e0955f; --sienna-soft:#2c1d13;
+        --plum:#bb96d8; --plum-soft:#221a2c;
+        --code-bg:#121a1c; --code-ink:#cfdad6;
+        --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
+    }
+
+    *,*::before,*::after { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto; } }
+    body {
+        margin:0; background:var(--paper); color:var(--ink);
+        font-family:var(--serif); font-size:17px; line-height:1.72;
+        -webkit-font-smoothing:antialiased;
+    }
+
+    /* ── shell ─────────────────────────────────────────────────────────────── */
+    .shell { display:grid; grid-template-columns:274px minmax(0,1fr); align-items:start; }
+    nav {
+        position:sticky; top:0; height:100vh; overflow-y:auto;
+        background:var(--card); border-right:1px solid var(--rule);
+        padding:26px 16px 60px; font-family:var(--sans); font-size:13.5px;
+    }
+    nav .brand { font-weight:650; font-size:15px; letter-spacing:-.01em; padding:0 8px; }
+    nav .brand small { display:block; font-family:var(--mono); font-size:10.5px;
+        letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin-top:5px; font-weight:400; }
+    nav .part { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.14em;
+        color:var(--faint); margin:22px 0 6px; padding:0 8px; }
+    nav a { display:flex; gap:9px; padding:4px 8px; border-radius:5px; text-decoration:none;
+        color:var(--dim); line-height:1.45; }
+    nav a:hover { color:var(--ink); background:var(--card-2); }
+    nav a:focus-visible { outline:2px solid var(--azimuth); outline-offset:1px; }
+    nav a.on { color:var(--azimuth-ink); background:var(--azimuth-soft); font-weight:600;
+        box-shadow:inset 2px 0 0 var(--azimuth); }
+    nav a .n { font-family:var(--mono); font-size:11.5px; color:var(--faint); min-width:1.4em;
+        font-variant-numeric:tabular-nums; }
+    nav a.on .n { color:var(--azimuth); }
+    main { min-width:0; }
+    .wrap { max-width:1080px; margin:0 auto; padding:56px 40px 160px; }
+    .col { max-width:68ch; }
+    @media (max-width:1000px) {
+        .shell { grid-template-columns:1fr; }
+        nav { position:static; height:auto; border-right:none; border-bottom:1px solid var(--rule); }
+        .wrap { padding:32px 20px 100px; }
+    }
+
+    /* ── type ──────────────────────────────────────────────────────────────── */
+    h1 { font-family:var(--sans); font-size:clamp(32px,4.4vw,46px); font-weight:680;
+        letter-spacing:-.025em; line-height:1.08; margin:0 0 18px; text-wrap:balance; }
+    .standfirst { font-size:19px; color:var(--dim); max-width:60ch; margin:0 0 34px; }
+    h2 { font-family:var(--sans); font-size:26px; font-weight:660; letter-spacing:-.02em;
+        line-height:1.2; margin:0 0 4px; text-wrap:balance; }
+    h3 { font-family:var(--sans); font-size:18.5px; font-weight:640; letter-spacing:-.012em;
+        margin:34px 0 8px; text-wrap:balance; }
+    h4 { font-family:var(--sans); font-size:15.5px; font-weight:640; margin:22px 0 6px; }
+    p { margin:0 0 15px; }
+    ul,ol { margin:0 0 16px; padding-left:24px; }
+    li { margin-bottom:8px; }
+    li > ul, li > ol { margin-top:8px; }
+    strong { font-weight:600; color:var(--ink-strong); }
+    a { color:var(--azimuth-ink); text-decoration-thickness:1px; text-underline-offset:2px; }
+    abbr { text-decoration:none; border-bottom:1px dotted var(--faint); cursor:help; }
+    hr { border:none; border-top:1px solid var(--rule); margin:44px 0; }
+
+    /* chapter head: number in the gutter, mono, so the sequence is legible */
+    section.ch { padding-top:52px; scroll-margin-top:12px; }
+    section.ch > .head { display:flex; gap:16px; align-items:baseline;
+        border-top:1px solid var(--rule); padding-top:18px; margin-bottom:14px; }
+    section.ch > .head .idx { font-family:var(--mono); font-size:13px; color:var(--azimuth);
+        font-variant-numeric:tabular-nums; padding-top:5px; }
+    .lede { color:var(--dim); font-size:17.5px; max-width:62ch; margin:0 0 20px; }
+    .parthead { margin:74px 0 0; padding:0; }
+    .parthead .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+        text-transform:uppercase; color:var(--azimuth); }
+    .parthead h2 { font-size:32px; margin-top:4px; }
+    .parthead p { color:var(--dim); max-width:60ch; }
+
+    /* ── code ──────────────────────────────────────────────────────────────── */
+    code { font-family:var(--mono); font-size:.86em; background:var(--code-bg);
+        color:var(--code-ink); padding:1px 5px; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--rule); border-radius:9px;
+        padding:16px 18px; margin:0 0 20px; overflow-x:auto;
+        font-family:var(--mono); font-size:13px; line-height:1.62; color:var(--code-ink); }
+    pre code { background:none; padding:0; font-size:inherit; }
+    pre .cm { color:var(--faint); font-style:italic; }
+    pre .kw { color:var(--plum); }
+    pre .st { color:var(--moss); }
+    pre .nu { color:var(--sienna); }
+    .caption { font-family:var(--mono); font-size:11.5px; color:var(--faint);
+        letter-spacing:.04em; margin:-12px 0 22px; }
+
+    /* ── callouts ──────────────────────────────────────────────────────────── */
+    .note { border-left:3px solid var(--azimuth); background:var(--card);
+        border-radius:0 9px 9px 0; padding:14px 18px; margin:0 0 20px; font-size:16px; }
+    .note .tag { display:block; font-family:var(--mono); font-size:10px; letter-spacing:.14em;
+        text-transform:uppercase; color:var(--azimuth); margin-bottom:6px; }
+    .note.key { border-color:var(--plum); background:var(--plum-soft); }
+    .note.key .tag { color:var(--plum); }
+    .note.warn { border-color:var(--sienna); background:var(--sienna-soft); }
+    .note.warn .tag { color:var(--sienna); }
+    .note.good { border-color:var(--moss); background:var(--moss-soft); }
+    .note.good .tag { color:var(--moss); }
+    .note > :last-child { margin-bottom:0; }
+
+    /* ── measured-result strip ─────────────────────────────────────────────── */
+    .strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1px;
+        background:var(--rule); border:1px solid var(--rule); border-radius:10px;
+        overflow:hidden; margin:0 0 22px; }
+    .strip > div { background:var(--card); padding:13px 16px; }
+    .strip dt { font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+        color:var(--faint); margin-bottom:4px; }
+    .strip dd { margin:0; font-family:var(--sans); font-size:24px; font-weight:640;
+        letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.15; }
+    .strip dd small { display:block; font-size:12px; font-weight:400; color:var(--dim);
+        letter-spacing:0; font-family:var(--serif); margin-top:3px; }
+
+    /* ── tables ────────────────────────────────────────────────────────────── */
+    .tw { overflow-x:auto; margin:0 0 8px; border:1px solid var(--rule); border-radius:10px; background:var(--card); }
+    table { width:100%; border-collapse:collapse; font-family:var(--sans); font-size:14px;
+        font-variant-numeric:tabular-nums; }
+    caption { caption-side:top; text-align:left; font-family:var(--mono); font-size:11px;
+        letter-spacing:.1em; text-transform:uppercase; color:var(--faint); padding:12px 14px 0; }
+    th,td { padding:8px 13px; text-align:right; border-bottom:1px solid var(--rule-soft); white-space:nowrap; }
+    thead th { font-family:var(--mono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+        color:var(--dim); font-weight:400; border-bottom:1px solid var(--rule); }
+    tbody tr:last-child td { border-bottom:none; }
+    th:first-child,td:first-child { text-align:left; white-space:normal; }
+    td.win,.win { color:var(--moss); font-weight:650; }
+    td.lose,.lose { color:var(--sienna); }
+    tr.pick td { background:var(--moss-soft); }
+    tr.pick td:first-child { box-shadow:inset 3px 0 0 var(--moss); }
+    td small,th small { display:block; font-family:var(--mono); font-size:11px; color:var(--faint); font-weight:400; }
+    .u { font-family:var(--mono); font-size:11px; color:var(--faint); }
+
+    /* ── figures ───────────────────────────────────────────────────────────── */
+    figure { margin:0 0 24px; background:var(--card); border:1px solid var(--rule);
+        border-radius:11px; padding:20px 20px 16px; box-shadow:var(--shadow); }
+    figure .svgwrap { overflow-x:auto; }
+    figure svg { display:block; width:100%; max-width:100%; height:auto; color:var(--ink); }
+    figcaption { font-size:14.5px; color:var(--dim); margin-top:14px; line-height:1.6; }
+    figcaption b { color:var(--ink); font-weight:600; }
+    /* semantic marks inside diagrams */
+    .s-fill { fill:var(--azimuth-soft); }
+    .s-line { stroke:var(--azimuth); }
+    .s-text { fill:var(--azimuth); }
+    .w-fill { fill:var(--sienna-soft); }
+    .w-line { stroke:var(--sienna); }
+    .w-text { fill:var(--sienna); }
+    .g-line { stroke:var(--moss); }
+    .g-text { fill:var(--moss); }
+    .dimtext { fill:var(--faint); }
+    .mono { font-family:var(--mono); }
+
+    .cols2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin:0 0 22px; }
+    @media (max-width:760px) { .cols2 { grid-template-columns:1fr; } }
+    .card { background:var(--card); border:1px solid var(--rule); border-radius:10px; padding:15px 17px; }
+    .card h4 { margin-top:0; }
+    .card > :last-child { margin-bottom:0; }
+
+    .steps { counter-reset:step; list-style:none; padding:0; }
+    .steps > li { counter-increment:step; position:relative; padding-left:42px; margin-bottom:18px; }
+    .steps > li::before { content:counter(step); position:absolute; left:0; top:2px;
+        width:27px; height:27px; border-radius:50%; background:var(--azimuth-soft); color:var(--azimuth-ink);
+        font-family:var(--mono); font-size:12px; display:grid; place-items:center; font-weight:600; }
+    .glossary { display:grid; gap:0; border:1px solid var(--rule); border-radius:10px; overflow:hidden; }
+    .glossary > div { display:grid; grid-template-columns:190px 1fr; gap:16px; padding:11px 16px;
+        background:var(--card); border-bottom:1px solid var(--rule-soft); font-size:15.5px; }
+    .glossary > div:last-child { border-bottom:none; }
+    .glossary dt { font-family:var(--mono); font-size:12.5px; color:var(--azimuth-ink); padding-top:3px; }
+    .glossary dd { margin:0; color:var(--dim); }
+    @media (max-width:640px) { .glossary > div { grid-template-columns:1fr; gap:2px; } }
+    .refs { font-size:15px; }
+    .refs li { margin-bottom:10px; color:var(--dim); }
+    .refs b { color:var(--ink); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="shell">
+<nav aria-label="Contents">
+    <div class="brand">Label Collision Handbook<small>iTowns · measured course</small></div>
+
+    <div class="part">Part I · The problem</div>
+    <a href="#ch1"><span class="n">1</span>Labels, and why 3D is different</a>
+    <a href="#ch2"><span class="n">2</span>The problem has a name</a>
+    <a href="#ch3"><span class="n">3</span>The pipeline</a>
+    <a href="#ch4"><span class="n">4</span>How quality is measured</a>
+
+    <div class="part">Part II · Getting to pixels</div>
+    <a href="#ch5"><span class="n">5</span>World position → screen box</a>
+    <a href="#ch6"><span class="n">6</span>A label's own geometry</a>
+
+    <div class="part">Part III · Collision math</div>
+    <a href="#ch7"><span class="n">7</span>AABB: the four comparisons</a>
+    <a href="#ch8"><span class="n">8</span>OBB and separating axes</a>
+    <a href="#ch9"><span class="n">9</span>Circle chains</a>
+    <a href="#ch10"><span class="n">10</span>Granularity: glyphs and groups</a>
+    <a href="#ch11"><span class="n">11</span>The collider trade, measured</a>
+
+    <div class="part">Part IV · Ordering</div>
+    <a href="#ch12"><span class="n">12</span>Priority is the algorithm</a>
+    <a href="#ch13"><span class="n">13</span>What a comparison sort costs</a>
+    <a href="#ch14"><span class="n">14</span>Counting sort from scratch</a>
+    <a href="#ch15"><span class="n">15</span>Radix = counting sort per digit</a>
+    <a href="#ch16"><span class="n">16</span>Why radix is faster</a>
+    <a href="#ch17"><span class="n">17</span>Bits, ties and precision</a>
+    <a href="#ch18"><span class="n">18</span>Bucket sort, and the asterisk</a>
+
+    <div class="part">Part V · Occupancy</div>
+    <a href="#ch19"><span class="n">19</span>One interface, four structures</a>
+    <a href="#ch20"><span class="n">20</span>Brute force, grid, R-tree</a>
+    <a href="#ch21"><span class="n">21</span>The occupancy bitmap</a>
+    <a href="#ch22"><span class="n">22</span>Hierarchies over bits</a>
+    <a href="#ch23"><span class="n">23</span>Structures, measured</a>
+
+    <div class="part">Part VI · Time</div>
+    <a href="#ch24"><span class="n">24</span>Flicker, hysteresis, tolerance</a>
+
+    <div class="part">Part VII · Practice</div>
+    <a href="#ch25"><span class="n">25</span>Benching it honestly</a>
+    <a href="#ch26"><span class="n">26</span>Against MapLibre</a>
+    <a href="#ch27"><span class="n">27</span>Build it in ten steps</a>
+    <a href="#ch28"><span class="n">28</span>What is still open</a>
+    <a href="#glossary"><span class="n">·</span>Glossary</a>
+    <a href="#refs"><span class="n">·</span>References</a>
+</nav>
+
+<main>
+<div class="wrap">
+<div class="col">
+
+<h1>Label Collision Handbook</h1>
+<p class="standfirst">How a real-time 3D map decides which of its 24 000 text labels to draw, in under a millisecond per frame — derived from scratch, with every claim tied to a measurement you can reproduce.</p>
+
+<div class="strip">
+    <div><dt>Chosen ordering</dt><dd>radix 20 b<small>two passes of 10 bits</small></dd></div>
+    <div><dt>Chosen occupancy</dt><dd>bitmap /1<small>full res, tolerance 0.1</small></dd></div>
+    <div><dt>Chosen collider</dt><dd>AABB + glyphs<small>one box per point label, one per glyph on roads</small></dd></div>
+    <div><dt>Cost per frame</dt><dd>0.983 ms<small>68.4 % of the offline optimum</small></dd></div>
+</div>
+
+<div class="note key">
+    <span class="tag">Who this is for</span>
+    <p>You know some JavaScript and some linear algebra — a matrix multiply and a dot product do not scare you — and you would like to build a label-occlusion system, or understand the one in iTowns well enough to change it. No graphics, cartography or algorithms background is assumed. Everything is derived: when a formula appears, it is worked through on real numbers first.</p>
+    <p>The measurements come from the benchmark built for this work (poster <i>Occlusion d'étiquettes cartographiques dans un environnement 3D</i>, Ciril GROUP R&amp;D / CESI, August 2026). Two live benches ship with the repo — <code>examples/collision_configurator.html</code> sweeps every combination described here, and <code>examples/collision_bounds_bench.html</code> isolates the collider models.</p>
+</div>
+
+<h3>The three sentences that the rest of the course elaborates</h3>
+<ol>
+    <li><strong>The collider decides quality.</strong> How tightly you approximate a label's shape is what governs how many labels fit. Changing the collider moves quality by 15 points; changing the data structure moves it by zero.</li>
+    <li><strong>The ordering decides cost.</strong> Sorting several thousand candidates every frame is a bigger line item than the collision tests themselves, which is why a sort that does no comparisons at all is worth the trouble.</li>
+    <li><strong>The occupancy structure is a speed choice, not a quality choice</strong> — with exactly one exception, the raster bitmap, which changes the geometry of the question and therefore does move quality (and stability, in the good direction).</li>
+</ol>
+
+<!-- ══════════════════════════════════ PART I ══════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part I</div>
+    <h2>The problem</h2>
+    <p>What is being decided, why it cannot be decided exactly, and how we will know whether an answer is any good.</p>
+</div>
+
+<section class="ch" id="ch1">
+    <div class="head"><span class="idx">1</span><h2>Labels, and why 3D is different</h2></div>
+    <p class="lede">A label is a piece of text that names something on a map. Deciding which labels to draw is an editorial job on a paper map and an every-frame computation in a 3D one.</p>
+
+    <p>Map labels come in two geometric flavours, and the difference runs through this entire course:</p>
+    <ul>
+        <li><strong>Point labels</strong> name a place that is a position: a city, a monument, a shop. They are drawn horizontally, because every renderer keeps them horizontal — MapLibre resolves <code>text-rotation-alignment</code> to <code>viewport</code> for point placement, so a city name never tilts, no matter how the camera turns.</li>
+        <li><strong>Line labels</strong> name a place that is a path: a street, a river, a rail line. They follow the geometry of that path, which means they are <em>rotated</em> and usually <em>curved</em>.</li>
+    </ul>
+
+    <p>On a printed map, a cartographer chooses in advance which names appear. That choice is expensive, careful, and permanent. In a 3D viewer the camera moves continuously: the set of visible features, their sizes on screen and their overlaps all change every frame, so the selection has to be recomputed from nothing, sixty times a second.</p>
+
+    <p>The scale is the part that surprises people. Under the name of a single city, a dataset holds thousands of streets, and each street serves hundreds of addressable places. On a view of Paris with an IGN dataset, the number of labels resident in memory reaches <strong>24 000</strong> during a particularly dense frame. Drawing them all produces an unreadable grey mat of text. Drawing a fixed subset produces a map that is empty when you zoom in and cluttered when you zoom out.</p>
+
+    <p>So three requirements pull against each other, and no algorithm satisfies all three:</p>
+    <div class="cols2">
+        <div class="card"><h4>Density</h4><p>Show as much information as possible. Every label you drop is a name the user cannot read.</p></div>
+        <div class="card"><h4>Legibility</h4><p>No two drawn labels may overlap. One overlap destroys two names, so an overlap costs double.</p></div>
+    </div>
+    <div class="card" style="margin-bottom:22px"><h4>Stability</h4><p>A label must not flicker on and off between consecutive frames. This one is easy to forget when you benchmark on still frames, and it is the requirement users notice first. The poster's French term is <i>basculement</i> — a "switch" — and this course calls the metric <strong>churn</strong>.</p></div>
+
+    <p>Density and legibility are in direct opposition: the only way to guarantee no overlaps is to draw fewer labels. Stability opposes both: the most legible, densest arrangement for <em>this</em> frame is usually not the arrangement for the next one, and swapping to it is exactly the flicker you must avoid.</p>
+
+    <div class="note">
+        <span class="tag">Scope</span>
+        <p>This course covers <strong>collision detection and selection</strong>: given a set of labels with fixed anchor positions, find the overlaps and choose which labels survive. It does not cover <strong>placement</strong> — moving a label to a better spot near its anchor (above the point, below it, to the left…), which is a related and much larger literature. The bench includes a positional-candidate mode (<span class="mono">PAL</span>, K positions per label) so the two can be compared, but everything measured here uses one fixed position per label.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch2">
+    <div class="head"><span class="idx">2</span><h2>The problem has a name, and it is NP-hard</h2></div>
+    <p class="lede">Written down formally, label selection is Maximum Weight Independent Set. That is bad news with a useful silver lining.</p>
+
+    <p>Build a graph. Every candidate label is a vertex, with a <em>weight</em> equal to how much you care about showing it (a capital city outranks a footpath). Draw an edge between two vertices whenever their footprints overlap on screen — those two labels cannot both be drawn.</p>
+
+    <p>An <strong>independent set</strong> in a graph is a set of vertices with no edge between any two of them: exactly a set of labels that can all be drawn together. You want the independent set whose total weight is largest. That is <abbr title="Maximum Weight Independent Set">MWIS</abbr>, and it is NP-hard — no known algorithm finds the exact answer in time that stays reasonable as the graph grows. With 6 000 candidates you are not going to solve it in 16 milliseconds. You are not going to solve it in an hour.</p>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 820 250" role="img" aria-label="Six labels as graph vertices with overlap edges; a greedy weight-ordered pass selects three of them, which is also the maximum-weight independent set here.">
+            <!-- left: the graph -->
+            <text x="0" y="14" class="mono dimtext" font-size="11">CONFLICT GRAPH — edge = footprints overlap</text>
+            <g stroke="currentColor" stroke-width="1.2" opacity=".55">
+                <line x1="70" y1="70" x2="170" y2="55"/>
+                <line x1="170" y1="55" x2="250" y2="110"/>
+                <line x1="70" y1="70" x2="110" y2="150"/>
+                <line x1="110" y1="150" x2="210" y2="185"/>
+                <line x1="250" y1="110" x2="210" y2="185"/>
+                <line x1="250" y1="110" x2="320" y2="60"/>
+            </g>
+            <g font-family="var(--mono)" font-size="11">
+                <circle cx="70"  cy="70"  r="19" class="s-fill s-line" stroke-width="1.5"/>
+                <text x="70"  y="74"  text-anchor="middle" class="s-text">100</text>
+                <circle cx="170" cy="55"  r="15" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/>
+                <text x="170" y="59"  text-anchor="middle" fill="currentColor" opacity=".8">30</text>
+                <circle cx="250" cy="110" r="19" class="s-fill s-line" stroke-width="1.5"/>
+                <text x="250" y="114" text-anchor="middle" class="s-text">80</text>
+                <circle cx="110" cy="150" r="13" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/>
+                <text x="110" y="154" text-anchor="middle" fill="currentColor" opacity=".8">8</text>
+                <circle cx="210" cy="185" r="15" class="s-fill s-line" stroke-width="1.5"/>
+                <text x="210" y="189" text-anchor="middle" class="s-text">20</text>
+                <circle cx="320" cy="60"  r="13" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/>
+                <text x="320" y="64"  text-anchor="middle" fill="currentColor" opacity=".8">5</text>
+            </g>
+            <text x="0" y="232" font-size="12.5" fill="currentColor" opacity=".75">weight = how much you care · filled = drawn</text>
+
+            <!-- right: the greedy pass -->
+            <line x1="400" y1="20" x2="400" y2="230" stroke="currentColor" opacity=".18"/>
+            <text x="430" y="14" class="mono dimtext" font-size="11">GREEDY PASS — take in weight order, skip if it conflicts</text>
+            <g font-family="var(--mono)" font-size="12">
+                <g>
+                    <rect x="430" y="34" width="360" height="26" rx="5" class="s-fill"/>
+                    <text x="442" y="52" class="s-text">100 · free → draw</text>
+                </g>
+                <g>
+                    <rect x="430" y="66" width="360" height="26" rx="5" class="s-fill"/>
+                    <text x="442" y="84" class="s-text">80 · free → draw</text>
+                </g>
+                <g>
+                    <rect x="430" y="98" width="360" height="26" rx="5" fill="var(--card-2)"/>
+                    <text x="442" y="116" fill="currentColor" opacity=".6">30 · hits 100 → skip</text>
+                </g>
+                <g>
+                    <rect x="430" y="130" width="360" height="26" rx="5" class="s-fill"/>
+                    <text x="442" y="148" class="s-text">20 · free → draw</text>
+                </g>
+                <g>
+                    <rect x="430" y="162" width="360" height="26" rx="5" fill="var(--card-2)"/>
+                    <text x="442" y="180" fill="currentColor" opacity=".6">8 · hits 100, 20 → skip</text>
+                </g>
+                <g>
+                    <rect x="430" y="194" width="360" height="26" rx="5" fill="var(--card-2)"/>
+                    <text x="442" y="212" fill="currentColor" opacity=".6">5 · hits 80 → skip</text>
+                </g>
+            </g>
+            <text x="430" y="240" font-size="12.5" fill="currentColor" opacity=".75">total 200 — which is optimal here, though it need not be</text>
+        </svg>
+        </div>
+        <figcaption><b>Selection is Maximum Weight Independent Set.</b> The greedy pass on the right is the entire algorithm this course builds: walk the candidates in priority order and keep each one that does not conflict with what is already drawn. It has no lookahead, so it can be beaten — dropping the 100 to take 30 + 80 + 20 + 8 would be worse, but other graphs exist where sacrificing a heavy vertex wins.</figcaption>
+    </figure>
+
+    <p>Two things rescue the situation.</p>
+
+    <p><strong>First, the graph is not arbitrary.</strong> Its edges come from geometry: labels only conflict with labels that are near them on screen. A label of size <i>w</i>×<i>h</i> can only touch others within that distance, so vertex degree is bounded by how many labels fit in a neighbourhood, not by <i>n</i>. That is why every structure in Part V works: you never need to compare a label against all the others, only against the handful that could possibly be nearby.</p>
+
+    <p><strong>Second, we do not need the optimum — we need to know how far from it we are.</strong> This is the single most important methodological decision in the whole project. Once, offline, with no time limit, you compute a near-optimal arrangement for a fixed scene using simulated annealing. That arrangement is your 100 %. Every real-time algorithm is then scored as a percentage of it. In the poster's bench, that offline solve takes <strong>22 069 ms</strong> for a scene the real-time pipeline handles in <strong>0.983 ms</strong> — roughly 22 000× the budget, which is exactly why it can only ever be a yardstick.</p>
+
+    <div class="note good">
+        <span class="tag">Result</span>
+        <p>Greedy-by-priority, with exact geometry and no tolerance, reaches <strong>77.7 %</strong> of that annealed ceiling. The shipped configuration, which trades some of that away for speed and stability, reaches <strong>68.4 %</strong>. Neither number is close to 100, and that is not a defect: the ceiling is an offline solver given unlimited time on a frozen frame.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch3">
+    <div class="head"><span class="idx">3</span><h2>The pipeline</h2></div>
+    <p class="lede">Three stages, run once per frame. Everything else in this course is a choice inside one of them.</p>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 880 264" role="img" aria-label="Per-frame pipeline: all labels are filtered to candidates, scored into keys, ordered by priority, then tested and marked one by one against an occupancy structure, producing per-label shouldRender flags.">
+            <defs>
+                <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+                </marker>
+            </defs>
+            <g font-family="var(--sans)" font-size="12.5">
+                <!-- stage boxes -->
+                <rect x="0"   y="52" width="122" height="58" rx="8" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".25"/>
+                <text x="61"  y="76" text-anchor="middle">all labels</text>
+                <text x="61"  y="94" text-anchor="middle" class="mono dimtext" font-size="11">24 000</text>
+
+                <rect x="168" y="52" width="140" height="58" rx="8" fill="none" stroke="currentColor" stroke-opacity=".45"/>
+                <text x="238" y="70" text-anchor="middle">1 · candidates</text>
+                <text x="238" y="88" text-anchor="middle" class="mono dimtext" font-size="10.5">frustum + visible</text>
+                <text x="238" y="102" text-anchor="middle" class="mono dimtext" font-size="10.5">+ score</text>
+
+                <rect x="354" y="52" width="140" height="58" rx="8" fill="none" stroke="currentColor" stroke-opacity=".45"/>
+                <text x="424" y="70" text-anchor="middle">2 · ordering</text>
+                <text x="424" y="88" text-anchor="middle" class="mono dimtext" font-size="10.5">radix, 20 bits</text>
+                <text x="424" y="102" text-anchor="middle" class="mono dimtext" font-size="10.5">2 × 10-bit passes</text>
+
+                <rect x="540" y="34" width="196" height="94" rx="8" class="s-fill s-line" stroke-width="1.4"/>
+                <text x="638" y="56" text-anchor="middle" class="s-text">3 · occlusion loop</text>
+                <text x="638" y="78" text-anchor="middle" class="mono s-text" font-size="11">for each label, in order:</text>
+                <text x="638" y="95" text-anchor="middle" class="mono s-text" font-size="11">test(footprint)</text>
+                <text x="638" y="112" text-anchor="middle" class="mono s-text" font-size="11">→ if free: mark(footprint)</text>
+
+                <rect x="782" y="52" width="98" height="58" rx="8" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".25"/>
+                <text x="831" y="76" text-anchor="middle">draw</text>
+                <text x="831" y="94" text-anchor="middle" class="mono dimtext" font-size="10.5">~1 200</text>
+
+                <!-- arrows -->
+                <g stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)" fill="none">
+                    <line x1="124" y1="81" x2="164" y2="81"/>
+                    <line x1="310" y1="81" x2="350" y2="81"/>
+                    <line x1="496" y1="81" x2="536" y2="81"/>
+                    <line x1="738" y1="81" x2="778" y2="81"/>
+                </g>
+                <text x="144" y="72" text-anchor="middle" class="mono dimtext" font-size="10">6 000</text>
+                <text x="330" y="72" text-anchor="middle" class="mono dimtext" font-size="10">keys</text>
+                <text x="516" y="72" text-anchor="middle" class="mono dimtext" font-size="10">order</text>
+
+                <!-- occupancy store -->
+                <rect x="568" y="176" width="140" height="46" rx="8" fill="none" stroke="currentColor" stroke-dasharray="4 3" stroke-opacity=".55"/>
+                <text x="638" y="196" text-anchor="middle" font-size="12">occupancy</text>
+                <text x="638" y="212" text-anchor="middle" class="mono dimtext" font-size="10.5">bitmap of the screen</text>
+                <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" fill="none" opacity=".7">
+                    <path d="M610,130 L610,172"/>
+                    <path d="M666,172 L666,130"/>
+                </g>
+                <text x="596" y="154" text-anchor="end" class="mono dimtext" font-size="10">mark</text>
+                <text x="680" y="154" class="mono dimtext" font-size="10">test</text>
+
+                <!-- feedback -->
+                <path d="M831,116 L831,240 L238,240 L238,116" stroke="currentColor" stroke-width="1.2" fill="none"
+                      stroke-dasharray="4 3" opacity=".55" marker-end="url(#ar)"/>
+                <text x="534" y="254" text-anchor="middle" class="mono dimtext" font-size="10.5">last frame's decision feeds back as priority + hysteresis</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>One frame.</b> Stage 1 throws away everything off-screen and gives each survivor a score. Stage 2 puts the survivors in the order they will be attempted. Stage 3 walks that order once, asking the occupancy structure "is this area free?" and claiming the area when it is. The dashed feedback edge is what makes the result stable in time (chapter 24) — without it, each frame is decided from scratch and labels flicker.</figcaption>
+    </figure>
+
+    <p>The shipped implementation is <code>packages/Label/src/Collision/CollisionCore.ts</code>, and it is worth reading now, because it is only about seventy lines of real work. Its three phases are literally labelled:</p>
+
+<pre><code><span class="cm">// Phase 1: candidate filter + score</span>
+<span class="kw">for</span> (<span class="kw">const</span> label <span class="kw">of</span> labels) {
+    label.isCandidate = label.visible &amp;&amp; label.opacity &gt; <span class="nu">0</span> &amp;&amp; label.glyphs.length &gt; <span class="nu">0</span>
+                     &amp;&amp; label.bounds.width &gt; <span class="nu">0</span> &amp;&amp; projector.checkVisible(label);
+    <span class="kw">if</span> (!label.isCandidate) { label.shouldRender = <span class="kw">false</span>; <span class="kw">continue</span>; }
+    <span class="kw">const</span> distSq = dx*dx + dy*dy + dz*dz;                <span class="cm">// camera → label</span>
+    label.score = distSq * ((baseFontSize / label.fontSize) ** fontSizePriorityPower);
+    cands.push(label);
+}
+
+<span class="cm">// Phase 2: priority ordering</span>
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) {
+    <span class="kw">let</span> ls = Math.log1p(cands[i].score);
+    <span class="kw">if</span> (!cands[i].shouldRender) { ls *= renderPenaltyMultiplier; }   <span class="cm">// hysteresis</span>
+    keys[i] = ls;
+}
+<span class="kw">const</span> m = ordering.run(cands, keys, n, logMin, logMax, ordered);
+
+<span class="cm">// Phase 3: occlusion placement</span>
+<span class="kw">for</span> (<span class="kw">let</span> s = <span class="nu">0</span>; s &lt; m; s++) {
+    <span class="kw">const</span> label = ordered[s], was = label.shouldRender;
+    <span class="kw">if</span> (!projector.project(label, aabb)) { label.shouldRender = <span class="kw">false</span>; <span class="kw">continue</span>; }
+    <span class="kw">const</span> sr = occ.testRect(aabb.x0, aabb.y0, aabb.x1, aabb.y1, was);
+    <span class="kw">if</span> (sr) { occ.markRect(aabb.x0, aabb.y0, aabb.x1, aabb.y1); }
+    label.shouldRender = sr;
+}</code></pre>
+    <p class="caption">packages/Label/src/Collision/CollisionCore.ts — condensed</p>
+
+    <p>Notice what is <em>not</em> there. No backtracking. No second attempt at a different position. No global reasoning of any kind. A label gets one look, in one order, and the answer is final for that frame. Every improvement in this course happens inside one of those three phases, and the interfaces between them never change:</p>
+    <ul>
+        <li>Phase 1 hands phase 2 <strong>a float key per candidate</strong>. Any ordering algorithm can consume that.</li>
+        <li>Phase 2 hands phase 3 <strong>an array of labels in attempt order</strong>. Phase 3 does not care how it was sorted.</li>
+        <li>Phase 3 talks to the occupancy structure through <strong>four methods</strong>: <code>testRect</code>, <code>markRect</code>, <code>testQuad</code>, <code>markQuad</code>. Any structure implementing those is a drop-in.</li>
+    </ul>
+
+    <div class="note">
+        <span class="tag">Why this decomposition matters</span>
+        <p>Because the three axes are independent, the benchmark can sweep them as a product — <span class="mono">ordering × occupancy × collider × parameters</span> — and attribute a result to the axis that caused it. Most published comparisons of labelling algorithms conflate the three, which is how you get folklore like "R-trees give better labelling than grids". They cannot: chapter 19 shows they compute the identical predicate.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch4">
+    <div class="head"><span class="idx">4</span><h2>How quality is measured</h2></div>
+    <p class="lede">Three numbers per configuration: how much text you showed, how long it took, and how much it flickered. Getting these definitions right matters more than any optimisation that follows.</p>
+
+    <h3>The scene</h3>
+    <p>Measurements need a scene that behaves like a map, because a scene of uniformly scattered labels understates the problem. Real labels are <em>clustered</em>: a dense town centre, then empty fields. Clustering is what creates both the crowded regions where the algorithm has to make hard choices and the empty regions where it has nothing to do. The bench generates four classes in the proportions a map actually has — a few large city names, more towns, many roads, a great many small POIs — using a Thomas cluster process, with roads laid along corridors between settlement centres.</p>
+    <p>Label weight (its <i>importance</i>) is per class, and a near label counts for more than a far one — a metric that ignored distance would happily throw away the label under the cursor to keep one on the horizon.</p>
+
+    <h3>Quality: percentage of an offline optimum</h3>
+    <p>Quality is <strong>the share of label weight actually displayed, divided by the best arrangement achievable on the same scene</strong>. The denominator is computed once, offline, by simulated annealing: start from the greedy arrangement, then repeatedly propose swaps (drop a drawn label, add one or more that it was blocking), accepting improvements always and accepting small regressions with a probability that decays — which is what lets it climb out of local optima that greedy cannot escape. The bench reports what fraction of the ceiling was <em>proven</em> exactly versus annealed, so you know how much to trust it.</p>
+    <p>Two properties make this a good metric and one makes it dangerous:</p>
+    <ul>
+        <li>It is <strong>comparable across scenes</strong>: 68 % means the same thing at 1 500 labels and at 24 000, whereas "1 200 labels drawn" does not.</li>
+        <li>It is <strong>bounded</strong>: no configuration can exceed 100 %, so an implausible score is a bug signal.</li>
+        <li>But it is <strong>weight-weighted</strong>, so a configuration can raise its score by showing a few heavy city names and dropping many POIs. Always read the raw placed count next to it.</li>
+    </ul>
+
+    <h3>Churn: the stability metric</h3>
+    <p>Churn (<i>basculement</i>) counts, per frame, the labels whose drawn/not-drawn state <em>changed</em>, as a share of the labels on screen. A label appearing is a switch; a label disappearing is a switch. Two details make the metric honest:</p>
+    <ul>
+        <li>It is <strong>normalised by the labels on screen</strong>, so a configuration cannot win by drawing almost nothing.</li>
+        <li>Vanish and appear are reported <strong>separately</strong> as well as summed, because a label disappearing under a static camera is far more jarring than one arriving.</li>
+    </ul>
+
+    <h3>Time: the placement pass, not the frame</h3>
+    <p>The reported millisecond figure is the cost of the collision pass itself — candidate filter, ordering, placement — averaged over the camera path, and measured under a load ramp of <strong>1 500 / 6 000 / 24 000</strong> labels at 1920 × 1080 over 60 frames. It excludes rendering, text layout and GPU upload, which are large and would drown out the differences being measured.</p>
+
+    <div class="note warn">
+        <span class="tag">Read tables within themselves</span>
+        <p>Absolute milliseconds are run-relative: the machine, the browser's JIT state and the scene seed all move them. In the poster the chosen configuration appears at <strong>1.127 ms</strong> in the ordering table and <strong>0.983 ms</strong> in the comparison table — same configuration, different runs. Compare rows <em>inside</em> a table, never numbers across tables, and this course keeps each table's numbers together for that reason.</p>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════ PART II ═════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part II</div>
+    <h2>Getting to pixels</h2>
+    <p>A collision test compares screen rectangles, so before any of it can happen a 3D position and a string of glyphs have to become a box in pixels. This is the part most write-ups skip, and it is where the bugs live.</p>
+</div>
+
+<section class="ch" id="ch5">
+    <div class="head"><span class="idx">5</span><h2>From a world position to a screen box</h2></div>
+    <p class="lede">Four matrix rows, one divide, one viewport map — done four times, once per corner.</p>
+
+    <p>A label is anchored at a point in world space, and its text is a flat rectangle whose size you want expressed <em>in pixels</em>, not in metres: a city name is 100 px wide on screen whether the camera is 200 m or 20 km away. So the transform is not simply "project a rectangle"; the rectangle's world size has to be derived from the distance first. Here is the whole chain.</p>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 880 216" role="img" aria-label="Transform chain: world position through the view matrix to camera space, through the projection matrix to clip space, divided by w to normalised device coordinates, then mapped to pixels; the label's four corners are added in camera space scaled by view depth.">
+            <defs>
+                <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+                </marker>
+            </defs>
+            <g font-family="var(--sans)" font-size="12.5">
+                <g stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)" fill="none">
+                    <line x1="126" y1="60" x2="176" y2="60"/>
+                    <line x1="330" y1="60" x2="380" y2="60"/>
+                    <line x1="510" y1="60" x2="560" y2="60"/>
+                    <line x1="690" y1="60" x2="740" y2="60"/>
+                </g>
+                <g fill="none" stroke="currentColor" stroke-opacity=".4">
+                    <rect x="0"   y="36" width="126" height="48" rx="7"/>
+                    <rect x="176" y="36" width="154" height="48" rx="7"/>
+                    <rect x="380" y="36" width="130" height="48" rx="7"/>
+                    <rect x="560" y="36" width="130" height="48" rx="7"/>
+                </g>
+                <rect x="740" y="36" width="140" height="48" rx="7" class="s-fill s-line" stroke-width="1.4"/>
+                <text x="63"  y="58" text-anchor="middle">world</text>
+                <text x="63"  y="75" text-anchor="middle" class="mono dimtext" font-size="10.5">x y z</text>
+                <text x="253" y="58" text-anchor="middle">camera space</text>
+                <text x="253" y="75" text-anchor="middle" class="mono dimtext" font-size="10.5">× view</text>
+                <text x="445" y="58" text-anchor="middle">clip</text>
+                <text x="445" y="75" text-anchor="middle" class="mono dimtext" font-size="10.5">× projection</text>
+                <text x="625" y="58" text-anchor="middle">NDC</text>
+                <text x="625" y="75" text-anchor="middle" class="mono dimtext" font-size="10.5">÷ w</text>
+                <text x="810" y="58" text-anchor="middle" class="s-text">pixels</text>
+                <text x="810" y="75" text-anchor="middle" class="mono s-text" font-size="10.5">× viewport</text>
+
+                <!-- corner injection -->
+                <rect x="176" y="132" width="154" height="60" rx="7" class="w-fill w-line" stroke-width="1.3"/>
+                <text x="253" y="152" text-anchor="middle" class="w-text" font-size="12">+ 4 local corners</text>
+                <text x="253" y="169" text-anchor="middle" class="mono w-text" font-size="10.5">× viewDepth</text>
+                <text x="253" y="184" text-anchor="middle" class="mono w-text" font-size="10.5">→ constant px size</text>
+                <path d="M253,128 L253,90" stroke="var(--sienna)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+
+                <text x="380" y="150" font-size="12.5" fill="currentColor" opacity=".75">everything after this point runs four times,</text>
+                <text x="380" y="168" font-size="12.5" fill="currentColor" opacity=".75">once per corner — and the box is the min/max</text>
+                <text x="380" y="186" font-size="12.5" fill="currentColor" opacity=".75">of the four results.</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>The transform chain, with the one trick that matters.</b> The label's corner offsets are injected in camera space and multiplied by the label's distance from the camera (<code>viewDepth</code>). Because perspective division later divides by roughly that same distance, the two cancel and the label lands at a constant pixel size. Skip the multiply and your labels shrink into the distance like geometry.</figcaption>
+    </figure>
+
+    <h4>Step 1 — world to camera space</h4>
+    <p>Multiply the world position by the camera's inverse world matrix (three(.js) calls it <code>matrixWorldInverse</code>). Written out on the raw element array, so no object allocation happens in a hot loop:</p>
+<pre><code><span class="kw">const</span> cvx = ve[<span class="nu">0</span>]*p.x + ve[<span class="nu">4</span>]*p.y + ve[<span class="nu">8</span>] *p.z + ve[<span class="nu">12</span>];
+<span class="kw">const</span> cvy = ve[<span class="nu">1</span>]*p.x + ve[<span class="nu">5</span>]*p.y + ve[<span class="nu">9</span>] *p.z + ve[<span class="nu">13</span>];
+<span class="kw">const</span> cvz = ve[<span class="nu">2</span>]*p.x + ve[<span class="nu">6</span>]*p.y + ve[<span class="nu">10</span>]*p.z + ve[<span class="nu">14</span>];
+<span class="kw">if</span> (cvz &gt;= <span class="nu">0</span>) { <span class="kw">return</span> <span class="kw">false</span>; }   <span class="cm">// behind the camera: three.js looks down −z</span></code></pre>
+    <p>That <code>cvz &gt;= 0</code> test is the cheapest cull you have, and it must come first: everything downstream divides by a quantity that is meaningless behind the camera.</p>
+
+    <h4>Step 2 — the four corners, at constant pixel size</h4>
+    <p>The label's own box is <code>bounds.width × bounds.height</code>, expressed in <em>font pixels</em> at a reference font size. Convert to world units, then scale by distance:</p>
+<pre><code>worldScale = (label.fontSize / baseFontSize) / pxPerUnit;   <span class="cm">// px → world units</span>
+viewDepth  = √(cvx² + cvy² + cvz²);                          <span class="cm">// distance to camera</span>
+localX     = cornerX · worldScale · viewDepth;               <span class="cm">// grows with distance…</span></code></pre>
+    <p>…and then perspective division shrinks it back by the same factor, leaving a constant size in pixels. <code>pxPerUnit</code> is the conversion constant between font pixels and world units (1024 by default); <code>baseFontSize</code> is the size the glyph atlas was built at (24).</p>
+    <p>For a <strong>viewport-aligned</strong> label — every point label — the corner offsets are added directly in camera space, which is what keeps the text horizontal on screen no matter where the camera is:</p>
+<pre><code>vx = cvx + localX;   vy = cvy + localY;   vz = cvz;</code></pre>
+    <p>For a <strong>world-aligned</strong> label — one that lies on the ground, or along a street — the offset is rotated by the label's quaternion in world space first, then transformed into camera space. That is the only difference between the two alignments, and it is why rotation is free for point labels: there is nothing to rotate.</p>
+
+    <h4>Step 3 — projection, divide, viewport</h4>
+<pre><code><span class="kw">const</span> cx = pe[<span class="nu">0</span>]*vx + pe[<span class="nu">4</span>]*vy + pe[<span class="nu">8</span>] *vz + pe[<span class="nu">12</span>];
+<span class="kw">const</span> cy = pe[<span class="nu">1</span>]*vx + pe[<span class="nu">5</span>]*vy + pe[<span class="nu">9</span>] *vz + pe[<span class="nu">13</span>];
+<span class="kw">const</span> cw = pe[<span class="nu">3</span>]*vx + pe[<span class="nu">7</span>]*vy + pe[<span class="nu">11</span>]*vz + pe[<span class="nu">15</span>];
+<span class="kw">if</span> (cw &lt;= <span class="nu">0</span>) { <span class="kw">return</span> <span class="kw">false</span>; }              <span class="cm">// corner behind the eye</span>
+<span class="kw">const</span> ndcX = cx / cw, ndcY = cy / cw;              <span class="cm">// −1 … +1</span>
+px = (ndcX *  <span class="nu">0.5</span> + <span class="nu">0.5</span>) * screenW;                   <span class="cm">// 0 … W</span>
+py = (ndcY * <span class="nu">-0.5</span> + <span class="nu">0.5</span>) * screenH;                   <span class="cm">// y flips: NDC is up, pixels are down</span></code></pre>
+    <p>The sign flip on <i>y</i> is the classic source of "my labels collide correctly but upside down" bugs. NDC has +y upward; screen pixels have +y downward.</p>
+
+    <h4>Step 4 — box or quad</h4>
+    <p>With four projected corners in hand there are two ways to continue, and the choice is the collider question of Part III:</p>
+    <ul>
+        <li><strong>Axis-aligned box:</strong> take the min and max of the four <i>x</i> values and of the four <i>y</i> values, floor and ceil to whole pixels, clamp to the viewport. Four numbers.</li>
+        <li><strong>Rotated quad:</strong> keep the four corners as they are. Eight numbers, and a much more expensive test.</li>
+    </ul>
+
+    <div class="note">
+        <span class="tag">A worked example</span>
+        <p>A 15-character POI label at <code>fontSize 15</code>, with <code>baseFontSize 24</code> and <code>pxPerUnit 1024</code>. Its measured bounds are 92 × 11 font-px. Then <code>worldScale = (15/24)/1024 = 6.1 × 10⁻⁴</code>, so at a <code>viewDepth</code> of 3 000 world units the corner offsets in camera space are <code>92 × 6.1e-4 × 3000 ≈ 168</code> units across. That looks enormous — until the projection divides by <i>w ≈ 3 000</i> and a 50° vertical field of view over 1080 px, leaving the label about 57 px wide on screen. Change the distance to 30 000 and both numbers scale by ten, so the pixel width does not move.</p>
+    </div>
+
+    <h4>The pre-filter</h4>
+    <p>Projecting four corners per label is not free, and most labels in a large dataset are off-screen. So the candidate phase runs a cheap conservative test first (<code>checkVisible</code>): project the anchor point only, then test it against the NDC cube expanded by a margin large enough to cover the label's own extent:</p>
+<pre><code>marginNDC = (max(bw, bh) · worldScale · pe[<span class="nu">0</span>]) / ccw + ndcCullMargin;
+<span class="kw">if</span> (|ndcCx| &gt; <span class="nu">1</span> + marginNDC || |ndcCy| &gt; <span class="nu">1</span> + marginNDC) <span class="kw">return</span> <span class="kw">false</span>;</code></pre>
+    <p>The margin is what makes this conservative rather than wrong: a label whose anchor sits just off screen may still have half its text on screen, and must survive the filter. Rejecting it early would make text pop in at the screen edge.</p>
+</section>
+
+<section class="ch" id="ch6">
+    <div class="head"><span class="idx">6</span><h2>A label's own geometry</h2></div>
+    <p class="lede">Where <code>bounds.width</code> comes from, why the height must be the ink and not the line box, and how anchors move the box around the point.</p>
+
+    <h3>Advances, not character counts</h3>
+    <p>The naive way to size a label is <code>chars × 0.55 × fontSize</code>. Do not: real fonts are proportional, an <i>i</i> is a third of an <i>m</i>, and per-glyph colliders (chapter 10) are meaningless without real per-glyph metrics. Sum the advances instead:</p>
+<pre><code>bw = <span class="nu">0</span>; maxH = <span class="nu">0</span>;
+<span class="kw">for</span> (<span class="kw">const</span> g <span class="kw">of</span> glyphs) {
+    bw += g.advance;                       <span class="cm">// pen movement, includes side bearings</span>
+    maxH = Math.max(maxH, g.inkHeight);    <span class="cm">// tallest inked extent</span>
+}
+label.bounds = { width: bw, height: maxH };</code></pre>
+    <p>An <strong>advance</strong> is how far the pen moves after drawing a glyph — slightly more than the glyph's ink, because it includes the side bearings that keep letters from touching. Summing advances therefore gives the true set width of the string.</p>
+
+    <div class="note warn">
+        <span class="tag">The 81 % mistake</span>
+        <p>Using a CSS-style line height for the label's height — <code>fontSize × 1.3</code> — reserves <strong>1.81×</strong> the actual inked height of the text. That is 81 % dead space in every single point label, before any horizontal waste, and it silently drops labels that would have fit. MapLibre does not do this: its collision box comes straight from the shaping result's top and bottom, i.e. the glyph extent, with pixel padding added separately at collision time. Use the ink.</p>
+    </div>
+
+    <h3>Anchors and offsets</h3>
+    <p>The anchor decides where the box sits relative to the point. It is a pure offset applied to the local corners before projection:</p>
+    <div class="tw"><table>
+        <caption>Anchor offsets, in the label's local frame</caption>
+        <thead><tr><th>anchorX</th><th>x offset</th><th>anchorY</th><th>y offset</th></tr></thead>
+        <tbody>
+            <tr><td>Left</td><td class="mono">0</td><td>Bottom</td><td class="mono">0</td></tr>
+            <tr><td>Center</td><td class="mono">−bw / 2</td><td>Middle</td><td class="mono">−bh / 2</td></tr>
+            <tr><td>Right</td><td class="mono">−bw</td><td>Top</td><td class="mono">−bh</td></tr>
+        </tbody>
+    </table></div>
+    <p>A user-supplied <code>offset</code> in em units (× fontSize) is added on top, which is how you nudge a label above its marker. Both are camera-independent, so the corner array is computed once per label and cached, keyed by <code>pxPerUnit</code> so a resolution change invalidates it. In a frame with 6 000 candidates that cache is the difference between 6 000 and 24 000 multiplications — small, but this is the loop where small things are the whole cost.</p>
+
+    <h3>Curved labels: a baseline, not a box</h3>
+    <p>A line label does not sit in a rectangle at all; its glyphs are placed along a curve. The bench models that curve as a sine, deliberately, because a constant-curvature arc just leans the whole label one way while a real road S-bends — and an S-bend is what stresses every chain-of-primitives approximation:</p>
+<pre><code>lateral(u) = amp · sin(2π · waves · u + phase),   u ∈ [−0.5, +0.5]</code></pre>
+    <p>Each glyph then needs a position and a tangent angle along that curve. There is one non-obvious requirement here, and getting it wrong produces a bug that looks like a rendering artefact:</p>
+
+    <div class="note key">
+        <span class="tag">Place glyphs by arc length, not by x</span>
+        <p>It is tempting to treat the cumulative advance as an <i>x</i> position: <code>t = advance / totalWidth</code>. That is only valid on a straight baseline. On a bend, equal steps in <i>x</i> do not cover equal distance <em>along the curve</em>: where the slope is steep, a fixed <i>x</i>-step covers more real arc length, so glyphs bunch up there and spread out on the flat stretches — visibly collapsing on themselves at high curvature. A multi-wave sine has no closed-form arc length, so build a small lookup table once (64 samples of cumulative chord length), then invert it: given "fraction of total arc length so far", interpolate the <i>t</i> that reaches it. Cost is one table per label at build time, zero per frame.</p>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════ PART III ════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part III</div>
+    <h2>Collision math</h2>
+    <p>Four ways to ask "do these two labels touch?", from four integer comparisons to a full separating-axis test — what each one costs in operations, and what each one buys in labels displayed.</p>
+</div>
+
+<section class="ch" id="ch7">
+    <div class="head"><span class="idx">7</span><h2>AABB: the four comparisons</h2></div>
+    <p class="lede">The axis-aligned bounding box is the cheapest useful collider in existence. Understand its test completely and every other test in this part is a variation on it.</p>
+
+    <h3>One dimension first</h3>
+    <p>Two intervals <i>A</i> = [a₀, a₁] and <i>B</i> = [b₀, b₁] on a line. They fail to overlap in exactly two ways: <i>A</i> ends before <i>B</i> starts (a₁ &lt; b₀), or <i>B</i> ends before <i>A</i> starts (b₁ &lt; a₀). Negate that and you have the overlap condition:</p>
+<pre><code>overlap₁D  ⇔  a₀ ≤ b₁  <span class="kw">and</span>  b₀ ≤ a₁</code></pre>
+    <p>Two comparisons. No arithmetic at all.</p>
+
+    <h3>Two dimensions: an AND of two 1-D tests</h3>
+    <p>An axis-aligned box <em>is</em> a pair of intervals, one per axis — that is the whole point of the representation. Two boxes overlap only if they overlap on <em>both</em> axes, because a gap on either axis is a plane that separates them:</p>
+<pre><code>overlap  ⇔  a.x0 ≤ b.x1  <span class="kw">and</span>  b.x0 ≤ a.x1
+         <span class="kw">and</span>  a.y0 ≤ b.y1  <span class="kw">and</span>  b.y0 ≤ a.y1</code></pre>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 820 260" role="img" aria-label="Two axis-aligned boxes that overlap on the x axis but are separated on the y axis, with the four interval comparisons annotated; a gap on either axis proves disjointness.">
+            <g font-family="var(--mono)" font-size="11">
+                <!-- boxes -->
+                <rect x="90" y="42" width="180" height="66" rx="3" class="s-fill s-line" stroke-width="1.6"/>
+                <text x="180" y="80" text-anchor="middle" class="s-text" font-size="12">A</text>
+                <rect x="200" y="140" width="150" height="58" rx="3" class="w-fill w-line" stroke-width="1.6"/>
+                <text x="275" y="174" text-anchor="middle" class="w-text" font-size="12">B</text>
+
+                <!-- x projections -->
+                <line x1="90" y1="228" x2="270" y2="228" class="s-line" stroke-width="3"/>
+                <line x1="200" y1="238" x2="350" y2="238" class="w-line" stroke-width="3"/>
+                <text x="60" y="232" text-anchor="end" class="dimtext">x of A</text>
+                <text x="60" y="242" text-anchor="end" class="dimtext">x of B</text>
+                <text x="366" y="236" fill="currentColor" opacity=".8">intervals meet → no separation on x</text>
+                <g stroke="currentColor" stroke-dasharray="3 3" stroke-opacity=".35">
+                    <line x1="200" y1="108" x2="200" y2="248"/>
+                    <line x1="270" y1="42"  x2="270" y2="248"/>
+                </g>
+
+                <!-- y projections -->
+                <line x1="42" y1="42"  x2="42" y2="108" class="s-line" stroke-width="3"/>
+                <line x1="30" y1="140" x2="30" y2="198" class="w-line" stroke-width="3"/>
+                <text x="42" y="32" text-anchor="middle" class="dimtext">y</text>
+                <g stroke="currentColor" stroke-dasharray="3 3" stroke-opacity=".35">
+                    <line x1="24" y1="108" x2="360" y2="108"/>
+                    <line x1="24" y1="140" x2="360" y2="140"/>
+                </g>
+                <line x1="60" y1="112" x2="60" y2="136" stroke="currentColor" stroke-width="1.4"/>
+                <text x="72" y="128" fill="currentColor" opacity=".85" font-size="11.5">gap on y ⇒ disjoint, whatever x does</text>
+
+                <!-- the four comparisons -->
+                <line x1="430" y1="20" x2="430" y2="248" stroke="currentColor" opacity=".18"/>
+                <text x="460" y="34" class="dimtext">THE ENTIRE TEST</text>
+                <g font-size="12.5">
+                    <text x="460" y="62"  class="g-text">a.x0 ≤ b.x1</text><text x="600" y="62"  fill="currentColor" opacity=".7">true</text>
+                    <text x="460" y="86"  class="g-text">b.x0 ≤ a.x1</text><text x="600" y="86"  fill="currentColor" opacity=".7">true</text>
+                    <text x="460" y="110" class="w-text">a.y0 ≤ b.y1</text><text x="600" y="110" fill="currentColor" opacity=".7">true</text>
+                    <text x="460" y="134" class="w-text">b.y0 ≤ a.y1</text><text x="600" y="134" class="w-text">FALSE → exit</text>
+                </g>
+                <text x="460" y="172" font-size="12" fill="currentColor" opacity=".75">4 comparisons worst case,</text>
+                <text x="460" y="190" font-size="12" fill="currentColor" opacity=".75">1 in the common case,</text>
+                <text x="460" y="208" font-size="12" fill="currentColor" opacity=".75">0 multiplications ever.</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>Why the AABB test is four comparisons.</b> Each axis contributes two, and any one failure ends the test — so in a sparse scene, where most pairs are far apart, the average cost is closer to one comparison than four. Note the asymmetry: overlap needs all four to pass, disjointness needs only one to fail. That is exactly the shape you want, because disjoint is the common answer.</figcaption>
+    </figure>
+
+    <div class="note">
+        <span class="tag">Two conventions to fix early</span>
+        <p><strong>Inclusive or exclusive bounds.</strong> With integer pixel bounds and <code>≤</code>, two boxes that share an edge column count as overlapping. That is usually what you want for text (adjacent glyphs from different labels look joined), but it must be consistent between the test and whatever ground truth you score against, or your quality numbers will drift by a percent for no visible reason.</p>
+        <p><strong>Padding is part of the collider.</strong> Real renderers add a few pixels of padding so labels do not merely avoid overlapping but stay visually separate — MapLibre's <code>text-padding</code>. Add it once, when the box is built, not at test time.</p>
+    </div>
+
+    <h3>What it gets wrong: the envelope of a rotated label</h3>
+    <p>An AABB around a rotated label is its <strong>envelope</strong>, and the envelope of a long thin rotated rectangle is enormous. For a <i>w</i> × <i>h</i> rectangle rotated by θ:</p>
+<pre><code>W′ = w·|cos θ| + h·|sin θ|
+H′ = w·|sin θ| + h·|cos θ|</code></pre>
+    <p>Take a street label 200 × 20 px at 30°: <code>W′ = 183</code>, <code>H′ = 117</code>, so the envelope is 21 500 px² around 4 000 px² of text — <strong>5.4× the area</strong>, and it peaks at 6.05× at 45°. Every one of those wasted pixels blocks another label. This single fact is why the collider question dominates quality, and it is why the answer differs for the two label kinds:</p>
+    <ul>
+        <li><strong>Point labels are never rotated</strong> (θ = 0), so their AABB is not an approximation at all — it is exact, up to the gaps between letters.</li>
+        <li><strong>Line labels are always rotated and usually curved</strong>, so a single AABB is the worst possible choice for them. Measured, in the bench's controlled mode: whole-label AABB waste rises from 2.13× to 5.88× once labels rotate, while oriented models do not move at all.</li>
+    </ul>
+    <p>That asymmetry is the shape of the final answer: <strong>plain boxes for point labels, subdivided colliders for line labels.</strong></p>
+</section>
+
+<section class="ch" id="ch8">
+    <div class="head"><span class="idx">8</span><h2>OBB and the separating-axis theorem</h2></div>
+    <p class="lede">The exact test for two rotated rectangles. It is four projections and four comparisons, and once you have seen it drawn it stops being intimidating.</p>
+
+    <h3>The representation</h3>
+    <p>An oriented bounding box is a centre, two perpendicular unit axes and two half-extents:</p>
+<pre><code>C  = centre (cx, cy)
+u  = unit vector along the text direction  = (cos θ, sin θ)
+v  = perpendicular unit vector             = (−sin θ, cos θ)
+e₁ = half width along u
+e₂ = half height along v</code></pre>
+    <p>Note that <i>v</i> is not independent — for a rectangle it is <i>u</i> turned 90°. So a 2-D OBB is five numbers, and a rotated label already gives you all five.</p>
+
+    <h3>The theorem, in the only form you need</h3>
+    <p>For two convex shapes, if there exists a line onto which their projections (their "shadows") do not overlap, the shapes do not intersect. Such a line is a <strong>separating axis</strong>. For convex polygons it is enough to test the axes perpendicular to each polygon's edges — and a rectangle only has two distinct edge directions. So two rectangles need <strong>four candidate axes</strong>: <i>u</i><sub>A</sub>, <i>v</i><sub>A</sub>, <i>u</i><sub>B</sub>, <i>v</i><sub>B</sub>.</p>
+
+    <p>Projecting a box onto a direction <i>L</i> gives an interval centred at <i>C·L</i> whose half-length is</p>
+<pre><code>r = e₁·|u·L| + e₂·|v·L|</code></pre>
+    <p>which reads exactly as it looks: how far the box reaches along <i>L</i> is how far its own half-extents reach along <i>L</i>, added up with absolute values because a box reaches equally in both directions. Then the two projections are separated when the distance between their centres, measured along <i>L</i>, exceeds the sum of their reaches:</p>
+<pre><code>|(C_B − C_A) · L|  &gt;  r_A + r_B      ⇒  separated  ⇒  no collision</code></pre>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 820 300" role="img" aria-label="Two rotated rectangles and one candidate axis; each box projects to an interval on that axis, and the gap between the intervals proves the boxes do not intersect.">
+            <defs>
+                <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+                </marker>
+            </defs>
+            <g font-family="var(--mono)" font-size="11">
+                <!-- box A: rotated -22deg -->
+                <g transform="translate(210,110) rotate(-22)">
+                    <rect x="-105" y="-20" width="210" height="40" rx="2" class="s-fill s-line" stroke-width="1.6"/>
+                    <text x="0" y="4" text-anchor="middle" class="s-text" font-size="12">A</text>
+                    <line x1="0" y1="0" x2="70" y2="0" class="s-line" stroke-width="1.2" marker-end="url(#ar3)"/>
+                    <text x="52" y="-8" class="s-text">u_A</text>
+                    <line x1="0" y1="0" x2="0" y2="-42" class="s-line" stroke-width="1.2" marker-end="url(#ar3)"/>
+                    <text x="6" y="-32" class="s-text">v_A</text>
+                </g>
+                <!-- box B: rotated 38deg -->
+                <g transform="translate(430,196) rotate(38)">
+                    <rect x="-80" y="-17" width="160" height="34" rx="2" class="w-fill w-line" stroke-width="1.6"/>
+                    <text x="0" y="4" text-anchor="middle" class="w-text" font-size="12">B</text>
+                </g>
+                <circle cx="210" cy="110" r="2.5" fill="currentColor"/>
+                <circle cx="430" cy="196" r="2.5" fill="currentColor"/>
+                <line x1="210" y1="110" x2="430" y2="196" stroke="currentColor" stroke-width="1.1" stroke-dasharray="4 3" opacity=".6"/>
+                <text x="300" y="146" fill="currentColor" opacity=".75">C_B − C_A</text>
+
+                <!-- the candidate axis L = u_A, drawn below -->
+                <g transform="translate(80,268)">
+                    <line x1="0" y1="0" x2="640" y2="0" stroke="currentColor" stroke-width="1.1" opacity=".5"/>
+                    <text x="648" y="4" class="dimtext">L = u_A</text>
+                    <!-- projection of A -->
+                    <line x1="40" y1="-14" x2="235" y2="-14" class="s-line" stroke-width="4"/>
+                    <text x="137" y="-22" text-anchor="middle" class="s-text">2·r_A</text>
+                    <!-- projection of B -->
+                    <line x1="300" y1="-14" x2="452" y2="-14" class="w-line" stroke-width="4"/>
+                    <text x="376" y="-22" text-anchor="middle" class="w-text">2·r_B</text>
+                    <!-- the gap -->
+                    <line x1="235" y1="-14" x2="300" y2="-14" stroke="currentColor" stroke-width="1.2"/>
+                    <line x1="235" y1="-20" x2="235" y2="-8" stroke="currentColor" stroke-width="1.2"/>
+                    <line x1="300" y1="-20" x2="300" y2="-8" stroke="currentColor" stroke-width="1.2"/>
+                    <text x="267" y="14" text-anchor="middle" class="g-text" font-size="11.5">gap ⇒ separated</text>
+                </g>
+                <g stroke="currentColor" stroke-dasharray="2 3" stroke-opacity=".3">
+                    <line x1="120" y1="150" x2="120" y2="254"/>
+                    <line x1="315" y1="70"  x2="315" y2="254"/>
+                    <line x1="380" y1="196" x2="380" y2="254"/>
+                    <line x1="532" y1="196" x2="532" y2="254"/>
+                </g>
+                <text x="560" y="40" fill="currentColor" opacity=".8" font-size="12">Four axes to try:</text>
+                <text x="560" y="60" class="s-text" font-size="12">u_A, v_A</text>
+                <text x="560" y="80" class="w-text" font-size="12">u_B, v_B</text>
+                <text x="560" y="104" fill="currentColor" opacity=".75" font-size="12">Any gap → done.</text>
+                <text x="560" y="124" fill="currentColor" opacity=".75" font-size="12">All four overlap</text>
+                <text x="560" y="144" fill="currentColor" opacity=".75" font-size="12">→ they intersect.</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>One separating axis is a proof.</b> Here the very first candidate axis — A's own long direction — already shows a gap, so the two street labels do not collide and the remaining three axes are never evaluated. The converse costs full price: to conclude that two boxes <em>do</em> intersect you must fail to separate on all four axes.</figcaption>
+    </figure>
+
+    <h3>The code, with the simplification that halves it</h3>
+    <p>When <i>L</i> is A's own axis <i>u</i><sub>A</sub>, then <i>u</i><sub>A</sub>·<i>u</i><sub>A</sub> = 1 and <i>v</i><sub>A</sub>·<i>u</i><sub>A</sub> = 0, so <code>r_A</code> collapses to <code>e₁ᴬ</code> — no dot products needed for the box that owns the axis:</p>
+<pre><code><span class="kw">function</span> obbOverlap(A, B) {
+    <span class="kw">const</span> dx = B.cx - A.cx, dy = B.cy - A.cy;
+    <span class="cm">// A's axes: u = (c, s), v = (-s, c)</span>
+    <span class="kw">const</span> ca = A.cos, sa = A.sin, cb = B.cos, sb = B.sin;
+    <span class="cm">// cross terms, computed once and reused on all four axes</span>
+    <span class="kw">const</span> uu = ca*cb + sa*sb;      <span class="cm">// u_A · u_B  = cos(θB − θA)</span>
+    <span class="kw">const</span> uv = ca*(-sb) + sa*cb;   <span class="cm">// u_A · v_B  = −sin(θB − θA)</span>
+    <span class="kw">const</span> au = Math.abs(uu), av = Math.abs(uv);
+
+    <span class="cm">// axis u_A : r_A = A.e1 ; r_B = B.e1·|u_B·u_A| + B.e2·|v_B·u_A|</span>
+    <span class="kw">if</span> (Math.abs(dx*ca + dy*sa) &gt; A.e1 + B.e1*au + B.e2*av) <span class="kw">return</span> <span class="kw">false</span>;
+    <span class="cm">// axis v_A</span>
+    <span class="kw">if</span> (Math.abs(-dx*sa + dy*ca) &gt; A.e2 + B.e1*av + B.e2*au) <span class="kw">return</span> <span class="kw">false</span>;
+    <span class="cm">// axis u_B</span>
+    <span class="kw">if</span> (Math.abs(dx*cb + dy*sb) &gt; B.e1 + A.e1*au + A.e2*av) <span class="kw">return</span> <span class="kw">false</span>;
+    <span class="cm">// axis v_B</span>
+    <span class="kw">if</span> (Math.abs(-dx*sb + dy*cb) &gt; B.e2 + A.e1*av + A.e2*au) <span class="kw">return</span> <span class="kw">false</span>;
+    <span class="kw">return</span> <span class="kw">true</span>;   <span class="cm">// no separating axis exists → they overlap</span>
+}</code></pre>
+
+    <p>Count the work in the worst case: 4 multiplies for the cross terms, then per axis 2 multiplies for the centre projection and 2 for the other box's reach, plus adds, an absolute value and a comparison. That is <strong>about 20 multiplications, 16 additions and 4 branches</strong>, against the AABB's <strong>4 comparisons and no multiplications</strong>. Roughly an order of magnitude, which matches what the bench measures end-to-end once you account for everything else in a frame.</p>
+
+    <div class="note warn">
+        <span class="tag">The mistake that makes SAT look slow</span>
+        <p>Computing <code>cos θ</code> and <code>sin θ</code> inside the pair test. There are <i>n</i> labels and potentially many pairs per label; trig belongs in the per-label projection pass, cached on the label, so the pair test only ever sees numbers. A profile showing "SAT is dominated by <code>Math.cos</code>" is a profile of the wrong loop.</p>
+    </div>
+
+    <h3>Testing a rotated quad against a raster instead</h3>
+    <p>There is a second exact way to handle an oriented shape, and the shipped bitmap uses it: instead of comparing it against other <em>shapes</em>, rasterise it and compare it against occupied <em>cells</em>. Decompose the quad into horizontal spans — for each row of the raster, find where the quad's edges cross that row's top and bottom, and take the extreme <i>x</i> values:</p>
+<pre><code><span class="kw">for</span> (y = ⌊minY⌋ … ⌈maxY⌉) {
+    lo = +∞; hi = −∞;
+    <span class="kw">for</span> (<span class="kw">each</span> edge (a → b)) {
+        <span class="cm">// where does this edge cross the row's top and bottom?</span>
+        <span class="kw">if</span> (edge straddles y)   { x = a.x + (b.x−a.x)·(y − a.y)/(b.y − a.y); lo = min(lo,x); hi = max(hi,x); }
+        <span class="kw">if</span> (edge straddles y+1) { … same at y+1 … }
+        <span class="kw">if</span> (a.y ∈ [y, y+1])     { lo = min(lo, a.x); hi = max(hi, a.x); }   <span class="cm">// vertex inside the band</span>
+    }
+    emit span (y, ⌊lo⌋, ⌈hi⌉);
+}</code></pre>
+    <p>The third clause is the one people forget, and the reason spans are taken over the whole band [y, y+1] rather than at a single scanline: without it, a thin diagonal sliver can pass between two sample rows and be treated as empty. Conservative spans are the correct choice here — a collider that occasionally claims one pixel too many loses a fraction of a percent of quality; one that misses a sliver draws two labels on top of each other, which is the failure the whole system exists to prevent.</p>
+</section>
+
+<section class="ch" id="ch9">
+    <div class="head"><span class="idx">9</span><h2>Circle chains, and why MapLibre uses them</h2></div>
+    <p class="lede">A circle has no orientation, so a chain of circles handles curvature without any rotation math at all.</p>
+
+    <p>Mapbox and MapLibre approximate a line label as a series of circles laid along its baseline, each roughly as large as the text is tall. The overlap test between two circles is the cheapest exact test in geometry — compare squared distance against squared radius sum, so no square root is ever needed:</p>
+<pre><code>dx = c₂.x − c₁.x;  dy = c₂.y − c₁.y;  r = c₁.r + c₂.r;
+overlap  ⇔  dx·dx + dy·dy &lt; r·r        <span class="cm">// 2 subs, 3 mults, 1 add, 1 compare</span></code></pre>
+    <p>And circle-versus-box, which is what you need when a curved line label meets a horizontal point label, is barely worse — clamp the circle centre into the box, then measure:</p>
+<pre><code>qx = clamp(c.x, box.x0, box.x1);   qy = clamp(c.y, box.y0, box.y1);
+overlap  ⇔  (c.x−qx)² + (c.y−qy)² &lt; c.r²</code></pre>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 820 200" role="img" aria-label="A curved street label approximated by a chain of six overlapping circles following its baseline, with the wasted area above and below the text shaded.">
+            <g font-family="var(--mono)" font-size="11">
+                <path id="cbase" d="M40,132 C150,60 300,52 420,96 C520,132 600,120 700,84"
+                      fill="none" stroke="currentColor" stroke-dasharray="4 3" stroke-opacity=".45"/>
+                <g class="w-fill w-line" stroke-width="1.4" fill-opacity="1">
+                    <circle cx="60"  cy="121" r="27"/>
+                    <circle cx="150" cy="84"  r="27"/>
+                    <circle cx="245" cy="63"  r="27"/>
+                    <circle cx="340" cy="72"  r="27"/>
+                    <circle cx="437" cy="101" r="27"/>
+                    <circle cx="530" cy="119" r="27"/>
+                    <circle cx="625" cy="110" r="27"/>
+                    <circle cx="700" cy="84"  r="27"/>
+                </g>
+                <text x="40" y="180" fill="currentColor" opacity=".8" font-size="12">radius ≈ text height / 2 · spacing ≈ radius</text>
+                <text x="740" y="88" class="w-text">chain</text>
+                <text x="740" y="106" class="dimtext">8 circles</text>
+                <!-- glyph band, to show the waste -->
+                <g stroke="currentColor" stroke-width="1.1" fill="none" opacity=".85">
+                    <rect x="47"  y="110" width="17" height="20" rx="1" transform="rotate(-24 55 120)"/>
+                    <rect x="80"  y="98"  width="17" height="20" rx="1" transform="rotate(-24 88 108)"/>
+                    <rect x="115" y="86"  width="16" height="20" rx="1" transform="rotate(-18 123 96)"/>
+                    <rect x="150" y="76"  width="17" height="20" rx="1" transform="rotate(-13 158 86)"/>
+                    <rect x="186" y="68"  width="16" height="20" rx="1" transform="rotate(-9 194 78)"/>
+                    <rect x="221" y="61"  width="17" height="20" rx="1" transform="rotate(-4 229 71)"/>
+                    <rect x="257" y="58"  width="16" height="20" rx="1" transform="rotate(1 265 68)"/>
+                    <rect x="292" y="59"  width="17" height="20" rx="1" transform="rotate(6 300 69)"/>
+                    <rect x="328" y="63"  width="16" height="20" rx="1" transform="rotate(11 336 73)"/>
+                    <rect x="363" y="70"  width="17" height="20" rx="1" transform="rotate(16 371 80)"/>
+                    <rect x="399" y="80"  width="16" height="20" rx="1" transform="rotate(20 407 90)"/>
+                    <rect x="434" y="91"  width="17" height="20" rx="1" transform="rotate(20 442 101)"/>
+                    <rect x="470" y="101" width="16" height="20" rx="1" transform="rotate(16 478 111)"/>
+                    <rect x="505" y="109" width="17" height="20" rx="1" transform="rotate(10 513 119)"/>
+                    <rect x="541" y="114" width="16" height="20" rx="1" transform="rotate(4 549 124)"/>
+                    <rect x="576" y="115" width="17" height="20" rx="1" transform="rotate(-4 584 125)"/>
+                    <rect x="612" y="112" width="16" height="20" rx="1" transform="rotate(-11 620 122)"/>
+                    <rect x="647" y="105" width="17" height="20" rx="1" transform="rotate(-16 655 115)"/>
+                    <rect x="683" y="94"  width="16" height="20" rx="1" transform="rotate(-20 691 104)"/>
+                </g>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>The circle chain follows the curve but circumscribes the text.</b> The glyph outlines show what is actually inked; the circles must be large enough to cover the tallest glyph, so they bulge above and below the band and, being round, they also overshoot at both ends. That bulge is why the chain measures a couple of points below per-glyph boxes on the same scene — it is a fatter approximation of the same ink.</figcaption>
+    </figure>
+
+    <h3>Where the cost goes</h3>
+    <p>A chain has <i>k</i> primitives, so a chain-versus-chain comparison is <i>k</i> × <i>m</i> circle tests unless a broad phase intervenes — which is exactly why every real implementation puts the chain inside a grid and tests only the circles in shared cells. MapLibre keeps <i>k</i> small by construction: the circle count follows the label's length divided by the spacing, and long labels are simply not placed when they do not fit.</p>
+
+    <div class="note">
+        <span class="tag">What MapLibre actually does</span>
+        <p>Reading <code>collision_index.ts</code>: point labels get <strong>one axis-aligned box</strong> — the envelope of the rotated quad, since rotation alone never produces circles — and only <em>line-placed</em> labels get a circle chain. So MapLibre is already a hybrid: box for points, chain for lines. That is the same shape of answer this course arrives at; the difference is only in what the line collider is made of, boxes rather than circles, which turns out to be both tighter and cheaper.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch10">
+    <div class="head"><span class="idx">10</span><h2>Granularity: glyphs, groups, and the rule you must not break</h2></div>
+    <p class="lede">The real lever is not "box versus oriented box". It is <em>how many pieces</em> the label is cut into — and one piece is always the wrong answer for curved text.</p>
+
+    <p>Cross two independent choices and you get the whole design space of colliders:</p>
+    <div class="tw"><table>
+        <caption>The collider space — granularity × shape</caption>
+        <thead><tr><th>Granularity ↓ / Shape →</th><th>axis-aligned</th><th>oriented</th></tr></thead>
+        <tbody>
+            <tr><td>whole label — 1 piece</td><td>AABB <span class="u">4 numbers</span></td><td>OBB <span class="u">5 numbers</span></td></tr>
+            <tr><td>groups of glyphs — <i>g</i> pieces</td><td>per-group AABB</td><td>per-group quad</td></tr>
+            <tr><td>every glyph — <i>n</i> pieces</td><td>per-glyph AABB</td><td>per-glyph quad <span class="u">ground truth</span></td></tr>
+        </tbody>
+    </table></div>
+    <p class="caption">Per-glyph oriented quads are the ground truth: they are what the text actually inks, so every other row is an approximation of them.</p>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 880 300" role="img" aria-label="The same curved street label drawn four ways: one whole-label axis-aligned box wasting most of its area, three per-group boxes, per-glyph boxes hugging the text, and a circle chain.">
+            <g font-family="var(--mono)" font-size="10.5">
+                <!-- panel 1: whole AABB -->
+                <text x="0" y="12" class="dimtext">1 · WHOLE-LABEL AABB</text>
+                <rect x="0" y="22" width="200" height="112" rx="2" class="w-fill w-line" stroke-width="1.5"/>
+                <g stroke="currentColor" stroke-width="1" fill="none" opacity=".9">
+                    <rect x="14" y="104" width="14" height="17" transform="rotate(-26 21 112)"/>
+                    <rect x="40" y="92"  width="14" height="17" transform="rotate(-24 47 100)"/>
+                    <rect x="66" y="80"  width="14" height="17" transform="rotate(-20 73 88)"/>
+                    <rect x="93" y="70"  width="14" height="17" transform="rotate(-15 100 78)"/>
+                    <rect x="120" y="62" width="14" height="17" transform="rotate(-11 127 70)"/>
+                    <rect x="147" y="56" width="14" height="17" transform="rotate(-7 154 64)"/>
+                    <rect x="174" y="52" width="14" height="17" transform="rotate(-3 181 60)"/>
+                </g>
+                <text x="0" y="152" class="w-text">claims 22 400 px²</text>
+                <text x="0" y="166" class="dimtext">for 1 700 px² of ink</text>
+
+                <!-- panel 2: per-group -->
+                <text x="232" y="12" class="dimtext">2 · PER-GROUP AABB (g = 3)</text>
+                <g class="s-fill s-line" stroke-width="1.5">
+                    <rect x="240" y="92" width="58" height="42" rx="2"/>
+                    <rect x="296" y="66" width="60" height="40" rx="2"/>
+                    <rect x="354" y="48" width="60" height="34" rx="2"/>
+                </g>
+                <g stroke="currentColor" stroke-width="1" fill="none" opacity=".9">
+                    <rect x="248" y="106" width="14" height="17" transform="rotate(-26 255 114)"/>
+                    <rect x="274" y="94"  width="14" height="17" transform="rotate(-24 281 102)"/>
+                    <rect x="300" y="82"  width="14" height="17" transform="rotate(-20 307 90)"/>
+                    <rect x="327" y="72"  width="14" height="17" transform="rotate(-15 334 80)"/>
+                    <rect x="354" y="64"  width="14" height="17" transform="rotate(-11 361 72)"/>
+                    <rect x="381" y="58"  width="14" height="17" transform="rotate(-7 388 66)"/>
+                    <rect x="408" y="54"  width="14" height="17" transform="rotate(-3 415 62)"/>
+                </g>
+                <text x="232" y="152" class="s-text">claims 7 300 px²</text>
+                <text x="232" y="166" class="dimtext">3 tests instead of 1</text>
+
+                <!-- panel 3: per-glyph -->
+                <text x="466" y="12" class="dimtext">3 · PER-GLYPH AABB (n = 7)</text>
+                <g class="s-fill s-line" stroke-width="1.4">
+                    <rect x="474" y="104" width="19" height="21" rx="1"/>
+                    <rect x="500" y="92"  width="19" height="21" rx="1"/>
+                    <rect x="526" y="80"  width="18" height="20" rx="1"/>
+                    <rect x="553" y="70"  width="18" height="19" rx="1"/>
+                    <rect x="580" y="62"  width="17" height="19" rx="1"/>
+                    <rect x="607" y="56"  width="17" height="18" rx="1"/>
+                    <rect x="634" y="52"  width="16" height="18" rx="1"/>
+                </g>
+                <g stroke="currentColor" stroke-width="1" fill="none" opacity=".9">
+                    <rect x="476" y="106" width="14" height="17" transform="rotate(-26 483 114)"/>
+                    <rect x="502" y="94"  width="14" height="17" transform="rotate(-24 509 102)"/>
+                    <rect x="528" y="82"  width="14" height="17" transform="rotate(-20 535 90)"/>
+                    <rect x="555" y="72"  width="14" height="17" transform="rotate(-15 562 80)"/>
+                    <rect x="582" y="64"  width="14" height="17" transform="rotate(-11 589 72)"/>
+                    <rect x="609" y="58"  width="14" height="17" transform="rotate(-7 616 66)"/>
+                    <rect x="636" y="54"  width="14" height="17" transform="rotate(-3 643 62)"/>
+                </g>
+                <text x="466" y="152" class="s-text">claims 2 700 px²</text>
+                <text x="466" y="166" class="dimtext">7 tests, tightest boxes</text>
+
+                <!-- panel 4: circles -->
+                <text x="700" y="12" class="dimtext">4 · CIRCLE CHAIN</text>
+                <g class="w-fill w-line" stroke-width="1.4">
+                    <circle cx="722" cy="112" r="18"/>
+                    <circle cx="756" cy="96"  r="18"/>
+                    <circle cx="790" cy="80"  r="18"/>
+                    <circle cx="824" cy="68"  r="18"/>
+                    <circle cx="858" cy="62"  r="18"/>
+                </g>
+                <g stroke="currentColor" stroke-width="1" fill="none" opacity=".9">
+                    <rect x="712" y="106" width="14" height="17" transform="rotate(-26 719 114)"/>
+                    <rect x="738" y="94"  width="14" height="17" transform="rotate(-24 745 102)"/>
+                    <rect x="764" y="82"  width="14" height="17" transform="rotate(-20 771 90)"/>
+                    <rect x="791" y="72"  width="14" height="17" transform="rotate(-15 798 80)"/>
+                    <rect x="818" y="64"  width="14" height="17" transform="rotate(-11 825 72)"/>
+                    <rect x="845" y="58"  width="14" height="17" transform="rotate(-7 852 66)"/>
+                </g>
+                <text x="700" y="152" class="w-text">claims 4 400 px²</text>
+                <text x="700" y="166" class="dimtext">rotation-free math</text>
+
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>Granularity beats shape.</b> Same label, same ink, four colliders: the only thing that changes is how many pieces it is cut into, and the claimed area falls by 8× — another way of saying eight times more labels can share that region. Going from one box to seven recovers most of the waste; going from boxes to oriented quads <em>at the same granularity</em> recovers only the last sliver. That ordering of importance is what the measurements confirm, and it is the opposite of how the choice is usually presented. <span class="u">Areas here are illustrative of the drawn geometry; the measured quality consequences are in chapter 11.</span></figcaption>
+    </figure>
+
+    <div class="note warn">
+        <span class="tag">The rule you must not break</span>
+        <p>A multi-piece collider must <strong>test every piece before marking any piece</strong>. If you test-and-mark piece by piece, glyph 2 collides with the region glyph 1 just claimed, and the label rejects itself. This bug is easy to miss because the label still <em>looks</em> plausible — you just place far fewer labels than you should, uniformly, with no obvious artefact to point at. In the shipped core the two operations are separate methods (<code>testRect</code> then <code>markRect</code>) precisely so that the loop over pieces can be written correctly.</p>
+    </div>
+
+    <h3>Adaptive grouping: how many pieces, and where to cut</h3>
+    <p>Per-glyph is the tightest but costs <i>n</i> tests per label. Grouping consecutive glyphs is the middle ground, and the criterion for closing a group is the same one line-simplification algorithms use (Douglas–Peucker): keep adding glyphs while they stay close to a straight line, and cut when they do not.</p>
+<pre><code><span class="kw">for</span> (g = <span class="nu">1</span>; g &lt;= chars; g++) {
+    split = (g === chars) || (g − start) &gt;= maxGlyphsPerGroup;
+    <span class="kw">if</span> (!split) {
+        <span class="cm">// perpendicular distance of glyph g from the tangent at the group's start</span>
+        dev = |−(u_g − u_s)·sin θ_s + (v_g − v_s)·cos θ_s|;
+        split = dev &gt; segTolerancePx;
+    }
+    <span class="kw">if</span> (split) { emitGroup(start, g − start); start = g; }
+}</code></pre>
+    <p>Two knobs, and they do different jobs:</p>
+    <ul>
+        <li><strong>Deviation tolerance</strong> (px) subdivides <em>curved</em> text: a sharp bend closes a group early.</li>
+        <li><strong>Maximum glyphs per group</strong> subdivides <em>straight</em> text, where the deviation is always zero and would otherwise produce one label-sized box. With a cap of 1 this degenerates to per-glyph.</li>
+    </ul>
+
+    <h3>Orienting a group box correctly</h3>
+    <p>Once a group is chosen you need its box. Taking a plain min/max of the glyph corners gives an axis-aligned box (fine — that is the per-group AABB). For an <em>oriented</em> group box, the reference angle matters, and the obvious choice is wrong:</p>
+    <ul>
+        <li><strong>Do not</strong> use the tangent at the group's midpoint glyph. On a circular arc that works, because curvature is constant. On a real road — or the bench's multi-wave sine — curvature varies within a group, and the midpoint tangent then mis-describes how the glyphs are actually spread out, producing a visibly tilted, loose box.</li>
+        <li><strong>Do</strong> use the <strong>chord direction</strong>: the vector from the first glyph's centre to the last. It reflects the group's real span regardless of how curvature varies inside it.</li>
+    </ul>
+    <p>With the angle chosen, de-rotate every glyph corner into that frame, take min/max there, then rotate the four resulting corners back:</p>
+<pre><code>θ  = atan2(v_last − v_first, u_last − u_first);      <span class="cm">// chord, not midpoint tangent</span>
+<span class="cm">// for every corner of every glyph in the group:</span>
+lx =  wx·cos θ + wy·sin θ;   ly = −wx·sin θ + wy·cos θ;   <span class="cm">// into the group frame</span>
+<span class="cm">// min/max lx, ly  →  4 local corners  →  rotate back:</span>
+qx = lx·cos θ − ly·sin θ;    qy = lx·sin θ + ly·cos θ;</code></pre>
+</section>
+
+<section class="ch" id="ch11">
+    <div class="head"><span class="idx">11</span><h2>The collider trade, measured</h2></div>
+    <p class="lede">Twenty configurations on the same scene: point-label collider crossed with line-label collider. This is the table that chose the shipped configuration.</p>
+
+    <p>Read it as a matrix. Rows are what the <em>point</em> labels use, columns are what the <em>line</em> labels use. Each cell gives quality (large), then the frame cost and the churn beneath it. Lower ms and lower churn are better; higher quality is better.</p>
+
+    <div class="tw"><table>
+        <caption>Poster Tab 2 · 1 500 / 6 000 / 24 000 labels · 1920×1080 · 60 frames · bitmap /1 · tol 0.1</caption>
+        <thead><tr>
+            <th>point ↓ / line →</th>
+            <th>per-glyph OBB</th><th>per-glyph AABB</th><th>circles (ML)</th><th>per-group AABB</th><th>whole AABB</th>
+        </tr></thead>
+        <tbody>
+            <tr><td>per-glyph OBB</td>
+                <td>71.2 %<small>3.72 ms · 77.1</small></td>
+                <td>68.9 %<small>2.30 ms · 78.0</small></td>
+                <td>66.6 %<small>2.93 ms · 76.7</small></td>
+                <td>64.6 %<small>2.35 ms · 72.5</small></td>
+                <td>56.3 %<small>2.13 ms · 54.4</small></td></tr>
+            <tr><td>per-glyph AABB</td>
+                <td>71.2 %<small>3.34 ms · 77.3</small></td>
+                <td>68.9 %<small>1.79 ms · 77.8</small></td>
+                <td>66.3 %<small>2.60 ms · 76.3</small></td>
+                <td>64.7 %<small>1.63 ms · 72.1</small></td>
+                <td>56.3 %<small>1.63 ms · 55.7</small></td></tr>
+            <tr><td>per-group AABB</td>
+                <td>70.9 %<small>3.21 ms · 74.9</small></td>
+                <td>68.7 %<small>1.85 ms · 75.9</small></td>
+                <td>66.3 %<small>2.43 ms · 75.4</small></td>
+                <td>64.7 %<small>1.58 ms · 69.6</small></td>
+                <td>56.3 %<small>1.49 ms · 54.5</small></td></tr>
+            <tr class="pick"><td>whole AABB <span class="u">shipped</span></td>
+                <td>70.8 %<small>3.30 ms · 69.6</small></td>
+                <td><b>68.4 %</b><small>1.81 ms · 68.5</small></td>
+                <td>66.1 %<small>2.54 ms · 66.1</small></td>
+                <td>64.1 %<small>1.60 ms · 63.1</small></td>
+                <td>55.6 %<small>1.55 ms · 45.8</small></td></tr>
+        </tbody>
+    </table></div>
+    <p class="caption">Highlighted row = the shipped choice. Its column is per-glyph AABB for line labels.</p>
+
+    <h3>Four things this table says</h3>
+
+    <h4>1 · The line-label collider is the whole game</h4>
+    <p>Walk along any row: quality falls from 71 % to 56 % — <strong>fifteen points</strong> — purely from what the line labels use. Walk down any column instead: quality moves by less than half a point. The choice that matters is the one applied to curved, rotated text; the choice applied to horizontal text barely registers, because a horizontal label's box is already nearly exact.</p>
+
+    <h4>2 · Axis-aligned per-glyph gets 97 % of oriented per-glyph, for half the time</h4>
+    <p>Per-glyph AABB for lines reaches <strong>68.9 %</strong> against per-glyph OBB's <strong>71.2 %</strong> — 96.8 % of the quality — while the cost of the fully oriented configuration, 3.72 ms, drops to <strong>1.79 ms</strong>. So the separating-axis test, correct as it is, does not pay at glyph granularity.</p>
+    <p>Why so little difference? A single glyph is roughly square, and the envelope penalty of rotating a near-square shape is small to begin with. More importantly, consecutive glyph envelopes along a baseline <em>overlap each other</em>, so the union of the boxes grows much less than the sum of their individual excesses, and the excess that survives lies along the baseline — where the neighbouring glyph of the same label had claimed the space anyway. The waste that actually costs you labels is the whole-label diagonal, and subdividing has already removed it. <span class="u">Mechanism inferred; the measured quantity is the 2.3-point gap.</span></p>
+
+    <h4>3 · A coarser collider on point labels buys stability</h4>
+    <p>Compare the two cells in the per-glyph-AABB column: per-glyph points give 68.9 % with churn 77.8; whole-AABB points give 68.4 % with churn 68.5. That is <strong>0.7 % of relative quality traded for 12 % less flicker</strong> — and it is the trade the shipped configuration takes, because flicker is what users see.</p>
+    <p>The mechanism is worth internalising, because it generalises: a <i>k</i>-piece collider must have <em>all k</em> pieces pass, so it offers <i>k</i> independent chances for a decision to flip when the camera moves a fraction of a pixel. Fewer, larger pieces mean a decision that is coarser but calmer. The extreme confirms it: whole-AABB on both axes has the lowest churn in the entire table (45.8) and also the worst quality (55.6 %).</p>
+
+    <h4>4 · Circle chains are dominated, but not by much</h4>
+    <p>MapLibre's chain sits at <strong>66.1–66.6 %</strong>, about two points under per-glyph boxes, and costs more (2.54–2.93 ms versus 1.79–1.81) because a chain of circles is more primitives than a chain of glyph boxes and each test, while individually cheap, cannot use integer comparisons. The chain is not a bad model — it is a fatter one, for the reason the figure in chapter 9 shows.</p>
+
+    <div class="note good">
+        <span class="tag">Decision</span>
+        <p><strong>Whole AABB for point labels, per-glyph AABB for line labels</strong> — 68.4 % quality, 1.81 ms, churn 68.5 in this table. It gives up 2.8 points against the most exact model in the matrix and runs at half its cost with the second-lowest churn of any configuration above 60 % quality.</p>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════ PART IV ═════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part IV</div>
+    <h2>Ordering</h2>
+    <p>The greedy pass has no lookahead, so the order it walks the candidates in <em>is</em> the algorithm. This part builds a sort that produces exactly the order a comparison sort would, without ever comparing two labels — and explains, with the operation counts, where the time actually goes.</p>
+</div>
+
+<section class="ch" id="ch12">
+    <div class="head"><span class="idx">12</span><h2>Priority is the algorithm</h2></div>
+    <p class="lede">First come, first served. So whoever comes first had better deserve it.</p>
+
+    <p>In the placement loop, a label that is attempted earlier gets its space and keeps it. Nothing later can evict it. So the ordering carries the entire editorial policy of the map: which labels matter, in what circumstances. The shipped key has three ingredients.</p>
+
+    <h4>Distance, squared</h4>
+    <p>Nearer labels win. Squared distance is used rather than distance because the square root is pointless — it is a monotone function, so it cannot change any ordering, and skipping it saves 6 000 square roots per frame:</p>
+<pre><code>distSq = dx·dx + dy·dy + dz·dz;      <span class="cm">// camera → label anchor</span></code></pre>
+
+    <h4>Size, as a tunable power</h4>
+    <p>Bigger type means a more important feature, so a large label should beat a small one even from further away. The shipped form divides the reference font size by the label's own, raised to a configurable exponent:</p>
+<pre><code>score = distSq · (baseFontSize / fontSize) ^ fontSizePriorityPower;</code></pre>
+    <p>A label twice the reference size gets its effective distance halved (at power 1), so it wins against smaller labels up to √2 times further away. Setting the power to 0 removes size from the policy entirely and orders purely by distance; raising it makes the map favour big names aggressively. It is the one genuinely editorial knob in the pipeline.</p>
+
+    <h4>The compression, and why it exists</h4>
+    <p>Squared distances span an enormous dynamic range — from a few units to 10¹⁰ across a globe view — and everything downstream wants a bounded, evenly-populated key domain. So the key is compressed logarithmically:</p>
+<pre><code>key = log1p(score);            <span class="cm">// log(1 + score): defined and precise near 0</span></code></pre>
+    <p><code>log1p</code> rather than <code>log</code> because scores near zero (a label at the camera) would otherwise produce large negative numbers or a division by zero. The log is monotone, so again the ordering is untouched — but the <em>distribution</em> of keys becomes roughly uniform instead of extremely skewed, and that is what makes bucketing and quantisation behave (chapter 17).</p>
+
+    <h4>The stability term</h4>
+<pre><code><span class="kw">if</span> (!label.shouldRender) { key *= renderPenaltyMultiplier; }   <span class="cm">// default 8</span></code></pre>
+    <p>Lower key = attempted earlier. A label that was <em>not</em> drawn last frame gets its key multiplied by 8, pushing it far down the order. In other words <strong>already-visible labels are re-attempted first</strong>, so the arrangement tends to persist between frames instead of being re-derived from scratch. This one line is a large part of why the pipeline is stable at all, and it is the "priority" half of the hysteresis pair whose "geometry" half is the occlusion tolerance of chapter 24.</p>
+
+    <div class="note">
+        <span class="tag">Sanity check the direction</span>
+        <p>Because keys are ascending-priority (small = first), every monotone transformation above must be increasing. Multiplying a positive key by 8 makes it worse; taking <code>log1p</code> of a positive score preserves order; squaring a positive distance preserves order. Any one of these accidentally inverted produces a map that labels the horizon and ignores the foreground — a bug that is instantly visible on screen and completely invisible in a unit test that only checks "the array is sorted".</p>
+    </div>
+</section>
+
+<section class="ch" id="ch13">
+    <div class="head"><span class="idx">13</span><h2>What a comparison sort actually costs</h2></div>
+    <p class="lede">O(n log n) is a growth rate, not a cost. Turn it into operations for the real n and the motivation for everything in the next four chapters appears.</p>
+
+    <p>A comparison sort works by asking questions of the form "does <i>a</i> come before <i>b</i>?" Information theory sets the floor: to distinguish one of <i>n</i>! possible orderings you need at least log₂(n!) ≈ <i>n</i> log₂ <i>n</i> − 1.44<i>n</i> yes/no answers. For our frame:</p>
+
+    <div class="tw"><table>
+        <caption>Comparisons needed, by candidate count</caption>
+        <thead><tr><th>candidates n</th><th>log₂ n</th><th>≈ n · log₂ n comparisons</th></tr></thead>
+        <tbody>
+            <tr><td>1 500</td><td>10.6</td><td>15 900</td></tr>
+            <tr><td>6 000</td><td>12.6</td><td>75 300</td></tr>
+            <tr><td>24 000</td><td>14.6</td><td>350 000</td></tr>
+        </tbody>
+    </table></div>
+
+    <p>Three-hundred-fifty-thousand comparisons in a 16 ms budget is not fatal on its own. What makes it expensive is what each comparison <em>is</em>:</p>
+    <ul>
+        <li><strong>A data-dependent branch.</strong> The CPU speculates which way the comparison will go; in a sort, the answer is essentially random, so it mispredicts about half the time. A mispredict costs on the order of 15–20 cycles, and there is nothing useful to do while the pipeline refills.</li>
+        <li><strong>A function call, in JavaScript.</strong> <code>array.sort(comparator)</code> invokes your closure per comparison. Even when it inlines, the sort itself is a generic routine over boxed elements.</li>
+        <li><strong>A pointer chase.</strong> Sorting an array of label <em>objects</em> means each comparison dereferences two objects that live wherever the allocator put them, so the access pattern is scattered and the cache hit rate is poor.</li>
+    </ul>
+
+    <p>The last point suggests the first real optimisation, independent of algorithm: <strong>never sort the objects — sort an index array</strong>, and read the keys from a flat typed array. The shipped implementation does exactly this, keeping <code>Float64Array</code> keys and <code>Int32Array</code> indices, and materialising the ordered <code>Label[]</code> only once at the very end.</p>
+
+    <div class="note key">
+        <span class="tag">The insight the next chapters exploit</span>
+        <p>Comparison sorts are general: they work for any comparable type, which is why they must pay log₂ <i>n</i> questions per element. But our keys are <strong>numbers in a known, bounded range</strong>. That extra knowledge is worth an entire complexity class — with it, you can compute where an element belongs instead of discovering it by interrogation.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch14">
+    <div class="head"><span class="idx">14</span><h2>Counting sort, from scratch</h2></div>
+    <p class="lede">The one primitive to understand. Radix sort is nothing but this, applied a few times in a row.</p>
+
+    <p>Suppose the keys are small integers — say every key is 0, 1, 2 or 3. Then you do not need to compare anything. You can <em>count</em>.</p>
+
+    <p>Three passes over the data, no comparisons anywhere:</p>
+    <ol>
+        <li><strong>Histogram.</strong> Walk the input and count how many items have each key value.</li>
+        <li><strong>Prefix sum.</strong> Turn those counts into starting offsets: bucket 0 starts at 0, bucket 1 starts where bucket 0 ended, and so on. After this step, <code>start[d]</code> is the exact output index where the first item with key <i>d</i> belongs.</li>
+        <li><strong>Scatter.</strong> Walk the input again, and write each item to <code>start[itsKey]</code>, incrementing that counter as you go.</li>
+    </ol>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 700 296" role="img" aria-label="Counting sort: a table of the four digit values with their counts and resulting output offsets, and a scatter panel where eight input items are traced by straight lines to their computed output slots, with the two equal keys keeping their input order.">
+            <g font-family="var(--mono)" font-size="11">
+                <!-- LEFT: count + offsets table -->
+                <text x="0" y="12" class="s-text" font-size="10.5">1 · COUNT   ·   2 · PREFIX SUM</text>
+                <g class="dimtext" font-size="10">
+                    <text x="4"   y="34">digit</text>
+                    <text x="84"  y="34" text-anchor="end">count</text>
+                    <text x="176" y="34" text-anchor="end">first slot</text>
+                </g>
+                <line x1="0" y1="40" x2="176" y2="40" stroke="currentColor" stroke-opacity=".25"/>
+                <g fill="currentColor">
+                    <text x="4" y="62">d0</text><text x="84" y="62" text-anchor="end">0</text>
+                    <text x="4" y="86">d1</text><text x="84" y="86" text-anchor="end">2</text>
+                    <text x="4" y="110">d2</text><text x="84" y="110" text-anchor="end">4</text>
+                    <text x="4" y="134">d3</text><text x="84" y="134" text-anchor="end">2</text>
+                </g>
+                <g class="s-text">
+                    <text x="176" y="62"  text-anchor="end">0</text>
+                    <text x="176" y="86"  text-anchor="end">0</text>
+                    <text x="176" y="110" text-anchor="end">2</text>
+                    <text x="176" y="134" text-anchor="end">6</text>
+                </g>
+                <text x="0" y="170" fill="currentColor" opacity=".75" font-size="10.5">running total of the</text>
+                <text x="0" y="186" fill="currentColor" opacity=".75" font-size="10.5">counts above it — so</text>
+                <text x="0" y="202" fill="currentColor" opacity=".75" font-size="10.5">the first d2 belongs</text>
+                <text x="0" y="218" fill="currentColor" opacity=".75" font-size="10.5">at slot 2, the first d3</text>
+                <text x="0" y="234" fill="currentColor" opacity=".75" font-size="10.5">at slot 6.</text>
+
+                <line x1="216" y1="4" x2="216" y2="270" stroke="currentColor" stroke-opacity=".15"/>
+
+                <!-- RIGHT: scatter -->
+                <text x="248" y="12" class="g-text" font-size="10.5">3 · SCATTER — write each item to offset[its digit], then bump that offset</text>
+                <g>
+                    <rect x="248" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="304" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="360" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="416" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="472" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="528" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="584" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="640" y="26" width="46" height="26" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                </g>
+                <g fill="currentColor">
+                    <text x="271" y="44" text-anchor="middle" class="s-text">d1</text>
+                    <text x="327" y="44" text-anchor="middle">d2</text>
+                    <text x="383" y="44" text-anchor="middle">d2</text>
+                    <text x="439" y="44" text-anchor="middle">d3</text>
+                    <text x="495" y="44" text-anchor="middle" class="s-text">d1</text>
+                    <text x="551" y="44" text-anchor="middle">d2</text>
+                    <text x="607" y="44" text-anchor="middle">d2</text>
+                    <text x="663" y="44" text-anchor="middle">d3</text>
+                </g>
+                <text x="248" y="70" class="dimtext" font-size="10">input order →</text>
+
+                <!-- traces: input i → output slot -->
+                <g stroke="currentColor" stroke-width="1" stroke-opacity=".35" fill="none">
+                    <line x1="327" y1="78" x2="383" y2="196"/>
+                    <line x1="383" y1="78" x2="439" y2="196"/>
+                    <line x1="439" y1="78" x2="607" y2="196"/>
+                    <line x1="551" y1="78" x2="495" y2="196"/>
+                    <line x1="607" y1="78" x2="551" y2="196"/>
+                    <line x1="663" y1="78" x2="663" y2="196"/>
+                </g>
+                <g class="s-line" stroke-width="1.6" fill="none">
+                    <line x1="271" y1="78" x2="271" y2="196"/>
+                    <line x1="495" y1="78" x2="327" y2="196"/>
+                </g>
+
+                <!-- output row -->
+                <g class="g-line" stroke-width="1.3" fill="var(--moss-soft)">
+                    <rect x="248" y="202" width="46" height="26" rx="3"/>
+                    <rect x="304" y="202" width="46" height="26" rx="3"/>
+                    <rect x="360" y="202" width="46" height="26" rx="3"/>
+                    <rect x="416" y="202" width="46" height="26" rx="3"/>
+                    <rect x="472" y="202" width="46" height="26" rx="3"/>
+                    <rect x="528" y="202" width="46" height="26" rx="3"/>
+                    <rect x="584" y="202" width="46" height="26" rx="3"/>
+                    <rect x="640" y="202" width="46" height="26" rx="3"/>
+                </g>
+                <g class="g-text">
+                    <text x="271" y="220" text-anchor="middle" class="s-text">d1</text>
+                    <text x="327" y="220" text-anchor="middle" class="s-text">d1</text>
+                    <text x="383" y="220" text-anchor="middle">d2</text>
+                    <text x="439" y="220" text-anchor="middle">d2</text>
+                    <text x="495" y="220" text-anchor="middle">d2</text>
+                    <text x="551" y="220" text-anchor="middle">d2</text>
+                    <text x="607" y="220" text-anchor="middle">d3</text>
+                    <text x="663" y="220" text-anchor="middle">d3</text>
+                </g>
+                <g class="dimtext" font-size="10">
+                    <text x="248" y="246">slot 0</text>
+                    <text x="640" y="246">slot 7</text>
+                </g>
+                <text x="248" y="272" class="s-text" font-size="10.5">the two d1 items keep their input order — that is stability</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>Counting sort in three passes.</b> Every line traces one item from where it was to where it belongs — and its destination was <em>computed</em> from the table on the left, never discovered by comparing it to anything. The cost is <i>n</i> reads plus <i>n</i> increments, <i>K</i> adds for the prefix sum, then <i>n</i> reads plus <i>n</i> writes: O(<i>n</i> + <i>K</i>), branch-free. The <i>K</i> term is the histogram, which is why <i>K</i> cannot be enormous — the whole subject of chapter 16.</figcaption>
+    </figure>
+
+    <p>In code, all three passes together:</p>
+<pre><code><span class="cm">// keys are integers in [0, K)</span>
+count.fill(<span class="nu">0</span>);
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { count[key[i]]++; }              <span class="cm">// 1 · histogram</span>
+<span class="kw">let</span> s = <span class="nu">0</span>;
+<span class="kw">for</span> (<span class="kw">let</span> d = <span class="nu">0</span>; d &lt; K; d++) { <span class="kw">const</span> c = count[d]; count[d] = s; s += c; }  <span class="cm">// 2 · prefix</span>
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { out[count[key[i]]++] = src[i]; }        <span class="cm">// 3 · scatter</span></code></pre>
+
+    <div class="note key">
+        <span class="tag">Stability — remember this, chapter 15 depends on it</span>
+        <p>Because the scatter pass walks the input <strong>front to back</strong> and each bucket's counter only ever moves forward, two items with the same key come out in the same relative order they went in. A sort with that property is <strong>stable</strong>. Counting sort is stable for free; it is not an extra feature, it is a consequence of the loop direction. Reverse that loop and you break the next chapter entirely.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch15">
+    <div class="head"><span class="idx">15</span><h2>Radix sort = counting sort, once per digit</h2></div>
+    <p class="lede">Counting sort needs a small key range. A 20-bit key has a range of a million. Radix sort resolves that contradiction by sorting the key a few bits at a time.</p>
+
+    <p>Write each key in base 2<sup>b</sup> — that is, cut its bits into <i>d</i> digits of <i>b</i> bits each. Then run a stable counting sort on the <strong>least significant digit</strong> first, then on the next digit, and so on up to the most significant. After the last pass the array is fully sorted. This is <abbr title="Least Significant Digit">LSD</abbr> radix sort.</p>
+
+    <p>Why does that work? Consider the state after two passes. The second pass grouped everything by the high digit — correct at the top level. Within one high-digit group, the second pass did not reorder anything, because it was <em>stable</em>: it preserved the order it received, which was the order the first pass produced, which was sorted by the low digit. So each group is internally sorted too. The argument extends to any number of digits: <strong>each pass fixes one digit and, by stability, preserves the work of every earlier pass.</strong></p>
+
+    <h3>Worked all the way through</h3>
+    <p>Eight keys, values 0–15, written in base 4 so each has two digits (high, low). Follow the two 6s and the 7 in particular:</p>
+
+    <div class="tw"><table>
+        <caption>LSD radix sort, base 4, two passes</caption>
+        <thead><tr>
+            <th>stage</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
+        </tr></thead>
+        <tbody>
+            <tr><td>input</td><td>9</td><td>2</td><td>6</td><td>7</td><td>1</td><td>14</td><td>6</td><td>3</td></tr>
+            <tr><td>as (hi, lo) base 4</td>
+                <td class="u">2,1</td><td class="u">0,2</td><td class="u">1,2</td><td class="u">1,3</td>
+                <td class="u">0,1</td><td class="u">3,2</td><td class="u">1,2</td><td class="u">0,3</td></tr>
+            <tr class="sep"><td colspan="9">pass 1 — counting sort on the <b>low</b> digit · counts d0=0, d1=2, d2=4, d3=2 · offsets 0, 0, 2, 6</td></tr>
+            <tr><td>after pass 1</td><td>9</td><td>1</td><td>2</td><td>6</td><td>14</td><td>6</td><td>7</td><td>3</td></tr>
+            <tr><td>low digits</td>
+                <td class="u">1</td><td class="u">1</td><td class="u">2</td><td class="u">2</td>
+                <td class="u">2</td><td class="u">2</td><td class="u">3</td><td class="u">3</td></tr>
+            <tr class="sep"><td colspan="9">pass 2 — counting sort on the <b>high</b> digit · counts d0=3, d1=3, d2=1, d3=1 · offsets 0, 3, 6, 7</td></tr>
+            <tr class="pick"><td>after pass 2 — sorted</td><td>1</td><td>2</td><td>3</td><td>6</td><td>6</td><td>7</td><td>9</td><td>14</td></tr>
+            <tr><td>high digits</td>
+                <td class="u">0</td><td class="u">0</td><td class="u">0</td><td class="u">1</td>
+                <td class="u">1</td><td class="u">1</td><td class="u">2</td><td class="u">3</td></tr>
+        </tbody>
+    </table></div>
+
+    <p>Look at slots 3, 4, 5 after the final pass: <code>6, 6, 7</code>. All three have high digit 1, so pass 2 wrote them in the order it found them — and pass 1 had already arranged them as 6, 6, 7 by low digit. <strong>That is stability doing the entire job.</strong> Had pass 2 been unstable, it could have emitted <code>7, 6, 6</code>, and the array would not be sorted even though every high digit is in the right place.</p>
+
+    <h3>The shipped implementation, line by line</h3>
+    <p>This is <code>RadixOrdering</code> from <code>packages/Label/src/Collision/Ordering.ts</code>, complete. Twenty bits, two passes of ten:</p>
+
+<pre><code><span class="cm">// ── 1 · find the observed key range ─────────────────────────────────────</span>
+<span class="kw">let</span> lo = Infinity, hi = -Infinity;
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { <span class="kw">const</span> k = keys[i]; <span class="kw">if</span> (k &lt; lo) lo = k; <span class="kw">if</span> (k &gt; hi) hi = k; }
+
+<span class="cm">// ── 2 · quantise float keys → 20-bit integers ───────────────────────────</span>
+<span class="kw">const</span> scale = <span class="nu">1048575</span> / ((hi - lo) || <span class="nu">1</span>);          <span class="cm">// 2^20 − 1</span>
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { q[i] = ((keys[i] - lo) * scale) | <span class="nu">0</span>; }
+
+<span class="cm">// ── 3 · sort an INDEX array, never the labels ───────────────────────────</span>
+<span class="kw">let</span> src = idxSrc, dst = idxDst;
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { src[i] = i; }
+
+<span class="cm">// ── 4 · two stable counting-sort passes, 10 bits each ───────────────────</span>
+<span class="kw">for</span> (<span class="kw">let</span> sh = <span class="nu">0</span>; sh &lt; <span class="nu">20</span>; sh += <span class="nu">10</span>) {
+    cnt.fill(<span class="nu">0</span>);                                              <span class="cm">// 1024 slots</span>
+    <span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { cnt[(q[src[i]] &gt;&gt; sh) &amp; <span class="nu">1023</span>]++; }   <span class="cm">// histogram</span>
+    <span class="kw">let</span> s = <span class="nu">0</span>;
+    <span class="kw">for</span> (<span class="kw">let</span> b = <span class="nu">0</span>; b &lt; <span class="nu">1024</span>; b++) { <span class="kw">const</span> c = cnt[b]; cnt[b] = s; s += c; }  <span class="cm">// prefix</span>
+    <span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) {                                    <span class="cm">// scatter, stable</span>
+        <span class="kw">const</span> d = (q[src[i]] &gt;&gt; sh) &amp; <span class="nu">1023</span>;
+        dst[cnt[d]++] = src[i];
+    }
+    <span class="kw">const</span> t = src; src = dst; dst = t;                          <span class="cm">// ping-pong buffers</span>
+}
+
+<span class="cm">// ── 5 · materialise the ordered labels, once ────────────────────────────</span>
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) { out[i] = candidates[src[i]]; }</code></pre>
+    <p class="caption">packages/Label/src/Collision/Ordering.ts — RadixOrdering.run()</p>
+
+    <p>Six details in there are deliberate, and each is a small lesson:</p>
+    <ul>
+        <li><code>(x &gt;&gt; sh) &amp; 1023</code> <strong>is the digit extraction.</strong> Shift the digit you want down to the bottom, then mask off everything above it. <code>1023</code> is ten set bits, so this is "give me bits <i>sh</i> … <i>sh</i>+9".</li>
+        <li><strong>The range is measured, not assumed.</strong> <code>lo</code> and <code>hi</code> come from this frame's keys, so all 20 bits of precision are spent on the range that actually occurs — instead of on a fixed near/far domain of which the frame might occupy 2 %.</li>
+        <li><strong><code>| 0</code> truncates toward zero</strong> and yields a machine integer, which is what keeps the shifts and masks in the integer path rather than round-tripping through doubles.</li>
+        <li><strong>The buffers ping-pong.</strong> Each pass reads <code>src</code> and writes <code>dst</code>, then they swap. No allocation, no copying between passes.</li>
+        <li><strong>Only indices move.</strong> Labels are touched exactly once, in step 5.</li>
+        <li><strong>Everything is preallocated</strong> and grown only when <i>n</i> exceeds capacity. A sort that allocates per frame gives the garbage collector a reason to interrupt you, and a GC pause is a dropped frame no matter how fast your sort was.</li>
+    </ul>
+</section>
+
+<section class="ch" id="ch16">
+    <div class="head"><span class="idx">16</span><h2>Why radix is faster — the actual accounting</h2></div>
+    <p class="lede">Not "because O(n·d) beats O(n log n)". Because of what the operations are, and because the histogram fits in L1 cache.</p>
+
+    <h3>Count the operations for n = 6 000</h3>
+    <p>Each radix pass touches the data three times: read the digit for the histogram, read it again during the scatter, and write one index. Call that 3<i>n</i> per pass. Plus the histogram: <i>K</i> slots to clear and <i>K</i> to prefix-sum, a cost that <strong>does not depend on n at all</strong>.</p>
+
+    <div class="tw"><table>
+        <caption>Work for one frame of 6 000 candidates, 20-bit keys</caption>
+        <thead><tr><th>approach</th><th>data touches</th><th>histogram work</th><th>branches on data</th></tr></thead>
+        <tbody>
+            <tr><td>comparison sort</td><td class="u">~75 300 comparisons + moves</td><td class="u">—</td><td class="lose">~75 300, unpredictable</td></tr>
+            <tr><td>quantise pass</td><td class="u">2 × 6 000</td><td class="u">—</td><td class="u">0</td></tr>
+            <tr class="pick"><td>radix, 2 passes of 10 bits</td><td class="u">2 × 18 000 = 36 000</td><td class="u">2 × 2 048 = 4 096</td><td class="win">0</td></tr>
+        </tbody>
+    </table></div>
+
+    <p>So roughly 40 000 straight-line operations against 75 000 branchy ones — and the straight-line ones are sequential reads over typed arrays, which the hardware prefetcher handles perfectly, while the branchy ones mispredict about half the time. The measured end-to-end effect on the whole collision pass, which includes projection and placement, is <strong>1.837 ms → 1.127 ms, or 39 % faster</strong> (poster Tab 3). The sort's own share of the improvement is larger than 39 %; it is diluted by the stages that did not change.</p>
+
+    <h3>Why not one pass of 20 bits?</h3>
+    <p>This is the question that makes the trade-off click. Passes and digit width trade against each other: <code>passes = ⌈bits / bitsPerPass⌉</code>. Fewer, wider digits mean fewer trips over the data — but the histogram has 2<sup>bits per pass</sup> slots, and that grows exponentially.</p>
+
+    <div class="tw"><table>
+        <caption>Digit width against total work, for a 20-bit key and n = 6 000</caption>
+        <thead><tr><th>bits / pass</th><th>buckets K</th><th>histogram size</th><th>passes</th><th>data touches</th><th>verdict</th></tr></thead>
+        <tbody>
+            <tr><td>2</td><td>4</td><td>16 B</td><td>10</td><td>180 000</td><td class="lose">too many passes</td></tr>
+            <tr><td>5</td><td>32</td><td>128 B</td><td>4</td><td>72 000</td><td>ok</td></tr>
+            <tr><td>8</td><td>256</td><td>1 KB</td><td>3</td><td>54 000</td><td>good</td></tr>
+            <tr class="pick"><td>10 <span class="u">shipped</span></td><td>1 024</td><td>4 KB</td><td>2</td><td>36 000</td><td class="win">fits L1, fewest passes</td></tr>
+            <tr><td>16</td><td>65 536</td><td>256 KB</td><td>2</td><td>36 000</td><td class="lose">histogram leaves L1/L2</td></tr>
+            <tr><td>20</td><td>1 048 576</td><td>4 MB</td><td>1</td><td>18 000</td><td class="lose">4 MB cleared per frame</td></tr>
+        </tbody>
+    </table></div>
+
+    <p>The 20-bit single pass is the reductio: one trip over 6 000 items, but four megabytes of histogram to zero and prefix-sum every frame — hundreds of times more work than the data itself, and it evicts everything else from cache while doing it. At the other end, 2-bit digits keep the histogram trivial but walk the data ten times.</p>
+
+    <p>The knee sits where the histogram still lives in L1. A typical L1 data cache is 32–48 KB; 1 024 four-byte counters is <strong>4 KB</strong>, so the whole histogram stays resident across the scatter pass, whose access pattern into it is effectively random. At 16 bits the same table is 256 KB, every scatter increment becomes an L2 or L3 access, and the pass slows down despite doing the same number of data touches. <strong>Wide digits win until the histogram leaves cache — then they lose immediately.</strong></p>
+
+    <div class="note">
+        <span class="tag">The same quantity in two units</span>
+        <p>Bucket count and bit budget are the same knob: <i>K</i> buckets is log₂(<i>K</i>) bits of key precision, and a one-pass radix sort <em>is</em> a bucket scatter. 1 024 buckets is exactly 10 bits. Once you see that, the "bucket sort versus radix sort" question in chapter 18 dissolves into a single question about precision.</p>
+    </div>
+
+    <h3>What radix cannot do</h3>
+    <ul>
+        <li><strong>It needs non-negative integers.</strong> Floats have to be quantised (as here) or bit-manipulated; signed keys need the sign handled explicitly. This is why the pipeline quantises rather than sorting raw <code>Float64</code> bits.</li>
+        <li><strong>It is not in-place.</strong> Two index buffers plus a histogram is the price. At 6 000 elements that is 48 KB of <code>Int32Array</code> — negligible, but it is real memory that must be preallocated.</li>
+        <li><strong>It cannot exploit existing order.</strong> A nearly-sorted array — which is exactly what consecutive frames produce — costs a comparison sort like Timsort almost nothing, while radix pays full price every frame. That is a genuine argument for a comparison sort, and it is why the measured difference is 39 % rather than the 3× the operation counts alone would suggest.</li>
+    </ul>
+</section>
+
+<section class="ch" id="ch17">
+    <div class="head"><span class="idx">17</span><h2>Bits, ties, and how much precision you actually need</h2></div>
+    <p class="lede">Quantisation is lossy. The interesting question is what exactly you lose, and the answer is not "accuracy" — it is "the tie-break".</p>
+
+    <p>The quantisation step maps a float key to an integer in [0, 2<sup>bits</sup>):</p>
+<pre><code>q = ⌊ (key − lo) · (2^bits − 1) / (hi − lo) ⌋</code></pre>
+    <p>This is <strong>monotone</strong>: if key₁ &lt; key₂ then q₁ ≤ q₂. Never &gt;. So quantisation can never invert two labels' priorities — it can only <em>tie</em> them. The resolution is one quantum:</p>
+<pre><code>quantum = (hi − lo) / 2^bits</code></pre>
+    <p>With 20 bits, that is about one millionth of the frame's key range. With 10 bits, one thousandth. With 4 bits, a sixteenth of the range — at which point large groups of genuinely different labels collapse into a single key.</p>
+
+    <h3>What a tie costs</h3>
+    <p>When two labels tie, the greedy pass takes them in whatever order they happen to sit in the candidate array — which is data order, i.e. essentially arbitrary. Two distinct things go wrong:</p>
+    <ul>
+        <li><strong>Placement quality drifts</strong>, in either direction. An arbitrary tie-break sometimes packs better than the intended priority order, so the quality metric can even go <em>up</em>. That is not a win; it means the map is no longer honouring the importance policy you defined.</li>
+        <li><strong>Churn rises</strong>, and this is the real damage. The key range <code>[lo, hi]</code> is recomputed every frame from the observed keys. As the camera moves, that range slides, so the quantisation boundaries slide with it — and two labels that tie in this frame may separate in the next, in either order. The result is labels swapping places for reasons that have nothing to do with the scene.</li>
+    </ul>
+
+    <p>Measured across the bench's scenes, <strong>16 bits is the floor</strong> at which the quantised order reproduces the exact comparison order's decisions; below that, ties start costing placements and adding churn. The shipped configuration uses 20 bits, which buys margin at no extra cost — because 20 bits at 10 bits per pass is the same two passes as 16 bits would be.</p>
+
+    <div class="note good">
+        <span class="tag">Why 20 and not 16</span>
+        <p>Passes are what cost time, and <code>⌈20/10⌉ = ⌈16/10⌉ = 2</code>. Two configurations, identical cost, and one of them has 16× the precision margin. Take the free one.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch18">
+    <div class="head"><span class="idx">18</span><h2>Bucket sort, the asterisk, and the measured result</h2></div>
+    <p class="lede">Three ordering algorithms, one table. The fastest row is not the row that was shipped, and understanding why is the point of this chapter.</p>
+
+    <p><strong>Bucket ordering</strong> is the one-pass version, and it is what iTowns did historically: scatter every candidate into one of <i>K</i> buckets over a <em>fixed</em> key domain (derived from the camera's near and far planes), then walk the buckets from near to far. Labels within a bucket keep their input order.</p>
+<pre><code><span class="kw">const</span> scale = (K - <span class="nu">1</span>) / ((keyMax - keyMin) || <span class="nu">1</span>);
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nu">0</span>; i &lt; n; i++) {
+    <span class="kw">let</span> b = ((keys[i] - keyMin) * scale) | <span class="nu">0</span>;
+    <span class="kw">if</span> (b &lt; <span class="nu">0</span>) b = <span class="nu">0</span>; <span class="kw">else</span> <span class="kw">if</span> (b &gt;= K) b = K - <span class="nu">1</span>;
+    buckets[b].push(candidates[i]);        <span class="cm">// arrays of arrays — the weak point</span>
+}</code></pre>
+    <p>Two differences from radix matter. The domain is <strong>fixed rather than observed</strong>, so a frame occupying a narrow slice of the near–far range wastes most of its buckets and ties everything inside one of them. And the buckets are <strong>arrays of arrays</strong>, so scattering means pushing onto <i>K</i> growable arrays instead of writing into one flat typed array — more allocation pressure, worse locality.</p>
+
+    <div class="tw"><table>
+        <caption>Poster Tab 3 · ordering · 1 500 / 6 000 / 24 000 labels · bitmap /1 · tol 0.1 · AABB + per-glyph AABB</caption>
+        <thead><tr><th>configuration</th><th>complexity</th><th>ms / frame</th><th>quality</th><th>churn</th></tr></thead>
+        <tbody>
+            <tr><td>comparison sort</td><td class="u">O(n log n)</td><td>1.837</td><td>68.4 %</td><td>68.5</td></tr>
+            <tr class="pick"><td>radix, 20 bits, 2 × 10 <span class="u">shipped</span></td><td class="u">O(n · d)</td><td class="win">1.127</td><td>68.4 %</td><td>68.5</td></tr>
+            <tr><td>radix, 10 bits, 1 pass</td><td class="u">O(n · d)</td><td>1.107</td><td>70.0 %<small>* different order</small></td><td>63.5<small>*</small></td></tr>
+            <tr><td>bucket sort, 1 024 buckets</td><td class="u">O(n + K)</td><td>1.075</td><td>70.0 %<small>*</small></td><td>68.5<small>*</small></td></tr>
+        </tbody>
+    </table></div>
+
+    <h3>Reading the table properly</h3>
+    <p>The headline is the second row: <strong>20 bits in two passes of 10 is the only setting that reproduces the comparison sort's order exactly, and it is 39 % faster.</strong> Identical quality, identical churn, identical decisions — the ordering stage simply costs less. That is a strict improvement, and strict improvements are rare enough to take without further argument.</p>
+
+    <p>Now the trap. The two starred rows are <em>faster still</em>, and one of them reports <em>higher quality</em> — 70.0 % against 68.4 %. If you were optimising the number in the quality column, you would ship one of those. Do not, for three reasons:</p>
+    <ol>
+        <li><strong>They are not computing the requested order.</strong> Ten bits over the observed range, or 1 024 buckets over the near–far range, tie labels whose priorities genuinely differ, and the tie is broken by array order. The 1.6-point gain is the arbitrary tie-break happening to pack this scene slightly better — it is not a better policy, it is a coin flip that landed well.</li>
+        <li><strong>The gain is not portable.</strong> Nothing about it generalises to another dataset, another camera path, or another zoom level. A measurement you cannot explain mechanistically is a measurement you cannot ship.</li>
+        <li><strong>The remaining speed is negligible.</strong> 1.127 → 1.075 ms is 4 % of the collision pass on a budget of 16 000 µs. Trading correct priority semantics for 52 µs is a bad trade in any framing.</li>
+    </ol>
+
+    <div class="note warn">
+        <span class="tag">A general lesson about benchmarks</span>
+        <p>A configuration that scores better on your metric while violating a semantic you care about is the most dangerous result a bench can produce, because the number looks like permission. This is why the bench prints an asterisk and why the poster carries the footnote "<i>fewer bits or fewer buckets group labels of similar priority under a single key, which are then separated arbitrarily</i>". Metrics measure what they measure; only you know what you meant.</p>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════ PART V ══════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part V</div>
+    <h2>Occupancy</h2>
+    <p>Four ways to remember which pixels are taken. Three of them answer the identical question and differ only in speed; the fourth changes the question, and that turns out to be the interesting one.</p>
+</div>
+
+<section class="ch" id="ch19">
+    <div class="head"><span class="idx">19</span><h2>One interface, four structures</h2></div>
+    <p class="lede">Two methods and a contract. Get the contract right and every structure becomes swappable — which is what makes the comparison in chapter 23 meaningful.</p>
+
+<pre><code><span class="kw">interface</span> Occupancy {
+    resize(screenW, screenH);      <span class="cm">// (re)allocate for a viewport</span>
+    clear();                       <span class="cm">// zero everything, no reallocation</span>
+
+    testRect(x0, y0, x1, y1, prev) : boolean;   <span class="cm">// may this footprint be placed?</span>
+    markRect(x0, y0, x1, y1)       : void;      <span class="cm">// claim it</span>
+
+    testQuad(qx, qy, prev)         : boolean;   <span class="cm">// same, for a rotated quad</span>
+    markQuad(qx, qy)               : void;
+}</code></pre>
+
+    <p>Four properties of that interface do real work:</p>
+    <ul>
+        <li><strong>Test and mark are separate.</strong> Non-negotiable for multi-piece colliders (chapter 10): all pieces must be tested before any is marked, or a label collides with itself.</li>
+        <li><strong>Everything is in full-resolution screen pixels.</strong> A structure that works at a coarser internal resolution converts on the way in. Callers never know or care, which means <code>downscale</code> is not a leaky abstraction.</li>
+        <li><strong><code>prev</code> is the hysteresis channel</strong> — "was this label drawn last frame". Only a previously drawn label may be granted the occlusion tolerance of chapter 24. A brand-new label always needs a clear footprint.</li>
+        <li><strong><code>clear()</code> does not reallocate.</strong> It is called every frame; a structure that allocates in <code>clear()</code> hands the garbage collector a per-frame job.</li>
+    </ul>
+
+    <div class="note key">
+        <span class="tag">The invariant that makes tolerance exact</span>
+        <p>The store only ever contains footprints that were <em>accepted</em>, and an accepted footprint does not overlap anything already there. So <strong>the stored rectangles are mutually disjoint</strong> — which is what lets the grid compute a candidate's covered area by simply summing its pairwise intersections, with no risk of double counting. If you ever add a code path that marks without testing, that invariant dies and the tolerance arithmetic silently becomes wrong.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch20">
+    <div class="head"><span class="idx">20</span><h2>Brute force, uniform grid, R-tree</h2></div>
+    <p class="lede">The three structures that store shapes and compare them exactly. They place identical labels; only their bookkeeping differs.</p>
+
+    <h3>Brute force — the baseline you must measure</h3>
+    <p>Keep an array of accepted rectangles. For each candidate, test it against all of them. It is <i>O(n²)</i>, it is trivially correct, and at 6 000 candidates it measures <strong>42.2 ms per frame</strong> — about three frames' entire budget for one stage. Implement it first anyway: it is the reference every other structure is validated against, and any structure that disagrees with it (outside of deliberate raster approximation) has a bug.</p>
+
+    <h3>Uniform grid — what MapLibre, Mapbox and iTowns use</h3>
+    <p>Cut the screen into fixed cells (32 px in the shipped default). Each accepted rectangle is registered in every cell it touches. A query visits only the cells the candidate touches and tests only the rectangles found there.</p>
+<pre><code><span class="cm">// insert: register in every cell the rect touches</span>
+<span class="kw">for</span> (gy = y0/cell … y1/cell)
+  <span class="kw">for</span> (gx = x0/cell … x1/cell)
+    grid[gy·gw + gx].push(id);
+
+<span class="cm">// query: visit those cells, test each occupant once</span>
+stamp++;
+<span class="kw">for</span> (<span class="kw">each</span> cell) <span class="kw">for</span> (<span class="kw">each</span> id <span class="kw">in</span> cell) {
+    <span class="kw">if</span> (seen[id] === stamp) <span class="kw">continue</span>;      <span class="cm">// already tested via another cell</span>
+    seen[id] = stamp;
+    <span class="kw">if</span> (aabbOverlap(candidate, rect[id])) <span class="kw">return</span> <span class="kw">false</span>;
+}</code></pre>
+    <p>Two implementation notes carry most of the performance:</p>
+    <ul>
+        <li><strong>The stamp trick.</strong> A rectangle spanning four cells would otherwise be tested four times. A monotonically increasing <code>stamp</code> per query, written into a <code>seen[]</code> array, dedupes in O(1) with no clearing between queries — you only ever compare against the current stamp value.</li>
+        <li><strong>Cell size is a two-sided trade.</strong> Cells much smaller than a label mean each label registers in many cells (insertion cost, memory); cells much larger mean each query scans many irrelevant occupants. The rule of thumb — and what the bench's sweep confirms — is a cell close to the typical label's larger dimension.</li>
+    </ul>
+    <p>Measured: <strong>2.883 ms</strong>, a 14.6× speedup over brute force, with <em>bit-for-bit identical placement</em>.</p>
+
+    <h3>R-tree — what OpenLayers uses</h3>
+    <p>A balanced tree of bounding boxes: leaves are the stored rectangles, each internal node holds the bounding box of its children, and a query descends only into nodes whose box intersects the query. Asymptotically it is the better structure — <i>O(log n)</i> query, no dependence on a cell size, and it adapts to non-uniform density, which is why it dominates in GIS work over unbounded coordinate spaces.</p>
+    <p>Here it measures <strong>4.137 ms</strong> — 44 % slower than the flat grid. Three reasons, all specific to this workload rather than criticisms of the structure:</p>
+    <ul>
+        <li>The domain is <strong>bounded and small</strong>: 1920 × 1080 pixels. A grid over a bounded domain needs no tree to find the right region — an integer divide does it.</li>
+        <li>The tree is <strong>rebuilt every frame</strong>, because the whole occupancy is rebuilt every frame. Insertions with node splits are more expensive than pushing onto an array.</li>
+        <li>Traversal is <strong>pointer chasing</strong>. A grid query is arithmetic plus a linear scan of a small array; a tree query is a chain of dependent loads, which the prefetcher cannot help with.</li>
+    </ul>
+
+    <div class="note good">
+        <span class="tag">Measured, and worth stating plainly</span>
+        <p>Brute force, grid and R-tree all score <strong>77.7 % quality and 96.3 churn</strong> — identical to three significant figures. They are three implementations of one predicate, so this is the expected result, and seeing it is the best available evidence that all three are implemented correctly. Any claim that one spatial index "labels better" than another is a claim that one of them is buggy.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch21">
+    <div class="head"><span class="idx">21</span><h2>The occupancy bitmap</h2></div>
+    <p class="lede">Stop storing shapes. Store the screen — one bit per cell — and the question changes from "which shapes do I intersect" to "are these bits clear".</p>
+
+    <p>The idea comes from chart labelling (Kittivorawong et al., IEEE VIS 2021) and it inverts the data structure: instead of a list of occupied rectangles, keep a raster of the screen where a set bit means "taken". A candidate is accepted when its footprint's bits are all clear. There is no <i>n</i> in that sentence — cost depends on the label's own size, not on how many labels are already placed.</p>
+
+    <h3>Bits, packed into words</h3>
+    <p>A 1920 × 1080 bitmap is 2.07 million cells. As bytes that would be 2 MB to clear every frame; as bits it is 259 KB; and packed into 32-bit words it is 64 800 words, which you can clear with one <code>fill(0)</code> and test 32 cells at a time. Rows are padded to whole words:</p>
+<pre><code>wordsPerRow = (W + <span class="nu">31</span>) &gt;&gt; <span class="nu">5</span>;                  <span class="cm">// ceil(W / 32)</span>
+bits = <span class="kw">new</span> Uint32Array(wordsPerRow * H);
+<span class="cm">// cell (x, y) lives in word (y · wordsPerRow + (x &gt;&gt; 5)), at bit (x &amp; 31)</span></code></pre>
+    <p><code>x &gt;&gt; 5</code> is "divide by 32" and <code>x &amp; 31</code> is "remainder mod 32" — the two operations you need constantly, both single instructions because 32 is a power of two.</p>
+
+    <h3>The span test, and its two masks</h3>
+    <p>Testing a horizontal run of cells from <i>x₀</i> to <i>x₁</i> means testing part of the first word, all of the words in between, and part of the last. The partial words are handled with masks:</p>
+<pre><code>maskA = <span class="nu">0xffffffff</span> &lt;&lt; (x0 &amp; <span class="nu">31</span>);              <span class="cm">// keep bits from x0 upward</span>
+maskB = <span class="nu">0xffffffff</span> &gt;&gt;&gt; (<span class="nu">31</span> - (x1 &amp; <span class="nu">31</span>));      <span class="cm">// keep bits up to x1</span></code></pre>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 880 240" role="img" aria-label="A 42-cell horizontal span from cell 29 to cell 70 spread across three 32-bit words: the first word masked to its top three bits, the middle word tested whole, the last word masked to its low seven bits.">
+            <g font-family="var(--mono)" font-size="10.5">
+                <text x="0" y="14" class="dimtext">SPAN x0 = 29 … x1 = 70 — 42 cells, 3 word reads</text>
+
+                <!-- word 0 -->
+                <text x="0" y="44" fill="currentColor" opacity=".8">word 0</text>
+                <text x="0" y="58" class="dimtext">cells 0–31</text>
+                <g>
+                    <rect x="70" y="30" width="240" height="30" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="288" y="30" width="22" height="30" rx="3" class="s-fill s-line" stroke-width="1.4"/>
+                </g>
+                <text x="180" y="50" text-anchor="middle" fill="currentColor" opacity=".5">masked out</text>
+                <text x="299" y="50" text-anchor="middle" class="s-text" font-size="9">29-31</text>
+                <text x="326" y="50" class="s-text">&amp; maskA  (0xE0000000)</text>
+
+                <!-- word 1 -->
+                <text x="0" y="104" fill="currentColor" opacity=".8">word 1</text>
+                <text x="0" y="118" class="dimtext">cells 32–63</text>
+                <rect x="70" y="90" width="240" height="30" rx="3" class="s-fill s-line" stroke-width="1.4"/>
+                <text x="190" y="110" text-anchor="middle" class="s-text">all 32 cells inside the span</text>
+                <text x="326" y="110" class="s-text">tested whole — no mask</text>
+
+                <!-- word 2 -->
+                <text x="0" y="164" fill="currentColor" opacity=".8">word 2</text>
+                <text x="0" y="178" class="dimtext">cells 64–95</text>
+                <g>
+                    <rect x="70" y="150" width="240" height="30" rx="3" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="70" y="150" width="53" height="30" rx="3" class="s-fill s-line" stroke-width="1.4"/>
+                </g>
+                <text x="96" y="170" text-anchor="middle" class="s-text" font-size="9">64-70</text>
+                <text x="215" y="170" text-anchor="middle" fill="currentColor" opacity=".5">masked out</text>
+                <text x="326" y="170" class="s-text">&amp; maskB  (0x0000007F)</text>
+
+                <!-- accounting -->
+                <line x1="0" y1="200" x2="880" y2="200" stroke="currentColor" opacity=".15"/>
+                <text x="0" y="222" font-family="var(--sans)" font-size="13" fill="currentColor">3 + 32 + 7 = 42 cells checked in 3 memory reads — and the very first non-zero result ends the test.</text>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>Why bit packing is not a micro-optimisation.</b> A 42-cell span costs three word reads instead of forty-two bit reads, and the same three lines handle any span length. For a whole label footprint the saving compounds over every row, which is what turns "test 4 000 pixels" into "test a few dozen words".</figcaption>
+    </figure>
+
+    <p>The test walks rows and exits at the first evidence of occupancy — the common case for a busy screen, so most rejections cost one read:</p>
+<pre><code><span class="kw">function</span> regionEmpty(bm, wpr, x0, y0, x1, y1) {
+    <span class="kw">const</span> wA = x0 &gt;&gt; <span class="nu">5</span>, wB = x1 &gt;&gt; <span class="nu">5</span>;
+    <span class="kw">const</span> maskA = (<span class="nu">0xffffffff</span> &lt;&lt; (x0 &amp; <span class="nu">31</span>)) &gt;&gt;&gt; <span class="nu">0</span>;
+    <span class="kw">const</span> maskB = (<span class="nu">0xffffffff</span> &gt;&gt;&gt; (<span class="nu">31</span> - (x1 &amp; <span class="nu">31</span>)));
+    <span class="kw">for</span> (<span class="kw">let</span> y = y0; y &lt;= y1; y++) {
+        <span class="kw">const</span> row = y * wpr;
+        <span class="kw">if</span> (wA === wB) {
+            <span class="kw">if</span> ((bm[row + wA] &amp; maskA &amp; maskB) !== <span class="nu">0</span>) <span class="kw">return</span> <span class="kw">false</span>;
+        } <span class="kw">else</span> {
+            <span class="kw">if</span> ((bm[row + wA] &amp; maskA) !== <span class="nu">0</span>) <span class="kw">return</span> <span class="kw">false</span>;
+            <span class="kw">for</span> (<span class="kw">let</span> w = wA + <span class="nu">1</span>; w &lt; wB; w++) <span class="kw">if</span> (bm[row + w] !== <span class="nu">0</span>) <span class="kw">return</span> <span class="kw">false</span>;
+            <span class="kw">if</span> ((bm[row + wB] &amp; maskB) !== <span class="nu">0</span>) <span class="kw">return</span> <span class="kw">false</span>;
+        }
+    }
+    <span class="kw">return</span> <span class="kw">true</span>;
+}</code></pre>
+    <p class="caption">packages/Label/src/Collision/Occupancy.ts — regionEmpty</p>
+
+    <h3>Downscale: the knob no other structure has</h3>
+    <p>Nothing forces one bit per screen pixel. Use one bit per 2×2, 4×4 or 8×8 block and both the memory and the number of word reads fall quadratically. The conversion has to round <em>outward</em> so a footprint is never understated:</p>
+<pre><code>shift = log2(downscale);   m = (<span class="nu">1</span> &lt;&lt; shift) - <span class="nu">1</span>;
+a = x0 &gt;&gt; shift;                            <span class="cm">// floor for the low edge</span>
+b = min(W - <span class="nu">1</span>, (x1 + m) &gt;&gt; shift);          <span class="cm">// ceil for the high edge</span></code></pre>
+    <p>That rounding is what makes the bitmap <strong>conservative</strong>: a label's footprint is dilated by up to one cell on each side, so it can be rejected for touching a cell it does not really touch, but it can never be accepted while genuinely overlapping. Conservative in the safe direction — the direction where you lose a label rather than draw two on top of each other.</p>
+    <p>That single choice explains the quality column in chapter 23: at full resolution the bitmap scores 71.2 % where the exact structures score 77.7 %, and at a quarter resolution it drops to 64.3 %. You are buying speed with fidelity, explicitly, on a dial. No object-based structure offers that dial at all — and the bench measures the penalty at −3 to −4 % placement at downscale 1 versus −23 to −24 % at downscale 8.</p>
+
+    <h3>Counting instead of asking: occlusion tolerance</h3>
+    <p>Because the bitmap stores cells rather than shapes, it can answer a <em>quantitative</em> question — "what fraction of this footprint is already occupied?" — which no object index can answer cheaply. Counting set bits in a word is a single instruction on real hardware and a five-line trick in JavaScript:</p>
+<pre><code><span class="kw">function</span> popc(v) {                          <span class="cm">// count set bits in a 32-bit word</span>
+    v = v - ((v &gt;&gt;&gt; <span class="nu">1</span>) &amp; <span class="nu">0x55555555</span>);          <span class="cm">// pairs</span>
+    v = (v &amp; <span class="nu">0x33333333</span>) + ((v &gt;&gt;&gt; <span class="nu">2</span>) &amp; <span class="nu">0x33333333</span>);   <span class="cm">// nibbles</span>
+    <span class="kw">return</span> (((v + (v &gt;&gt;&gt; <span class="nu">4</span>)) &amp; <span class="nu">0x0f0f0f0f</span>) * <span class="nu">0x01010101</span>) &gt;&gt;&gt; <span class="nu">24</span>;   <span class="cm">// bytes → sum</span>
+}</code></pre>
+    <p>And the tolerance test never counts more than it must, exiting as soon as the answer is decided in either direction:</p>
+<pre><code>occupied &gt; limit                       → deny   (already too covered)
+occupied + cellsStillToCome ≤ limit    → accept (cannot possibly exceed)</code></pre>
+    <p>Same predicate as counting the whole footprint, a fraction of the reads. What the tolerance <em>means</em> — and why it only ever applies to labels that were already drawn — is chapter 24.</p>
+</section>
+
+<section class="ch" id="ch22">
+    <div class="head"><span class="idx">22</span><h2>Hierarchies over bits</h2></div>
+    <p class="lede">If a bitmap scan is linear in the footprint, a coarse summary should reject or accept large regions in one read. Two ways to build one; one of them earns its keep.</p>
+
+    <h3>The word summary — branching 128, and it works</h3>
+    <p>Level 0 is the flat bitmap. Level 1 has one bit per <strong>word × 4 rows</strong> of level 0 — one bit summarising 32 × 4 = 128 cells — and level 2 does the same again over level 1. A summary bit is set when anything below it is set, so:</p>
+    <ul>
+        <li>a <strong>clear</strong> coarse bit proves the whole region below is empty — accept without touching level 0;</li>
+        <li>a <strong>set</strong> coarse bit proves nothing except "look finer", so exactness always comes from level 0.</li>
+    </ul>
+    <p>One packed word compare at level 2 can clear a 1024 × 16 cell region. Because the fine level is still a bitmap, count-based tolerance keeps working.</p>
+
+    <h3>The quadtree pyramid — and why it disappoints</h3>
+    <p>The textbook alternative halves the resolution at every level and descends from the coarsest, recursing only into set cells. It is elegant, it is what a graphics programmer reaches for, and in this workload it underperforms the flat bitmap and the word summary alike. The reasons are instructive:</p>
+    <ul>
+        <li><strong>Branching factor 4 versus 128.</strong> A quadtree level removes two bits of address per level; the word summary removes seven. Reaching a useful coverage takes many quadtree levels, each an extra dependent memory access.</li>
+        <li><strong>The flat scan is already fast.</strong> Its access pattern is sequential words within a row — the best case for the prefetcher. A hierarchy replaces cheap sequential reads with fewer, scattered, dependent ones, which is not automatically a win.</li>
+        <li><strong>Coarse levels stop helping when the screen fills.</strong> Early in a frame, when everything is empty, the top level accepts immediately. Late in a frame — which is where the time goes, because that is when most candidates are being rejected — nearly every coarse cell is set, so every query descends anyway and the coarse levels are pure overhead.</li>
+        <li><strong>Levels silently no-op.</strong> Once a level collapses to 1 × 1 it can never reject anything. A fixed level count therefore does nothing at low resolutions or large downscales, which is the kind of parameter that looks tuned and is not.</li>
+    </ul>
+
+    <div class="note">
+        <span class="tag">The general shape of this result</span>
+        <p>Hierarchies pay when the failure they avoid is expensive and common. Here the common case is a <em>rejection</em>, and a rejection on a flat bitmap already costs one word read thanks to the early exit. There was never much for a hierarchy to save. This is worth remembering before adding a tree to anything: measure what the common case costs first, because you can only optimise what is actually being paid.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch23">
+    <div class="head"><span class="idx">23</span><h2>Structures, measured</h2></div>
+    <p class="lede">The table that chose the bitmap — and it did not choose it for quality or for raw speed.</p>
+
+    <div class="tw"><table>
+        <caption>Poster Tab 1 · occupancy · 1 500 / 6 000 / 24 000 labels · 1920×1080 · 60 frames · per-glyph OBB colliders</caption>
+        <thead><tr><th>structure</th><th>ms / frame</th><th>quality</th><th>churn</th><th>what it stores</th></tr></thead>
+        <tbody>
+            <tr><td>brute force</td><td class="lose">42.202</td><td>77.7 %</td><td>96.3</td><td class="u">a flat list of shapes</td></tr>
+            <tr><td>uniform grid</td><td class="win">2.883</td><td>77.7 %</td><td>96.3</td><td class="u">shapes, bucketed by cell</td></tr>
+            <tr><td>R-tree</td><td>4.137</td><td>77.7 %</td><td>96.3</td><td class="u">shapes, in a box tree</td></tr>
+            <tr class="pick"><td>bitmap, full resolution <span class="u">shipped</span></td><td>3.718</td><td>71.2 %</td><td class="win">77.1</td><td class="u">one bit per pixel</td></tr>
+            <tr><td>bitmap, res /4, tol 0.1</td><td>2.248</td><td class="lose">64.3 %</td><td class="win">72.8</td><td class="u">one bit per 4×4 block</td></tr>
+        </tbody>
+    </table></div>
+
+    <h3>Three readings</h3>
+
+    <h4>The exact structures are interchangeable</h4>
+    <p>Identical quality, identical churn, 14.6× spread in time. Choosing among them is purely an engineering decision, and on a bounded screen with per-frame rebuilds the flat grid wins it.</p>
+
+    <h4>The bitmap trades quality for stability, and the trade is the reason to take it</h4>
+    <p>Full-resolution bitmap gives up 6.5 points of quality against the grid — the conservative dilation of chapter 21 — and in exchange churn falls from 96.3 to <strong>77.1, a 20 % reduction in flicker</strong>. It is also slower than the grid in this table, which is worth stating plainly rather than glossing: the bitmap was not chosen for speed at equal fidelity.</p>
+    <p>Why would rasterising reduce flicker? Because a quantised decision boundary is a <em>stable</em> decision boundary. With exact geometry, two labels a hair apart flip their verdict as soon as sub-pixel camera motion nudges them across the touching threshold — and that motion happens every frame. On a raster, the verdict only changes when the footprint crosses a whole cell boundary, so small camera movements change nothing at all. Quantisation buys temporal hysteresis for free, before any explicit tolerance is applied. <span class="u">Mechanism inferred; the measured quantity is the churn column.</span></p>
+
+    <h4>The bitmap is the only structure with a dial</h4>
+    <p>Dropping to a quarter resolution with a 0.1 tolerance takes the frame to 2.248 ms — faster than the grid — at 64.3 % quality and churn 72.8. Whether that is a good trade depends on the device, and that is precisely the point: it is a runtime parameter, not a rewrite. The visual difference in a dense scene between the exact grid and the quarter-resolution bitmap remains minor, which is what makes the dial usable rather than theoretical.</p>
+
+    <div class="note good">
+        <span class="tag">Decision</span>
+        <p><strong>Bitmap at full resolution, occlusion tolerance 0.1.</strong> Not the fastest and not the highest quality — the most <em>stable</em>, and the only one that can be dialled down on a weak device without changing a line of code. With the shipped collider and radix ordering, this configuration lands at 0.983 ms.</p>
+    </div>
+
+    <h3>Complexity, side by side</h3>
+    <div class="tw"><table>
+        <caption>What each structure costs, in symbols</caption>
+        <thead><tr><th>structure</th><th>test</th><th>mark</th><th>clear</th><th>tolerance?</th><th>oriented quads?</th></tr></thead>
+        <tbody>
+            <tr><td>brute force</td><td class="u">O(p)</td><td class="u">O(1)</td><td class="u">O(1)</td><td>area sum</td><td>via SAT</td></tr>
+            <tr><td>uniform grid</td><td class="u">O(cells + occupants)</td><td class="u">O(cells)</td><td class="u">O(gw·gh)</td><td>area sum</td><td>via SAT</td></tr>
+            <tr><td>R-tree</td><td class="u">O(log p + hits)</td><td class="u">O(log p)</td><td class="u">O(p)</td><td>area sum</td><td>via SAT</td></tr>
+            <tr><td>bitmap</td><td class="u">O(rows · words), early exit</td><td class="u">O(rows · words)</td><td class="u">O(W·H / 32)</td><td class="win">bit count</td><td class="win">rasterised spans</td></tr>
+            <tr><td>word summary</td><td class="u">O(coarse) then O(fine)</td><td class="u">O(levels · words)</td><td class="u">O(W·H / 32)</td><td class="win">bit count</td><td class="win">rasterised spans</td></tr>
+        </tbody>
+    </table></div>
+    <p class="caption">p = labels already placed. Note that no bitmap row mentions p at all — that independence is the structural argument for rasters.</p>
+</section>
+
+<!-- ══════════════════════════════════ PART VI ═════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part VI</div>
+    <h2>Time</h2>
+    <p>Everything so far decided a single frame. A map is a sequence of frames, and the sequence has requirements of its own that no single-frame metric can see.</p>
+</div>
+
+<section class="ch" id="ch24">
+    <div class="head"><span class="idx">24</span><h2>Flicker, hysteresis, and the tolerance</h2></div>
+    <p class="lede">Two mechanisms, one in the ordering and one in the geometry, both driven by a single bit: was this label drawn last frame?</p>
+
+    <p>Run the pipeline of chapter 3 with no memory of the previous frame and it behaves correctly and looks awful. Labels appear and vanish continuously, because a sub-pixel camera movement is enough to reverse a marginal decision — and in a dense scene, a large fraction of decisions are marginal. The fix is <strong>hysteresis</strong>: make the current state slightly self-preserving.</p>
+
+    <figure>
+        <div class="svgwrap">
+        <svg viewBox="0 0 880 250" role="img" aria-label="Two timelines over eight frames: without hysteresis a marginal label alternates drawn and hidden every frame; with priority boost and occlusion tolerance it stays drawn throughout.">
+            <g font-family="var(--mono)" font-size="10.5">
+                <text x="0" y="14" class="dimtext">FRAME →</text>
+                <g class="dimtext">
+                    <text x="120" y="14">1</text><text x="210" y="14">2</text><text x="300" y="14">3</text><text x="390" y="14">4</text>
+                    <text x="480" y="14">5</text><text x="570" y="14">6</text><text x="660" y="14">7</text><text x="750" y="14">8</text>
+                </g>
+
+                <!-- no hysteresis -->
+                <text x="0" y="52" fill="currentColor" opacity=".85" font-size="11.5">no hysteresis</text>
+                <text x="0" y="68" class="dimtext">churn 96.3</text>
+                <g stroke-width="1.4">
+                    <rect x="104" y="36" width="52" height="26" rx="4" class="w-fill w-line"/>
+                    <rect x="194" y="36" width="52" height="26" rx="4" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="284" y="36" width="52" height="26" rx="4" class="w-fill w-line"/>
+                    <rect x="374" y="36" width="52" height="26" rx="4" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="464" y="36" width="52" height="26" rx="4" class="w-fill w-line"/>
+                    <rect x="554" y="36" width="52" height="26" rx="4" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                    <rect x="644" y="36" width="52" height="26" rx="4" class="w-fill w-line"/>
+                    <rect x="734" y="36" width="52" height="26" rx="4" fill="var(--card-2)" stroke="currentColor" stroke-opacity=".3"/>
+                </g>
+                <g class="w-text" font-size="9.5">
+                    <text x="130" y="53" text-anchor="middle">ON</text>
+                    <text x="310" y="53" text-anchor="middle">ON</text>
+                    <text x="490" y="53" text-anchor="middle">ON</text>
+                    <text x="670" y="53" text-anchor="middle">ON</text>
+                </g>
+                <g class="dimtext" font-size="9.5">
+                    <text x="220" y="53" text-anchor="middle">off</text>
+                    <text x="400" y="53" text-anchor="middle">off</text>
+                    <text x="580" y="53" text-anchor="middle">off</text>
+                    <text x="760" y="53" text-anchor="middle">off</text>
+                </g>
+                <text x="806" y="53" class="w-text" font-size="10.5">7 switches</text>
+
+                <!-- with hysteresis -->
+                <text x="0" y="118" fill="currentColor" opacity=".85" font-size="11.5">with hysteresis</text>
+                <text x="0" y="134" class="dimtext">churn 68.5</text>
+                <g stroke-width="1.4">
+                    <rect x="104" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="194" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="284" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="374" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="464" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="554" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="644" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                    <rect x="734" y="102" width="52" height="26" rx="4" class="g-line" fill="var(--moss-soft)"/>
+                </g>
+                <g class="g-text" font-size="9.5">
+                    <text x="130" y="119" text-anchor="middle">ON</text><text x="220" y="119" text-anchor="middle">ON</text>
+                    <text x="310" y="119" text-anchor="middle">ON</text><text x="400" y="119" text-anchor="middle">ON</text>
+                    <text x="490" y="119" text-anchor="middle">ON</text><text x="580" y="119" text-anchor="middle">ON</text>
+                    <text x="670" y="119" text-anchor="middle">ON</text><text x="760" y="119" text-anchor="middle">ON</text>
+                </g>
+                <text x="806" y="119" class="g-text" font-size="10.5">0 switches</text>
+
+                <!-- the two mechanisms -->
+                <line x1="0" y1="160" x2="880" y2="160" stroke="currentColor" opacity=".15"/>
+                <g font-family="var(--sans)" font-size="12.5">
+                    <text x="0" y="184" class="s-text">1 · priority boost</text>
+                    <text x="0" y="204" fill="currentColor" opacity=".8">a label drawn last frame is attempted first, so it usually keeps its space</text>
+                    <text x="0" y="222" class="s-text">2 · occlusion tolerance</text>
+                    <text x="0" y="242" fill="currentColor" opacity=".8">a label drawn last frame survives being up to 10 % covered; a new label needs a clear footprint</text>
+                </g>
+            </g>
+        </svg>
+        </div>
+        <figcaption><b>Hysteresis in two places.</b> The marginal label on the top row is not wrong on any single frame — it is correctly decided eight times, with a different answer each time. The bottom row's two mechanisms are asymmetric on purpose: they favour <em>continuity</em>, and neither can make a brand-new label overlap an existing one.</figcaption>
+    </figure>
+
+    <h3>Mechanism 1 — the priority boost</h3>
+    <p>From chapter 12: a label not drawn last frame has its key multiplied by <code>renderPenaltyMultiplier</code> (8). Already-drawn labels are therefore attempted before newcomers and generally keep their space. This costs nothing — one multiply per candidate — and it operates entirely in the ordering stage.</p>
+
+    <h3>Mechanism 2 — the occlusion tolerance</h3>
+    <p>The geometric half, and the one whose semantics are most often misread:</p>
+    <div class="cols2">
+        <div class="card"><h4>A new label</h4><p>Needs a <strong>completely empty</strong> footprint. Strict, binary, early-exit. The tolerance does not apply.</p></div>
+        <div class="card"><h4>An already-drawn label</h4><p>Is kept while it is occluded by <strong>at most <code>tol</code></strong> of its area — 10 % at the shipped setting.</p></div>
+    </div>
+    <p>Three consequences follow directly from that asymmetry, and each of them protects you from a wrong conclusion:</p>
+    <ul>
+        <li><strong>Tolerance cannot improve quality on a cold frame.</strong> With nothing drawn yet, every label is new, so the strict path is the only path. If your quality metric is measured on a cold frame, tolerance will appear to do nothing — correctly.</li>
+        <li><strong>It cannot create a permanent overlap.</strong> The overlap it permits is bounded by <code>tol</code> and only ever arises transiently, while a label that was legitimately placed is being encroached upon.</li>
+        <li><strong>Its effect shows up in churn.</strong> That is the column to watch when tuning it, and the correlation to expect is negative against churn and positive against dwell time (the mean number of consecutive frames a label stays visible).</li>
+    </ul>
+
+    <h3>What it costs, measured</h3>
+    <p>From Tab 1: the quarter-resolution bitmap with tolerance 0.1 reaches churn 72.8 at 64.3 % quality, against 77.1 and 71.2 % for the full-resolution bitmap. From Tab 4, the shipped configuration at half resolution reaches churn 63.5 at 64.7 % quality against 68.5 and 68.4 % at full resolution. The pattern is consistent: <strong>every step towards stability costs placement</strong>, in the low single digits of percent per step. There is no setting that gives both, and the right operating point depends on whether your users are panning or reading.</p>
+
+    <div class="note">
+        <span class="tag">One more mechanism, not yet shipped</span>
+        <p>A third form of stability is worth knowing about: <strong>active ranges</strong> (Been, Daiches, Yap, 2006). Instead of deciding per frame, precompute for each label the interval of zoom levels over which it is displayed, and guarantee that a label appears and disappears exactly once across a continuous zoom. That eliminates flicker by construction rather than by damping — at the cost of a global precomputation that assumes a zoom-like camera, which a free 3D camera does not provide.</p>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════ PART VII ════════════════════════════ -->
+<div class="parthead">
+    <div class="eyebrow">Part VII</div>
+    <h2>Practice</h2>
+    <p>How to measure this without fooling yourself, how the result compares to the reference implementation everyone knows, and the order to build it in.</p>
+</div>
+
+<section class="ch" id="ch25">
+    <div class="head"><span class="idx">25</span><h2>Benching it honestly</h2></div>
+    <p class="lede">Every number in this course came out of a bench. Benches lie in specific, repeatable ways, and these are the ones that matter here.</p>
+
+    <h3>Build the ceiling, then attack it</h3>
+    <p>The annealed optimum makes every other number meaningful, so it has to be trustworthy. Two checks:</p>
+    <ul>
+        <li><strong>Prove what you can.</strong> On sparse parts of the scene, MWIS is solvable exactly (isolated labels and small components can be brute-forced). Report the fraction of candidate weight that was proven versus annealed — the bench reports "6 % proven exactly, the rest annealed", which tells you the ceiling is a lower bound on the true optimum, and therefore that your quality percentages are, if anything, slightly flattering.</li>
+        <li><strong>Check that it converges.</strong> Run the annealer twice as long. If the ceiling moves by more than a fraction of a point, it had not converged and every percentage below it was against a moving target.</li>
+    </ul>
+
+    <h3>Score everything against one ground truth</h3>
+    <p>A configuration using per-glyph boxes and one using whole-label boxes must be scored with the <em>same</em> notion of overlap, or you are comparing each against its own private yardstick — which lets a coarse collider score above 100 %. The bench scores every configuration against the labels' <strong>true inked footprints</strong> (per-glyph oriented quads). Because every collider model contains its label's ink, any placement valid under any model is also ink-disjoint, so the single ink-based ceiling is a valid upper bound for all of them.</p>
+
+    <h3>Know how big a difference is real</h3>
+    <p>Before believing a 0.3-point quality difference, re-run with a different scene seed and a different camera path. Differences that survive both are structural; differences that do not are the scene. As a working rule from these runs, treat sub-half-point quality gaps and sub-5 % time gaps as noise unless you can explain the mechanism — and note that JIT warm-up alone can produce a 5 % time difference between the first and third run of the identical configuration.</p>
+
+    <h3>Invariants worth asserting in a test</h3>
+    <ol>
+        <li><strong>No two drawn labels overlap</strong> under the ground-truth collider. This is the specification; everything else is an optimisation.</li>
+        <li><strong>Placed ≤ candidates</strong>, and <strong>quality ≤ 100 %</strong>. Either violation means the scoring and the placement disagree about geometry.</li>
+        <li><strong>Determinism.</strong> The same frame in must produce the same decisions out, twice in a row. Non-determinism here usually means a structure was not fully cleared.</li>
+        <li><strong>Radix equals comparison.</strong> Property-test the ordering against <code>Array.sort</code> on random keys — with duplicates, which is where a stability bug shows.</li>
+        <li><strong><code>test()</code> does not mutate.</strong> Calling it twice must give the same answer.</li>
+        <li><strong>All pieces tested before any is marked.</strong> Assert it in the multi-piece path; this bug is invisible except as uniformly poor placement.</li>
+    </ol>
+</section>
+
+<section class="ch" id="ch26">
+    <div class="head"><span class="idx">26</span><h2>Against MapLibre</h2></div>
+    <p class="lede">The reference implementation, reproduced inside the same bench, on the same scene, against the same ceiling.</p>
+
+    <p>Comparing against a real product is only meaningful if you reimplement its algorithm in your own harness — otherwise you are comparing two renderers, two datasets and two machines. The bench reproduces what <code>collision_index.ts</code> actually does: a uniform grid, one axis-aligned box per point label (the envelope of the rotated quad), a circle chain for line-placed labels, and a standard comparison sort for priority.</p>
+
+    <div class="tw"><table>
+        <caption>Poster Tab 4 · 1 500 / 6 000 / 24 000 labels · 1920×1080 · 60 frames</caption>
+        <thead><tr><th>configuration</th><th>ms / frame</th><th>quality</th><th>churn</th></tr></thead>
+        <tbody>
+            <tr><td>simulated annealing <span class="u">offline</span></td><td class="lose">22 069</td><td>100 %</td><td class="u">n/a</td></tr>
+            <tr><td>MapLibre <small>grid · comparison sort · AABB + circle chain</small></td><td>2.010</td><td>69.4 %</td><td>84.8</td></tr>
+            <tr class="pick"><td>shipped <small>bitmap /1 · tol 0.1 · radix 20 b · AABB + per-glyph AABB</small></td><td class="win">0.983</td><td>68.4 %</td><td class="win">68.5</td></tr>
+            <tr><td>shipped, at half resolution</td><td class="win">0.892</td><td class="lose">64.7 %</td><td class="win">63.5</td></tr>
+        </tbody>
+    </table></div>
+
+    <div class="strip">
+        <div><dt>frame cost</dt><dd>−51 %<small>0.983 ms vs 2.010 ms</small></dd></div>
+        <div><dt>flicker</dt><dd>−19 %<small>churn 68.5 vs 84.8</small></dd></div>
+        <div><dt>quality</dt><dd>−1.0 pt<small>68.4 % vs 69.4 %</small></dd></div>
+    </div>
+
+    <p>Half the time and a fifth less flicker, for one point of quality. Where does each part come from? Every axis contributes, which is the payoff for having kept them independent:</p>
+    <ul>
+        <li><strong>Ordering</strong> — radix instead of a comparison sort: −39 % on the pass (Tab 3), with identical decisions.</li>
+        <li><strong>Collider</strong> — per-glyph boxes instead of a circle chain: +2 points of quality and less time, because glyph boxes are both tighter and cheaper to test than circles (Tab 2).</li>
+        <li><strong>Occupancy</strong> — bitmap instead of grid: the churn improvement, plus the resolution dial. This is the axis that costs the quality point.</li>
+    </ul>
+
+    <div class="note">
+        <span class="tag">Fairness note</span>
+        <p>MapLibre is a complete 2-D map renderer with concerns this pipeline does not have — variable-anchor placement, symbol fade animations, cross-tile collision consistency, and a data model where labels arrive per tile. The comparison here is narrow and deliberate: <em>the collision stage only</em>, on the same synthetic scene, against the same ceiling. It says the algorithm choices in this course are good ones. It does not say anything about MapLibre as a renderer.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch27">
+    <div class="head"><span class="idx">27</span><h2>Build it in ten steps</h2></div>
+    <p class="lede">In this order, each step verifiable before the next. The order matters: it keeps you always able to answer "is it still correct?"</p>
+
+    <ol class="steps">
+        <li><strong>Project one label.</strong> World position → screen AABB (chapter 5). Draw the box over the label and confirm it tracks under rotation and zoom. Nothing else works until this does, and every later bug will look like a collision bug.</li>
+        <li><strong>Brute force, no ordering.</strong> Store accepted boxes in an array, test each candidate against all of them (chapter 20). Slow and correct. This is your reference implementation forever.</li>
+        <li><strong>Add the priority key and a real sort.</strong> <code>log1p(distSq · sizeFactor)</code>, then <code>Array.sort</code> (chapter 12). Confirm the visual policy is what you want — big and near wins — before optimising the sort.</li>
+        <li><strong>Add the metric harness.</strong> Placed count, weighted quality, churn between consecutive frames, milliseconds. Without this, every later step is a guess. This is the step people skip, and skipping it is why label systems get tuned by opinion.</li>
+        <li><strong>Swap in a uniform grid.</strong> Cell size ≈ typical label width, with the stamp trick (chapter 20). <em>Assert the placement is bit-identical to brute force</em> — if it is not, the grid is wrong, and this is the easiest bug in the whole system to find at this stage.</li>
+        <li><strong>Subdivide the line-label collider.</strong> Per-glyph boxes, testing all pieces before marking any (chapter 10). Expect the largest single quality jump of the project here — up to 15 points, per Tab 2 — and expect to hit the self-collision bug once.</li>
+        <li><strong>Add hysteresis.</strong> The <code>prev</code> flag through <code>test()</code>, and the priority boost for already-drawn labels (chapter 24). Watch churn fall; watch quality dip slightly. Both are correct.</li>
+        <li><strong>Replace the sort with radix.</strong> Quantise to 20 bits over the observed range, two passes of 10 (chapter 15). Property-test the output against <code>Array.sort</code> on random keys including duplicates, then measure.</li>
+        <li><strong>Add the bitmap occupancy.</strong> Packed <code>Uint32Array</code>, <code>regionEmpty</code> / <code>regionSet</code>, a downscale shift, then popcount tolerance (chapter 21). Its placement will <em>not</em> match brute force — it is conservative by construction — so check the direction of the difference: strictly fewer labels, never an overlap.</li>
+        <li><strong>Build the ceiling and the sweep.</strong> Anneal an offline optimum, then sweep the axes as a product (chapter 25). Only now can you tune parameters on evidence, and only now will the numbers you produce mean anything to anyone else.</li>
+    </ol>
+
+    <div class="note good">
+        <span class="tag">If you only do three of them</span>
+        <p>Steps 4, 5 and 6. The metric harness, the grid, and the per-glyph line collider give you most of the quality and most of the speed of the finished system; everything else in this course is refinement measured in single points.</p>
+    </div>
+</section>
+
+<section class="ch" id="ch28">
+    <div class="head"><span class="idx">28</span><h2>What is still open</h2></div>
+    <p class="lede">Four directions, in the order their expected value suggests.</p>
+
+    <ul>
+        <li><strong>Off-screen pre-filtering.</strong> The candidate phase still visits every registered label to decide it is off-screen. A spatial index in <em>world</em> space — or reuse of the renderer's own frustum culling — would make the phase proportional to what is visible rather than to what exists. With 24 000 labels resident and a few thousand visible, this is the largest remaining structural win in the pipeline.</li>
+        <li><strong>Early exit when placement becomes impossible.</strong> Late in a dense frame almost every remaining candidate is rejected, and each rejection still costs a projection plus a test. A saturation signal — the screen is full at this scale, stop trying — would cut the tail. The bench's dead-cell experiments are a first attempt: track consecutive failures per coarse region and skip candidates whose every region is saturated.</li>
+        <li><strong>Decoupling the collision rate from the frame rate.</strong> Nothing requires a full collision pass every frame. A stationary camera needs none at all; a fast-moving one can tolerate a stale answer for a frame or two, because the labels are moving faster than the eye can read them anyway. The config already carries <code>stationaryThreshold</code> and <code>updateRate</code> for this.</li>
+        <li><strong>Automatic placement.</strong> Everything here assumes one fixed anchor per label. Allowing K candidate positions per label (the classic eight-position model, or MapLibre's variable anchors) is the single largest available quality gain — and it is a genuinely harder problem, because the greedy pass now chooses <em>where</em> as well as <em>whether</em>. The bench has a PAL mode to measure it.</li>
+    </ul>
+
+    <div class="note key">
+        <span class="tag">The four sentences worth keeping</span>
+        <ul style="margin-bottom:0">
+            <li><strong>Subdivide curved labels.</strong> One box per label is the single worst decision available; per-glyph boxes recover fifteen points.</li>
+            <li><strong>Do not pay for oriented tests at glyph granularity.</strong> They buy 3 % of quality for twice the time.</li>
+            <li><strong>Sort by counting, not comparing.</strong> 20 bits in two passes of 10 reproduces the exact order 39 % faster; the histogram must fit in L1.</li>
+            <li><strong>Measure churn.</strong> A configuration that wins on quality and loses on churn loses.</li>
+        </ul>
+    </div>
+</section>
+
+<section class="ch" id="glossary">
+    <div class="head"><span class="idx">·</span><h2>Glossary</h2></div>
+    <div class="glossary">
+        <div><dt>AABB</dt><dd>Axis-aligned bounding box. Four numbers; overlap is four comparisons.</dd></div>
+        <div><dt>advance</dt><dd>How far the pen moves after a glyph, including side bearings. Summing advances gives a string's true width.</dd></div>
+        <div><dt>candidate</dt><dd>A label that survived the visibility filter and will be attempted this frame.</dd></div>
+        <div><dt>churn <span class="u">basculement</span></dt><dd>Labels whose drawn state flipped this frame, as a share of labels on screen. The stability metric.</dd></div>
+        <div><dt>collider</dt><dd>The geometric approximation of a label's footprint used for collision. Not the same as what is drawn.</dd></div>
+        <div><dt>dwell</dt><dd>Mean number of consecutive frames a label stays visible. Rises as churn falls.</dd></div>
+        <div><dt>greedy</dt><dd>Walk candidates in priority order, keep each that fits, never revisit.</dd></div>
+        <div><dt>hysteresis</dt><dd>Making the current state slightly self-preserving, so decisions do not oscillate.</dd></div>
+        <div><dt>ink</dt><dd>The pixels a glyph actually marks — as opposed to its line box. The ground truth for scoring.</dd></div>
+        <div><dt>LSD radix</dt><dd>Radix sort that processes the least significant digit first. Requires a stable per-digit sort.</dd></div>
+        <div><dt>MWIS</dt><dd>Maximum Weight Independent Set. The exact formulation of label selection; NP-hard.</dd></div>
+        <div><dt>NDC</dt><dd>Normalised device coordinates, −1…+1 in x and y after perspective division. +y is up, unlike pixels.</dd></div>
+        <div><dt>OBB</dt><dd>Oriented bounding box. Centre, two axes, two half-extents; exact overlap needs a separating-axis test.</dd></div>
+        <div><dt>occupancy</dt><dd>The structure remembering which screen area is already claimed.</dd></div>
+        <div><dt>PAL</dt><dd>Point-feature label placement with K candidate positions per label. Not used in the measurements here.</dd></div>
+        <div><dt>popcount</dt><dd>Number of set bits in a word. Turns a bitmap into a coverage measure.</dd></div>
+        <div><dt>SAT</dt><dd>Separating-axis theorem. Two convex shapes are disjoint iff some axis separates their projections.</dd></div>
+        <div><dt>stability <span class="u">of a sort</span></dt><dd>Equal keys keep their input order. The property that makes multi-pass radix work.</dd></div>
+        <div><dt>tolerance</dt><dd>Fraction of its own area an already-drawn label may have occluded and still be kept.</dd></div>
+    </div>
+</section>
+
+<section class="ch" id="refs">
+    <div class="head"><span class="idx">·</span><h2>References</h2></div>
+
+    <h3>Where the ideas come from</h3>
+    <ol class="refs">
+        <li><b>Christensen, Marks &amp; Shieber (1995)</b>, <i>An Empirical Study of Algorithms for Point-Feature Label Placement</i>, ACM TOG. The paper that made this field empirical: it defines the benchmark methodology, and simulated annealing as the ceiling everything else is measured against.</li>
+        <li><b>Kittivorawong et al. (2021)</b>, <i>Fast and Flexible Overlap Detection for Chart Labeling with Occupancy Bitmap</i>, IEEE VIS. The occupancy bitmap of chapter 21, with the resolution/fidelity trade made explicit.</li>
+        <li><b>Been, Daiches &amp; Yap (2006)</b>, <i>Dynamic Map Labeling</i>, IEEE TVCG. Formalises temporal consistency for labels and introduces active ranges — the stronger stability guarantee discussed in chapter 24.</li>
+        <li><b>Gottschalk, Lin &amp; Manocha (1996)</b>, <i>OBBTree: A Hierarchical Structure for Rapid Interference Detection</i>, SIGGRAPH. The reference for oriented boxes and separating-axis tests (chapter 8).</li>
+        <li><b>Penn State College of Earth and Mineral Sciences</b>, <i>Label Placement</i>. The cartographic requirements — density, legibility, and why a name's position carries meaning.</li>
+    </ol>
+
+    <h3>Implementations worth reading</h3>
+    <ol class="refs" start="6">
+        <li><b>MapLibre GL</b> — <code>src/symbol/collision_index.ts</code>. A production collision index: uniform grid, boxes for point labels, circle chains for line labels. Short, readable, and the thing this course benchmarks against.</li>
+        <li><b>MapLibre</b> — the <i>Symbol Layer</i> style specification, for how <code>text-padding</code>, <code>text-rotation-alignment</code> and the symbol placement modes are actually defined.</li>
+        <li><b>RBush</b> (Agafonkin). The R-tree used by OpenLayers and measured in chapter 20; a clean bulk-loading implementation.</li>
+        <li><b>iTowns</b> — <code>packages/Label/src/Collision/</code>. The implementation this course describes: <code>CollisionCore</code>, <code>Ordering</code>, <code>Occupancy</code>, <code>LabelProjector</code>.</li>
+    </ol>
+
+    <h3>The measurements</h3>
+    <p>All numbers are from <i>Occlusion d'étiquettes cartographiques dans un environnement 3D</i> — Moncef Hassani, CESI / Ciril GROUP R&amp;D, tutor Vincent Jaillot, August 2026 — reproducible with <code>examples/collision_configurator.html</code> (full axis sweep, statistics, Pareto front) and <code>examples/collision_bounds_bench.html</code> (collider models in isolation).</p>
+</section>
+
+
+</div><!-- /col -->
+</div><!-- /wrap -->
+</main>
+</div><!-- /shell -->
+
+<script>
+// Highlight the contents entry for the chapter currently in view. No dependencies.
+(function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav a[href^="#"]'));
+    var byId = {};
+    links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+    var targets = Object.keys(byId).map(function (id) { return document.getElementById(id); }).filter(Boolean);
+    if (!('IntersectionObserver' in window) || !targets.length) { return; }
+    var seen = new Map();
+    var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) { seen.set(e.target.id, e); });
+        var best = null;
+        seen.forEach(function (e) {
+            if (!e.isIntersecting) { return; }
+            if (!best || e.boundingClientRect.top < best.boundingClientRect.top) { best = e; }
+        });
+        if (!best) { return; }
+        links.forEach(function (a) { a.classList.remove('on'); });
+        var on = byId[best.target.id];
+        if (on) { on.classList.add('on'); }
+    }, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+}());
+</script>
+</body>
+</html>

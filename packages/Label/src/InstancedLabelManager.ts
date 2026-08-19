@@ -97,6 +97,18 @@ export class InstancedLabelManager {
         this._batch?.updatePxPerUnit(pxPerUnit);
     }
 
+    /**
+     * Change the collision algorithm (ordering / occupancy / bounds model and
+     * their params) at runtime. Rebuilds the collision engine's internals in
+     * place; registered labels are unaffected. Invalid combinations are clamped
+     * with a warning (see {@link CollisionCore.reconfigure}).
+     * @param patch - any subset of the collision config fields
+     */
+    setCollisionConfig(patch: Partial<LabelManagerConfig>) {
+        Object.assign(this.config, patch);
+        this.collision.reconfigure(patch);
+    }
+
     // ─── Per-frame work ───────────────────────────────────────────────────────
 
     tick(camera: Camera) {

@@ -22,7 +22,7 @@ import type { LabelMesh } from './Rendering/LabelBatch';
 import { LabelProfiler } from './Profiler';
 import { DefaultLabelConfig, LabelManagerConfig } from './Types/LabelConfig';
 import { computePxPerUnit } from './Utils';
-import type { MainToWorker, WorkerToMain, SerialisedLabel } from './Worker/WorkerMessages';
+import type { MainToWorker, WorkerToMain, SerialisedLabel, CollisionConfigPatch } from './Worker/WorkerMessages';
 
 /** Max element-wise diff of two 4×4 matrices (clip space, scale-invariant). */
 function matrixMaxDiff(a: Matrix4, b: Matrix4): number {
@@ -101,6 +101,8 @@ export class InstancedLabelManagerAsync {
             renderPenaltyMultiplier: cfg.renderPenaltyMultiplier,
             fontSizePriorityPower: cfg.fontSizePriorityPower,
             pxPerUnit: cfg.pxPerUnit,
+            sortMethod: cfg.sortMethod, occupancyMethod: cfg.occupancyMethod,
+            boundsMode: cfg.boundsMode, gridCell: cfg.gridCell, occlusionTol: cfg.occlusionTol,
         });
 
         if (cfg.autoResizePxPerUnit) {
@@ -150,6 +152,17 @@ export class InstancedLabelManagerAsync {
         this.config.pxPerUnit = pxPerUnit;
         this._batch?.updatePxPerUnit(pxPerUnit);
         this._post({ type: 'SET_PX_PER_UNIT', pxPerUnit });
+    }
+
+    /**
+     * Change the collision algorithm (ordering / occupancy / bounds model and
+     * their params) at runtime. Forwards the patch to the worker's collision
+     * engine and mirrors it into this.config. Registered labels are unaffected.
+     * @param patch - any subset of the collision config fields
+     */
+    setCollisionConfig(patch: CollisionConfigPatch) {
+        Object.assign(this.config, patch);
+        this._post({ type: 'RECONFIGURE', config: patch });
     }
 
     // ── Per-frame work ────────────────────────────────────────────────────────

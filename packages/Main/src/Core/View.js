@@ -283,11 +283,18 @@ class View extends THREE.EventDispatcher {
             dataTextureCapacityMultiplier: 2,
             maxDataTextureWidth: 4096,
             fontSizePriorityPower: 1,
-            downscale: 8,
-            pyramidLevels: 2,
+            // Collision axes are left at DefaultLabelConfig's benchmarked values
+            // (radix 20 b + full-resolution bitmap + AABB + tolerance 0.1); only
+            // the rate/capacity knobs are tuned per manager here. downscale must
+            // be stated explicitly because a previous value would otherwise
+            // silently override the default.
+            downscale: 1,
             stationaryThreshold: 0.05,
             fastMoveFraction: 10,
+            // only consumed if the collision axes are switched away from the
+            // defaults at runtime (bucket ordering / pyramid occupancy)
             collisionBuckets: 16,
+            pyramidLevels: 2,
             ndcCullMargin: 0.2,
             renderPenaltyMultiplier: 8,
             layoutBudgetPerTick: 0,
@@ -311,11 +318,11 @@ class View extends THREE.EventDispatcher {
             dataTextureCapacityMultiplier: 2,
             maxDataTextureWidth: 4096,
             fontSizePriorityPower: 1,
-            downscale: 4,
-            pyramidLevels: 4,
+            downscale: 1,
             stationaryThreshold: 0.05,
             fastMoveFraction: 0.3,
             collisionBuckets: 64,
+            pyramidLevels: 4,
             ndcCullMargin: 0.2,
             renderPenaltyMultiplier: 8,
             layoutBudgetPerTick: 50,

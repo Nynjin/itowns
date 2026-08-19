@@ -150,6 +150,15 @@ export class Label {
     glyphs: GlyphInstance[] = [];
     /** Cached glyph texel indices — set by LabelBatch._writeGlyphs for O(1) cull(). */
     _cachedGlyphIndices: number[] | null = null;
+    /**
+     * Cached camera-independent local-space box corners (8 floats) used by the
+     * collision projector to skip re-deriving anchor/offset/em math each pass.
+     * Owned by LabelProjector; invalidated to null on Font/Layout/Text changes
+     * and re-keyed by pxPerUnit. Not part of the public API.
+     */
+    _localCorners: Float32Array | null = null;
+    /** pxPerUnit the cached _localCorners were computed for. */
+    _localCornersKey = 0;
     /** Scratch value written each frame by the collision engine for bucket sorting. */
     score = 0;
     /**
@@ -413,6 +422,11 @@ export class Label {
 
     private _emit(changes: LabelChangeMask): void {
         if (changes === LabelChangeType.None) return;
+        // Any change to text/font/layout can move the local box → drop the cache
+        // the collision projector keeps (see LabelProjector._localCornersOf).
+        if (changes & (LabelChangeType.Font | LabelChangeType.Layout | LabelChangeType.Text)) {
+            this._localCorners = null;
+        }
         for (const listener of this._listeners) listener(changes);
     }
 
