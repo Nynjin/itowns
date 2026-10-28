@@ -4,6 +4,11 @@ import { Coordinates, ellipsoidSizes } from '@itowns/geographic';
 import CameraUtils from 'Utils/CameraUtils';
 import StateControl from 'Controls/StateControl';
 import { VIEW_EVENTS } from 'Core/View';
+import { MAIN_LOOP_EVENTS } from 'Core/MainLoop';
+import {
+    SMOOTHING_MS, SMOOTH_ZOOM_MS, WHEEL_DURATION_MS, WHEEL_EVENT_ADJUSTMENT_MS, WheelEasing, WheelInput, wheelScale,
+    MoveRecorder, glide, GLIDE_EASING, PAN_GLIDE, BEARING_GLIDE, PITCH_GLIDE,
+} from 'Controls/MaplibreEasing';
 
 // private members
 const EPS = 0.000001;
@@ -52,15 +57,28 @@ function positionObject(newPosition, object) {
     object.updateMatrixWorld(true);
 }
 
-// Save the last time of mouse move for damping
-let lastTimeMouseMove = 0;
-
 // Animations and damping
 let enableAnimation = true;
 const dampingFactorDefault = 0.25;
-const dampingMove = new THREE.Quaternion(0, 0, 0, 1);
-const durationDampingMove = 120;
-const durationDampingOrbital = 60;
+/** Duration of a frame of the AnimationPlayer, which counts animation lengths in frames, ms. */
+const PLAYER_FRAME_MS = 1000 / 60;
+/**
+ * iTowns' damping applied each orbit movement, then kept 75 % of it for the next update
+ * (dampingFactorDefault), so that a movement added up to 1 / 0.25 = 4 times its size: this gain
+ * keeps the orbit as sensitive now that each movement applies once.
+ */
+const ORBIT_GAIN = 1 / dampingFactorDefault;
+// Pointer position of the drag being made (MOVE_GLOBE), for the glide at release, which moves a
+// virtual pointer on from where the drag was released.
+const lastDragCoords = new THREE.Vector2();
+const glideCoords = new THREE.Vector2();
+// The grabbed point of a drag, which the smoothing keeps while applying part of a rotation.
+const grabbed = new THREE.Vector3();
+const noRotation = new THREE.Quaternion();
+// Target of the camera during a zoom step, as longitude, latitude and altitude, then in world
+// coordinates.
+const zoomCoord = new THREE.Vector3();
+const zoomTargetPosition = new THREE.Vector3();
 
 // Pan Move
 const panVector = new THREE.Vector3();
@@ -255,6 +273,28 @@ class GlobeControls extends THREE.EventDispatcher {
         // Enable Damping
         this.enableDamping = options.enableDamping !== false;
         this.dampingMoveFactor = options.dampingMoveFactor != undefined ? options.dampingMoveFactor : dampingFactorDefault;
+        // Experiment (MaplibreEasing): with damping enabled, the wheel zooms as in MapLibre GL JS
+        // (steps sized by the scroll, eased over WHEEL_DURATION_MS for a mouse wheel), drags,
+        // orbits and middle-button zooms are slightly smoothed (SMOOTHING_MS), and a drag or an
+        // orbit glides on after release as in MapLibre, instead of iTowns' damping. All of it runs
+        // in the view's frames, before the camera update (frame), as MapLibre runs its handlers in
+        // its render frame: a move shows in the frame that applies it. `_zoomEase` is the zoom step
+        // being eased (zoomStep); `_pending` holds what the smoothing has left to apply, and
+        // `_followedAt` the time it was last applied, null when nothing is left.
+        this._wheelEasing = new WheelEasing();
+        this._zoomEase = null;
+        this._wheelCoords = new THREE.Vector2();
+        this._wheel = new WheelInput((delta, type, eventTime) => this.zoomStep(
+            this.view.getPickingPositionFromDepth(this._wheelCoords),
+            1 / wheelScale(delta, type),
+            type === 'wheel' ? WHEEL_DURATION_MS : SMOOTH_ZOOM_MS,
+            eventTime,
+        ), () => this.view.notifyChange(this.camera));
+        this._moves = new MoveRecorder();
+        this._pending = { theta: 0, phi: 0, rotation: null, pan: new THREE.Vector3(), lookTheta: 0, lookPhi: 0 };
+        this._followedAt = null;
+        this._onFrame = this.frame.bind(this);
+        view.addFrameRequester(MAIN_LOOP_EVENTS.BEFORE_CAMERA_UPDATE, this._onFrame);
 
         this.startEvent = {
             type: 'start',
@@ -524,15 +564,11 @@ class GlobeControls extends THREE.EventDispatcher {
         this.camera.up.copy(cameraTarget.position).normalize();
         this.camera.lookAt(cameraTarget.position);
 
-        if (!this.enableDamping) {
-            sphericalDelta.theta = 0;
-            sphericalDelta.phi = 0;
-            moveAroundGlobe.set(0, 0, 0, 1);
-        } else {
-            sphericalDelta.theta *= (1 - dampingFactorDefault);
-            sphericalDelta.phi *= (1 - dampingFactorDefault);
-            moveAroundGlobe.slerp(dampingMove, this.dampingMoveFactor * 0.2);
-        }
+        // Each movement applies once: the glide after release (handleEndMovement) replaces iTowns'
+        // damping, which carried part of every movement over to the next frames.
+        sphericalDelta.theta = 0;
+        sphericalDelta.phi = 0;
+        moveAroundGlobe.set(0, 0, 0, 1);
 
         orbitScale = 1;
         panVector.set(0, 0, 0);
@@ -546,12 +582,6 @@ class GlobeControls extends THREE.EventDispatcher {
             lastPosition.copy(this.camera.position);
             lastQuaternion.copy(this.camera.quaternion);
         }
-        // Launch animationdamping if mouse stops these movements
-        if (this.enableDamping && state === this.states.ORBIT && this.player.isStopped() && (sphericalDelta.theta > EPS || sphericalDelta.phi > EPS)) {
-            this.player.setCallback(() => { this.update(this.states.ORBIT); });
-            this.player.playLater(durationDampingOrbital, 2);
-        }
-
         this.view.dispatchEvent({
             type: VIEW_EVENTS.CAMERA_MOVED,
             coord: coordCameraTarget.setFromVector3(cameraTarget.position),
@@ -598,32 +628,145 @@ class GlobeControls extends THREE.EventDispatcher {
 
         // Initialize pan movement.
         panStart.copy(event.viewCoords);
+
+        // Initialize the recording of the movement, for the glide at release, and drop what the
+        // smoothing had left of the previous one (a drag's rotation is relative to its grabbed point).
+        this._moves.clear();
+        this._zoomEase = null;
+        Object.assign(this._pending, { theta: 0, phi: 0, rotation: null, lookTheta: 0, lookPhi: 0 });
+        this._pending.pan.set(0, 0, 0);
+        lastDragCoords.copy(event.viewCoords);
     }
 
     handleRotation(event) {
         // Stop player if needed. Player can be playing while moving mouse in the case of rotation. This is due to the
         // fact that a damping move can occur while rotating (without the need of releasing the mouse button)
         this.player.stop();
-        this.handlePanoramic(event);
+        // The orbit of this movement, as handlePanoramic computes it (heading from the horizontal
+        // movement, tilt from the vertical one, radians) with ORBIT_GAIN: recorded for the glide
+        // and added to what the smoothing applies.
+        const gfx = this.view.mainLoop.gfxEngine;
+        const theta = -2 * Math.PI * (event.viewCoords.x - rotateStart.x) / gfx.width * this.rotateSpeed * ORBIT_GAIN;
+        const phi = -2 * Math.PI * (event.viewCoords.y - rotateStart.y) / gfx.height * this.rotateSpeed * ORBIT_GAIN;
+        rotateStart.copy(event.viewCoords);
+        this._moves.record({ theta, phi });
+        this._pending.theta += theta;
+        this._pending.phi += phi;
+        this.follow();
     }
 
     handleDrag(event) {
-        const normalized = this.view.viewToNormalizedCoords(event.viewCoords);
+        // If there's intersection then move globe else we stop the move
+        if (this.dragTo(event.viewCoords)) {
+            // The pointer's movement, recorded for the glide.
+            this._moves.record({ x: event.viewCoords.x - lastDragCoords.x, y: event.viewCoords.y - lastDragCoords.y });
+            lastDragCoords.copy(event.viewCoords);
+            this.follow();
+        } else {
+            this.states.onPointerUp();
+        }
+    }
+
+    /**
+     * Makes the rotation of the camera around the globe that brings the grabbed point under
+     * `viewCoords` what the smoothing has left to apply. It replaces the previous one, being
+     * computed from the camera as it is now.
+     *
+     * @param {THREE.Vector2} viewCoords - The pointer, in view coordinates.
+     * @returns {boolean} False when `viewCoords` misses the grabbed point's sphere.
+     */
+    dragTo(viewCoords) {
+        const normalized = this.view.viewToNormalizedCoords(viewCoords);
 
         // An updateMatrixWorld on the camera prevents camera jittering when moving globe on a zoomed out view, with
         // devtools open in web browser.
         this.camera.updateMatrixWorld();
 
         raycaster.setFromCamera(normalized, this.camera);
+        if (!raycaster.ray.intersectSphere(pickSphere, intersection)) { return false; }
+        normalizedIntersection.copy(intersection).normalize();
+        this._pending.rotation = (this._pending.rotation ?? new THREE.Quaternion())
+            .setFromUnitVectors(normalizedIntersection, lastNormalizedIntersection);
+        return true;
+    }
 
-        // If there's intersection then move globe else we stop the move
-        if (raycaster.ray.intersectSphere(pickSphere, intersection)) {
-            normalizedIntersection.copy(intersection).normalize();
-            moveAroundGlobe.setFromUnitVectors(normalizedIntersection, lastNormalizedIntersection);
-            lastTimeMouseMove = Date.now();
-            this.update();
+    /** Asks for the frames that apply what was just added to `_pending` (followFrame). */
+    follow() {
+        this._followedAt ??= performance.now();
+        this.view.notifyChange(this.camera);
+    }
+
+    /**
+     * Within a frame, before the camera update (frame): runs the wheel step received since the
+     * last frame, the zoom step being eased, and the smoothing.
+     */
+    frame() {
+        this._wheel.flush();
+        this.zoomFrame();
+        this.followFrame();
+    }
+
+    /**
+     * Applies the share of what is left of the movements in `_pending` that SMOOTHING_MS gives for
+     * the time elapsed since the last frame that applied some: an orbit's heading and tilt, a
+     * drag's rotation around the globe, a pan, and a look around's heading and tilt. Asks for the
+     * next frame while something is left.
+     */
+    followFrame() {
+        if (this._followedAt === null) { return; }
+        const now = performance.now();
+        const share = SMOOTHING_MS > 0 ? 1 - Math.exp(-(now - this._followedAt) / SMOOTHING_MS) : 1;
+        this._followedAt = now;
+        const pending = this._pending;
+        if (pending.theta || pending.phi) {
+            sphericalDelta.theta = pending.theta * share;
+            sphericalDelta.phi = pending.phi * share;
+            pending.theta -= sphericalDelta.theta;
+            pending.phi -= sphericalDelta.phi;
+            if (Math.abs(pending.theta) < EPS && Math.abs(pending.phi) < EPS) {
+                pending.theta = 0;
+                pending.phi = 0;
+            }
+            this.update(this.states.ORBIT);
+        }
+        if (pending.rotation) {
+            // update() sets the grabbed point from the rotation applied, which is right only
+            // for a whole rotation: the grabbed point stays where it is in the world.
+            grabbed.copy(lastNormalizedIntersection);
+            moveAroundGlobe.copy(noRotation).slerp(pending.rotation, share);
+            this.update(this.states.MOVE_GLOBE);
+            lastNormalizedIntersection.copy(grabbed);
+            pending.rotation.slerp(noRotation, share);
+            // The angle is about twice the length of the axis part, precise for small angles: a
+            // drag at street level turns the camera by about 1e-7 radian per frame. What is left
+            // below 1e-10 radian (under a millimetre on the ground) is dropped.
+            const { x, y, z } = pending.rotation;
+            if (2 * Math.hypot(x, y, z) < 1e-10) { pending.rotation = null; }
+        }
+        if (pending.pan.lengthSq() > 0) {
+            panVector.copy(pending.pan).multiplyScalar(share);
+            pending.pan.sub(panVector);
+            // What is left below a tenth of a millimetre is dropped.
+            if (pending.pan.lengthSq() < 1e-8) { pending.pan.set(0, 0, 0); }
+            this.update(this.states.PAN);
+        }
+        if (pending.lookTheta || pending.lookPhi) {
+            sphericalDelta.theta = pending.lookTheta * share;
+            sphericalDelta.phi = pending.lookPhi * share;
+            pending.lookTheta -= sphericalDelta.theta;
+            pending.lookPhi -= sphericalDelta.phi;
+            if (Math.abs(pending.lookTheta) < EPS && Math.abs(pending.lookPhi) < EPS) {
+                pending.lookTheta = 0;
+                pending.lookPhi = 0;
+            }
+            this.update(this.states.PANORAMIC);
+        }
+        const left = pending.theta || pending.phi || pending.rotation || pending.pan.lengthSq() > 0
+            || pending.lookTheta || pending.lookPhi;
+        if (left) {
+            this.view.notifyChange(this.camera);
         } else {
-            this.states.onPointerUp();
+            this._followedAt = null;
         }
     }
 
@@ -646,7 +789,12 @@ class GlobeControls extends THREE.EventDispatcher {
 
         this.mouseToPan(panDelta.x, panDelta.y);
 
-        this.update(this.states.PAN);
+        // A pointer's movement is recorded for the glide; keys do not glide.
+        if (event.viewCoords) { this._moves.record({ x: panDelta.x, y: panDelta.y }); }
+        // Smoothed: added to what follow() applies.
+        this._pending.pan.add(panVector);
+        panVector.set(0, 0, 0);
+        this.follow();
     }
 
     handlePanoramic(event) {
@@ -655,12 +803,17 @@ class GlobeControls extends THREE.EventDispatcher {
 
         const gfx = this.view.mainLoop.gfxEngine;
 
-        sphericalDelta.theta -= 2 * Math.PI * rotateDelta.x / gfx.width * this.rotateSpeed;
+        // Smoothed, with ORBIT_GAIN for the sensitivity iTowns' damping gave (see ORBIT_GAIN), and
+        // recorded for the glide.
+        const theta = -2 * Math.PI * rotateDelta.x / gfx.width * this.rotateSpeed * ORBIT_GAIN;
         // rotating up and down along whole screen attempts to go 360, but limited to 180
-        sphericalDelta.phi -= 2 * Math.PI * rotateDelta.y / gfx.height * this.rotateSpeed;
+        const phi = -2 * Math.PI * rotateDelta.y / gfx.height * this.rotateSpeed * ORBIT_GAIN;
+        this._moves.record({ theta, phi });
+        this._pending.lookTheta += theta;
+        this._pending.lookPhi += phi;
 
         rotateStart.copy(rotateEnd);
-        this.update();
+        this.follow();
     }
 
     handleEndMovement(event = {}) {
@@ -668,27 +821,89 @@ class GlobeControls extends THREE.EventDispatcher {
 
         this.player.stop();
 
-        // Launch damping movement for :
-        //      * this.states.ORBIT
-        //      * this.states.MOVE_GLOBE
-        if (this.enableDamping) {
-            if (event.previous === this.states.ORBIT && (sphericalDelta.theta > EPS || sphericalDelta.phi > EPS)) {
-                this.player.setCallback(() => { this.update(this.states.ORBIT); });
-                this.player.play(durationDampingOrbital);
-                this._onEndingMove = () => this.onEndingMove();
-                this.player.addEventListener('animation-stopped', this._onEndingMove);
-            } else if (event.previous === this.states.MOVE_GLOBE && (Date.now() - lastTimeMouseMove < 50)) {
-                this.player.setCallback(() => { this.update(this.states.MOVE_GLOBE); });
-                // animation since mouse up event occurs less than 50ms after the last mouse move
-                this.player.play(durationDampingMove);
-                this._onEndingMove = () => this.onEndingMove();
-                this.player.addEventListener('animation-stopped', this._onEndingMove);
-            } else {
-                this.onEndingMove();
-            }
-        } else {
+        // Glide after a drag (globe, pan, orbit, look around), as MapLibre GL JS does.
+        const released = this._moves.release();
+        if (!(this.enableDamping && released && this.glide(event.previous, released))) {
             this.onEndingMove();
         }
+    }
+
+    /**
+     * Continues the movement `released` of state `state` (MOVE_GLOBE, PAN, ORBIT or PANORAMIC) as
+     * MapLibre's inertia does (MaplibreEasing glide), at a decreasing speed with MapLibre's easing:
+     * a globe drag moves a virtual pointer on from the release, in the drag's direction, by the
+     * glide of its length in pixels; a pan goes on by that glide in pixels, turned into a move by
+     * mouseToPan; an orbit or a look around turns on by the glides of its heading and tilt in
+     * degrees, over the longest of the two. All go through the smoothing (follow). Returns false
+     * when there is nothing to continue.
+     *
+     * @param {Object} state - The state the movement was made in.
+     * @param {{ moves: Object[], durationMs: number }} released - From MoveRecorder.release.
+     * @returns {boolean} Whether a glide started.
+     */
+    glide(state, { moves, durationMs }) {
+        let apply;
+        let duration = 0;
+        if (state === this.states.PAN) {
+            const dx = moves.reduce((sum, m) => sum + (m.x ?? 0), 0);
+            const dy = moves.reduce((sum, m) => sum + (m.y ?? 0), 0);
+            const px = Math.hypot(dx, dy);
+            if (!(px > 0)) { return false; }
+            const g = glide(px, durationMs, PAN_GLIDE);
+            duration = g.duration;
+            let done = 0;
+            apply = (k) => {
+                const step = g.amount * (k - done) / px;
+                done = k;
+                this.mouseToPan(dx * step, dy * step);
+                this._pending.pan.add(panVector);
+                panVector.set(0, 0, 0);
+                this.follow();
+                return true;
+            };
+        } else if (state === this.states.MOVE_GLOBE) {
+            const dx = moves.reduce((sum, m) => sum + (m.x ?? 0), 0);
+            const dy = moves.reduce((sum, m) => sum + (m.y ?? 0), 0);
+            const px = Math.hypot(dx, dy);
+            if (!(px > 0)) { return false; }
+            const g = glide(px, durationMs, PAN_GLIDE);
+            const from = lastDragCoords.clone();
+            duration = g.duration;
+            apply = (k) => {
+                glideCoords.set(from.x + dx / px * g.amount * k, from.y + dy / px * g.amount * k);
+                if (!this.dragTo(glideCoords)) { return false; }
+                this.follow();
+                return true;
+            };
+        } else if (state === this.states.ORBIT || state === this.states.PANORAMIC) {
+            const theta = THREE.MathUtils.radToDeg(moves.reduce((sum, m) => sum + (m.theta ?? 0), 0));
+            const phi = THREE.MathUtils.radToDeg(moves.reduce((sum, m) => sum + (m.phi ?? 0), 0));
+            const gTheta = theta ? glide(theta, durationMs, BEARING_GLIDE) : { amount: 0, duration: 0 };
+            const gPhi = phi ? glide(phi, durationMs, PITCH_GLIDE) : { amount: 0, duration: 0 };
+            duration = Math.max(gTheta.duration, gPhi.duration);
+            const [thetaKey, phiKey] = state === this.states.ORBIT ? ['theta', 'phi'] : ['lookTheta', 'lookPhi'];
+            let done = 0;
+            apply = (k) => {
+                this._pending[thetaKey] += THREE.MathUtils.degToRad(gTheta.amount) * (k - done);
+                this._pending[phiKey] += THREE.MathUtils.degToRad(gPhi.amount) * (k - done);
+                done = k;
+                this.follow();
+                return true;
+            };
+        }
+        if (!apply || !(duration > 0)) { return false; }
+
+        // The player counts frames; the progress comes from the clock, so the glide ends on time
+        // even when frames are late. One more frame than the duration lets the last one reach 1.
+        const start = performance.now();
+        this.player.setCallback(() => {
+            const k = GLIDE_EASING(Math.min((performance.now() - start) / duration, 1));
+            if (!apply(k)) { this.player.stop(); }
+        });
+        this._onEndingMove = () => this.onEndingMove();
+        this.player.addEventListener('animation-stopped', this._onEndingMove);
+        this.player.play(Math.ceil(duration / PLAYER_FRAME_MS) + 1);
+        return true;
     }
 
     updateTarget() {
@@ -762,31 +977,102 @@ class GlobeControls extends THREE.EventDispatcher {
 
     handleZoom(event) {
         this.player.stop();
-        CameraUtils.stop(this.view, this.camera);
+        // With damping enabled, the wheel zooms as MapLibre's does (WheelInput, then zoomStep
+        // within the next frame), and the middle button by iTowns' step, smoothed.
+        if (this.enableDamping && event.type === 'zoom') {
+            this._wheelCoords.copy(event.viewCoords);
+            this._wheel.push(event.delta, event.deltaMode);
+            return;
+        }
         const zoomScale = event.delta > 0 ? this.zoomInScale : this.zoomOutScale;
-        let point = event.type === 'dolly' ? pickedPosition : this.view.getPickingPositionFromDepth(event.viewCoords);        // get cursor position
-        let range = this.getRange();
-        range *= zoomScale;
+        const point = event.type === 'dolly' ? pickedPosition : this.view.getPickingPositionFromDepth(event.viewCoords);        // get cursor position
+        return this.zoomStep(point, zoomScale, this.enableDamping ? SMOOTH_ZOOM_MS : 0);
+    }
 
-        if (point && (range > this.minDistance && range < this.maxDistance)) {  // check if the zoom is in the allowed interval
-            const camPos = xyz.setFromVector3(cameraTarget.position).as('EPSG:4326', c).toVector3();
-            point = xyz.setFromVector3(point).as('EPSG:4326', c).toVector3();
+    /**
+     * Zooms towards `point` by `zoomScale`, the new distance to the target over the current one,
+     * keeping `point` where it is on screen: at once when `durationMs` is 0, otherwise eased as
+     * MapLibre eases a wheel step (zoomFrame): from the camera as it is, over `durationMs` counted
+     * from `eventTime`, with an easing continuous with the previous step's. A step during the ease
+     * of a previous one starts from that one's target, so that fast steps add up.
+     *
+     * @param {THREE.Vector3} [point] - The point zoomed towards, in world coordinates; no zoom without it.
+     * @param {number} zoomScale - New distance to the target over the current one (< 1 zooms in).
+     * @param {number} durationMs - Duration of the ease, ms.
+     * @param {number} [eventTime] - performance.now() of the input the step comes from.
+     */
+    zoomStep(point, zoomScale, durationMs, eventTime = performance.now()) {
+        CameraUtils.stop(this.view, this.camera);
+        // The target follows the camera only through these controls: outside a zoom step, it is
+        // taken again from the camera (one depth read per step, none per frame).
+        if (!this._zoomEase) { this.updateTarget(); }
+        // The camera seen from the target, in the target's frame, as the orbit keeps it: a zoom
+        // moves the target and the distance, not this direction.
+        const local = this.camera.position.clone().applyMatrix4(cameraTarget.matrixWorldInverse);
+        const current = {
+            coord: xyz.setFromVector3(cameraTarget.position).as('EPSG:4326', c).toVector3(),
+            range: local.length(),
+        };
+        const from = this._zoomEase ? this._zoomEase.target : current;
+        const range = from.range * zoomScale;
+        if (!(point && range > this.minDistance && range < this.maxDistance)) {  // check if the zoom is in the allowed interval
+            return;
+        }
+        const camPos = from.coord.clone();
+        const coord = xyz.setFromVector3(point).as('EPSG:4326', c).toVector3();
+        if (camPos.x * coord.x < 0) {     // Correct rotation at 180th meridian by using 0 <= longitude <=360 for interpolation purpose
+            if (camPos.x - coord.x > 180) { coord.x += 360; } else if (coord.x - camPos.x > 180) { camPos.x += 360; }
+        }
+        coord.lerp(camPos, zoomScale);  // point interpol between mouse cursor and cam pos
+        // The camera's own longitude on the same side of the 180th meridian as the target's.
+        if (current.coord.x - coord.x > 180) { current.coord.x -= 360; } else if (coord.x - current.coord.x > 180) { current.coord.x += 360; }
 
-            if (camPos.x * point.x < 0) {     // Correct rotation at 180th meridian by using 0 <= longitude <=360 for interpolation purpose
-                if (camPos.x - point.x > 180) { point.x += 360; } else if (point.x - camPos.x > 180) { camPos.x += 360; }
-            }
-            point.lerp(  // point interpol between mouse cursor and cam pos
-                camPos,
-                zoomScale, // interpol factor
-            );
+        this._zoomEase = {
+            start: current,
+            target: { coord, range },
+            direction: local.normalize(),
+            eventTime,
+            durationMs,
+            easing: durationMs > 0 ? this._wheelEasing.next(durationMs) : null,
+        };
+        this.view.notifyChange(this.camera);
+    }
 
-            point = c.setFromVector3(point).as('EPSG:4978', xyz);
-
-            return this.lookAtCoordinate({       // update view to the interpolate point
-                coord: point,
-                range,
-            },
-            false);
+    /**
+     * Places the camera of the zoom step `_zoomEase` for now: the target moves in a straight line in
+     * longitude, latitude and altitude, the distance to it changes by a constant ratio per unit of
+     * eased time, as MapLibre interpolates zoom levels, and the camera stays in the same direction
+     * from the target in the target's frame. Placed directly, as the orbit does in update():
+     * lookAtCoordinate reads the depth buffer back from the GPU, 15 to 20 ms per call. Asks for the
+     * next frame until the step ends; the step itself may change in between (zoomStep).
+     */
+    zoomFrame() {
+        const ease = this._zoomEase;
+        if (!ease) { return; }
+        const t = ease.durationMs > 0 ? Math.min((performance.now() - ease.eventTime + WHEEL_EVENT_ADJUSTMENT_MS) / ease.durationMs, 1) : 1;
+        const k = t < 1 ? ease.easing(t) : 1;
+        const { start, target } = ease;
+        zoomCoord.lerpVectors(start.coord, target.coord, k);
+        c.setFromVector3(zoomCoord).as('EPSG:4978', xyz).toVector3(zoomTargetPosition);
+        positionObject(zoomTargetPosition, cameraTarget);
+        cameraTarget.matrixWorldInverse.copy(cameraTarget.matrixWorld).invert();
+        const range = start.range * (target.range / start.range) ** k;
+        this.camera.position.copy(ease.direction).multiplyScalar(range);
+        spherical.setFromVector3(this.camera.position);
+        cameraTarget.localToWorld(this.camera.position);
+        this.camera.up.copy(cameraTarget.position).normalize();
+        this.camera.lookAt(cameraTarget.position);
+        this.camera.updateMatrixWorld();
+        this.view.notifyChange(this.camera);
+        this.view.dispatchEvent({
+            type: VIEW_EVENTS.CAMERA_MOVED,
+            coord: coordCameraTarget.setFromVector3(cameraTarget.position),
+            range: spherical.radius,
+            heading: -THREE.MathUtils.radToDeg(spherical.theta),
+            tilt: 90 - THREE.MathUtils.radToDeg(spherical.phi),
+        });
+        if (t >= 1) {
+            this._zoomEase = null;
         }
     }
 
@@ -856,7 +1142,6 @@ class GlobeControls extends THREE.EventDispatcher {
                 if (raycaster.ray.intersectSphere(pickSphere, intersection)) {
                     normalizedIntersection.copy(intersection).normalize();
                     moveAroundGlobe.setFromUnitVectors(normalizedIntersection, lastNormalizedIntersection);
-                    lastTimeMouseMove = Date.now();
                 } else {
                     this.onTouchEnd();
                 }
@@ -928,6 +1213,8 @@ class GlobeControls extends THREE.EventDispatcher {
 
         this.states.removeEventListener(this.states.TRAVEL_IN._event, this._onTravel, false);
         this.states.removeEventListener(this.states.TRAVEL_OUT._event, this._onTravel, false);
+
+        this.view.removeFrameRequester(MAIN_LOOP_EVENTS.BEFORE_CAMERA_UPDATE, this._onFrame);
 
         this.dispatchEvent({ type: 'dispose' });
     }

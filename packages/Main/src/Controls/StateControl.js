@@ -397,7 +397,7 @@ class StateControl extends THREE.EventDispatcher {
         if (this.enabled && this.ZOOM.enable) {
             viewCoords.copy(this._view.eventToViewCoords(event));
             this.currentState = this.ZOOM;
-            this.dispatchEvent({ type: this.ZOOM._event, delta: event.deltaY, viewCoords });
+            this.dispatchEvent({ type: this.ZOOM._event, delta: event.deltaY, deltaMode: event.deltaMode, viewCoords });
         }
     }
 
