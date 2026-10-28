@@ -103,8 +103,10 @@ export function updateLayeredMaterialNodeImagery(context, layer, node, parent) {
         }
     }
 
-    // Node is hidden, no need to update it
-    if (!material.visible) {
+    // Node is hidden, no need to update it. A node whose children are being created stays
+    // displayed until they replace it: its own level would arrive for a hidden node, so it keeps
+    // the texture inherited from its parent meanwhile.
+    if (!material.visible || node.pendingSubdivision) {
         return;
     }
 
@@ -203,6 +205,8 @@ export function updateLayeredMaterialNodeElevation(context, layer, node, parent)
     // Possible conditions to *not* update the elevation texture
     if (layer.frozen ||
         !material.visible ||
+        // children being created replace the node: see updateLayeredMaterialNodeImagery
+        node.pendingSubdivision ||
         !node.layerUpdateState[layer.id].canTryUpdate()) {
         return;
     }
